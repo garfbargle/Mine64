@@ -5,9 +5,10 @@
 
 enum Screen current_screen = MENU;
 u32 save_message_cooldown = 0;
+u8 player_two_joined_message = 0;
 
 static char *menu_text[] = {
-  "Mine64",
+  "Mine64 v0.2",
   "",
   "",
   "How to play",
@@ -18,7 +19,7 @@ static char *menu_text[] = {
 };
 
 static char *menu_text_no_saving[] = {
-  "Mine64",
+  "Mine64 v0.2",
   "",
   "",
   "How to play",
@@ -44,7 +45,7 @@ static u8 option_lines[] = {
 static u8 selected_option = 0;
 
 static char *info_text[] = {
-  "Mine64",
+  "Mine64 v0.2",
   "",
   "Walk: Analog stick",
   "Look around: Analog stick + Z trigger",
@@ -52,7 +53,8 @@ static char *info_text[] = {
   "Break block: B button",
   "Select block: C buttons left/right",
   "Jump: Right shoulder",
-  "Save game: D-Pad"
+  "Save game: D-Pad",
+  "Co-op: Player 2 presses START"
 };
 
 static char *generating_text[] = {
@@ -65,6 +67,10 @@ static char *loading_text[] = {
 
 static char *saved_text[] = {
   "World saved"
+};
+
+static char *player_two_joined_text[] = {
+  "Player 2 joined"
 };
 
 static Gfx menu_setup_display_list[] = {
@@ -137,18 +143,26 @@ void drawMenu() {
       y_start = SCREEN_HT / 3;
       break;
     case GAME:
-      text = saved_text;
-      n_lines = sizeof(saved_text) / sizeof(char *);
+      if (save_message_cooldown > 0) {
+        text = saved_text;
+        n_lines = sizeof(saved_text) / sizeof(char *);
+      } else {
+        text = player_two_joined_text;
+        n_lines = sizeof(player_two_joined_text) / sizeof(char *);
+      }
       y_start = SCREEN_HT / 3;
       break;
   }
 
-  if (current_screen == GAME && save_message_cooldown == 0) {
+  if (current_screen == GAME && save_message_cooldown == 0 && player_two_joined_message == 0) {
     return;
   }
 
   if (save_message_cooldown > 0) {
     save_message_cooldown--;
+  }
+  if (player_two_joined_message > 0) {
+    player_two_joined_message--;
   }
 
   gSPDisplayList(dlp++, menu_setup_display_list);

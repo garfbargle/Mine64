@@ -13,6 +13,7 @@ enum Screen {
 
 extern enum Screen current_screen;
 extern u32 save_message_cooldown;
+extern u8 player_two_joined_message;
 
 void drawMenu();
 void menuDown();

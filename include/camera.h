@@ -3,12 +3,13 @@
 
 #include <nusys.h>
 #include "geometry.h"
+#include "player.h"
 
-u8 visible_columns[CHUNKS_X * CHUNKS_Z];
+extern u8 visible_columns[MAX_PLAYERS][CHUNKS_X * CHUNKS_Z];
 
 void initCamera();
-void updateVisibleColumns();
-void updateCameraMatrices();
-void loadCameraMatrices();
+void updateVisibleColumns(u8 player_num);
+void updateCameraMatrices(u8 player_num);
+void loadCameraMatrices(u8 player_num);
 
 #endif /* CAMERA_H */

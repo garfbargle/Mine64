@@ -33,14 +33,20 @@ static u8 render_z;
 
 static Texture *loaded_texture;
 
-static Vp vp = {
+static Vp full_viewport = {
     SCREEN_WD*2, SCREEN_HT*2, G_MAXZ/2, 0,
     SCREEN_WD*2, SCREEN_HT*2, G_MAXZ/2, 0,
 };
 
+/* N64 viewport coordinates are 10.2 fixed point.  These two viewports fill
+   the same framebuffer as solo play, so split-screen does not double fill-rate. */
+static Vp coop_viewports[MAX_PLAYERS] = {
+  {SCREEN_WD*2, SCREEN_HT, G_MAXZ/2, 0, SCREEN_WD*2, SCREEN_HT, G_MAXZ/2, 0},
+  {SCREEN_WD*2, SCREEN_HT, G_MAXZ/2, 0, SCREEN_WD*2, SCREEN_HT*3, G_MAXZ/2, 0}
+};
+
 static Gfx setup_display_list[] = {
   gsSPSegment(0, 0x0),
-  gsSPViewport(&vp),
   gsDPSetCombineMode(G_CC_SHADE, G_CC_SHADE),
   gsDPSetScissor(G_SC_NON_INTERLACE, 0,0, SCREEN_WD,SCREEN_HT),
   gsSPEndDisplayList()
@@ -229,11 +235,11 @@ void makeDisplayListsAt(u8 x, u8 z) {
   }
 }
 
-void drawTextured(u8 texture) {
+void drawTextured(u8 texture, u8 player_num) {
   u8 cx, cz;
   for (cx = 0; cx < CHUNKS_X; cx++) {
     for (cz = 0; cz < CHUNKS_Z; cz++) {
-      if (visible_columns[cx * CHUNKS_Z + cz]) {
+      if (visible_columns[player_num][cx * CHUNKS_Z + cz]) {
         gSPDisplayList(dlp++, column_starts[texture][cx * CHUNKS_Z + cz]);
       }
     }
@@ -241,7 +247,7 @@ void drawTextured(u8 texture) {
 }
 
 void drawWorld() {
-  u8 i;
+  u8 i, player_num;
 
   dlp = &display_lists[dl_no][0];
 
@@ -249,13 +255,20 @@ void drawWorld() {
 
   clearBuffers(GPACK_RGBA5551(158, 207, 255, 1));
 
-  gSPDisplayList(dlp++, draw_setup_display_list);
-
-  loadCameraMatrices();
-
-  for (i = 0; i < NUM_TEXTURES; i++) {
-    loadTexture(textures[i]->texture);
-    drawTextured(i);
+  for (player_num = 0; player_num < active_player_count; player_num++) {
+    gSPDisplayList(dlp++, draw_setup_display_list);
+    if (active_player_count == 2) {
+      gSPViewport(dlp++, &coop_viewports[player_num]);
+      gDPSetScissor(dlp++, G_SC_NON_INTERLACE, 0, player_num * (SCREEN_HT / 2), SCREEN_WD, (player_num + 1) * (SCREEN_HT / 2));
+    } else {
+      gSPViewport(dlp++, &full_viewport);
+      gDPSetScissor(dlp++, G_SC_NON_INTERLACE, 0, 0, SCREEN_WD, SCREEN_HT);
+    }
+    loadCameraMatrices(player_num);
+    for (i = 0; i < NUM_TEXTURES; i++) {
+      loadTexture(textures[i]->texture);
+      drawTextured(i, player_num);
+    }
   }
 
   gDPFullSync(dlp++);
@@ -268,22 +281,30 @@ void drawWorld() {
   );
 }
 
-void drawWireframe() {
+void drawWireframes() {
+  u8 player_num;
   dlp = line_display_list;
 
   gSPDisplayList(dlp++, setup_display_list);
 
-  gSPDisplayList(dlp++, wireframe_setup_display_list);
-
-  loadCameraMatrices();
-  
-  gSPMatrix(dlp++,OS_K0_TO_PHYSICAL(c_models + (target_x / CHUNK_SIZE) * CHUNKS_Y * CHUNKS_Z + (target_y / CHUNK_SIZE) * CHUNKS_Z + (target_z / CHUNK_SIZE)),
-    G_MTX_MODELVIEW|G_MTX_LOAD|G_MTX_NOPUSH);
-  gSPMatrix(dlp++,OS_K0_TO_PHYSICAL(b_models + (target_x % CHUNK_SIZE) * CHUNK_SIZE * CHUNK_SIZE + (target_y % CHUNK_SIZE) * CHUNK_SIZE + (target_z % CHUNK_SIZE)),
-    G_MTX_MODELVIEW|G_MTX_MUL|G_MTX_NOPUSH);
-  gSPVertex(dlp++, cube_verts, 8, 0);
-
-  gSPDisplayList(dlp++, wireframe_display_list);
+  for (player_num = 0; player_num < active_player_count; player_num++) {
+    if (!players[player_num].target_present) continue;
+    if (active_player_count == 2) {
+      gSPViewport(dlp++, &coop_viewports[player_num]);
+      gDPSetScissor(dlp++, G_SC_NON_INTERLACE, 0, player_num * (SCREEN_HT / 2), SCREEN_WD, (player_num + 1) * (SCREEN_HT / 2));
+    } else {
+      gSPViewport(dlp++, &full_viewport);
+      gDPSetScissor(dlp++, G_SC_NON_INTERLACE, 0, 0, SCREEN_WD, SCREEN_HT);
+    }
+    gSPDisplayList(dlp++, wireframe_setup_display_list);
+    loadCameraMatrices(player_num);
+    gSPMatrix(dlp++,OS_K0_TO_PHYSICAL(c_models + (players[player_num].target_x / CHUNK_SIZE) * CHUNKS_Y * CHUNKS_Z + (players[player_num].target_y / CHUNK_SIZE) * CHUNKS_Z + (players[player_num].target_z / CHUNK_SIZE)),
+      G_MTX_MODELVIEW|G_MTX_LOAD|G_MTX_NOPUSH);
+    gSPMatrix(dlp++,OS_K0_TO_PHYSICAL(b_models + (players[player_num].target_x % CHUNK_SIZE) * CHUNK_SIZE * CHUNK_SIZE + (players[player_num].target_y % CHUNK_SIZE) * CHUNK_SIZE + (players[player_num].target_z % CHUNK_SIZE)),
+      G_MTX_MODELVIEW|G_MTX_MUL|G_MTX_NOPUSH);
+    gSPVertex(dlp++, cube_verts, 8, 0);
+    gSPDisplayList(dlp++, wireframe_display_list);
+  }
 
   gDPFullSync(dlp++);
   gSPEndDisplayList(dlp++);
@@ -295,7 +316,23 @@ void drawWireframe() {
   );
 }
 
+static void drawCrosshair(u32 x, u32 y) {
+  gDPSetCycleType(dlp++, G_CYC_FILL);
+  gDPSetRenderMode(dlp++, G_RM_NOOP, G_RM_NOOP2);
+  gDPSetFillColor(dlp++, (GPACK_RGBA5551(255, 255, 255, 1) << 16 | GPACK_RGBA5551(255, 255, 255, 1)));
+  gDPFillRectangle(dlp++, x - CROSSHAIR_SIZE / 2, y - 1, x + CROSSHAIR_SIZE / 2 - 1, y);
+  gDPFillRectangle(dlp++, x - 1, y - CROSSHAIR_SIZE / 2, x, y + CROSSHAIR_SIZE / 2 - 1);
+  gDPPipeSync(dlp++);
+  gDPSetCycleType(dlp++, G_CYC_1CYCLE);
+  gDPSetRenderMode(dlp++, G_RM_NOOP, G_RM_NOOP2);
+  gDPSetCombineMode(dlp++, G_CC_MODULATEI_PRIM, G_CC_MODULATEI_PRIM);
+  gDPSetPrimColor(dlp++, 0, 0, 255, 255, 255, 255);
+  gDPSetTexturePersp(dlp++, G_TP_NONE);
+  gDPSetTextureLUT(dlp++, G_TT_RGBA16);
+}
+
 void drawHUD() {
+  u8 player_num;
   dlp = hud_display_list;
 
   gSPDisplayList(dlp++, setup_display_list);
@@ -303,15 +340,22 @@ void drawHUD() {
   if (current_screen != GAME) {
     clearBuffers(GPACK_RGBA5551(0, 0, 0, 1));
   } else {
-    gSPDisplayList(dlp++, crosshair_display_list);
-
-    loadTexture(preview_textures[held_block]);
-    gSPTextureRectangle(dlp++,
-      10 << 2, 10 << 2,
-      (26 << 2) - 2, (26 << 2) - 2,
-      G_TX_RENDERTILE,
-      0, 0,
-      1 << 10, 1 << 10);
+    loaded_texture = NULL;
+    for (player_num = 0; player_num < active_player_count; player_num++) {
+      u32 y_offset = active_player_count == 2 ? player_num * (SCREEN_HT / 2) : 0;
+      drawCrosshair(SCREEN_WD / 2, y_offset + (active_player_count == 2 ? SCREEN_HT / 4 : SCREEN_HT / 2));
+      loadTexture(preview_textures[players[player_num].held_block]);
+      gSPTextureRectangle(dlp++,
+        10 << 2, (10 + y_offset) << 2,
+        (26 << 2) - 2, ((26 + y_offset) << 2) - 2,
+        G_TX_RENDERTILE, 0, 0, 1 << 10, 1 << 10);
+    }
+    if (active_player_count == 2) {
+      gDPSetCycleType(dlp++, G_CYC_FILL);
+      gDPSetFillColor(dlp++, (GPACK_RGBA5551(0, 0, 0, 1) << 16 | GPACK_RGBA5551(0, 0, 0, 1)));
+      gDPFillRectangle(dlp++, 0, SCREEN_HT / 2 - 1, SCREEN_WD - 1, SCREEN_HT / 2);
+      gDPPipeSync(dlp++);
+    }
     gDPPipeSync(dlp++);
   }
   drawMenu();
@@ -332,13 +376,14 @@ void draw() {
   loaded_texture = NULL;
 
   if (current_screen == GAME) {
-    updateVisibleColumns();
-    updateCameraMatrices();
+    u8 player_num;
+    for (player_num = 0; player_num < active_player_count; player_num++) {
+      updateVisibleColumns(player_num);
+      updateCameraMatrices(player_num);
+    }
 
     drawWorld();
-    if (target_present) {
-      drawWireframe();
-    }
+    drawWireframes();
   }
   drawHUD();
 

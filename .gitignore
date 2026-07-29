@@ -2,3 +2,5 @@
 /build
 /assets
 *.sh
+!toolchain/
+!toolchain/spicy-ld.sh

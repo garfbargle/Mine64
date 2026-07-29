@@ -1,53 +1,58 @@
+# Modern N64 SDK-compatible build for Mine64 v0.2.
+#
+# ROOT defaults to the compatibility tree supplied by the build container.
+# Set ROOT to a locally installed Modern N64 SDK root when building elsewhere.
+ROOT ?= /etc/n64
+N64KITDIR ?= $(ROOT)/usr
+
 include $(ROOT)/usr/include/make/PRdefs
 
-NUSYSINCDIR  = $(N64KITDIR)/nusys/include
-NUSYSLIBDIR  = $(N64KITDIR)/nusys/lib
+NUSYSINCDIR := $(N64KITDIR)/include/nusys
+NUSYSLIBDIR := $(N64KITDIR)/lib/nusys
 
-SRCDIR = src
-INCDIR = include
-ASSDIR = assets
-OBJDIR = build
+SRCDIR := src
+INCDIR := include
+ASSDIR := assets
+OBJDIR := build
+TARGET := mine64_v0_2
 
-TARGET = mine64
+LIB := $(ROOT)/usr/lib
+MAKEMASK ?= makemask
+SPICY_LD ?= $(CURDIR)/toolchain/spicy-ld.sh
+MAKEROM := spicy --toolchain-prefix=mips-n64- --ld_command=$(SPICY_LD)
 
-LIB = $(ROOT)/usr/lib
-CC  = gcc
-LD  = ld
-MAKEROM = mild
-MAKEMASK = makemask
+LCDEFS := -DNU_DEBUG -DF3DEX_GBI_2
+LCINCS := -I. -I$(NUSYSINCDIR) -I$(ROOT)/usr/include/PR -I$(INCDIR) -I$(INCDIR)/ff -I$(ASSDIR) -I$(ROOT)/usr/include
+LCOPTS := -mips3 -mgp32 -mfp32 -funsigned-char -fcommon -D_LANGUAGE_C -D_ULTRA64 -D__EXTENSIONS__
+LDFLAGS := $(MKDEPOPT) -L$(LIB) -L$(NUSYSLIBDIR) -lnusys_d -lultra_d -lcart
 
-LCDEFS =	-DNU_DEBUG -DF3DEX_GBI_2
-LCINCS =	-I. -I$(NUSYSINCDIR) -I$(ROOT)/usr/include/PR -I$(INCDIR) -I$(INCDIR)/ff -I$(ASSDIR) -I../libcart/include
-LCOPTS =	-G 0
-LDFLAGS = $(MKDEPOPT) -L$(LIB) -L$(NUSYSLIBDIR) -lnusys_d -lgultra_d -L$(GCCDIR)/mipse/lib -lkmc -L../libcart/lib -lcart
+OPTIMIZER := -g
 
-OPTIMIZER =	-g
+APP := $(OBJDIR)/$(TARGET).out
+ROM := $(OBJDIR)/$(TARGET).n64
+CODEFILES := $(wildcard $(SRCDIR)/*.c) $(wildcard $(SRCDIR)/ff/*.c)
+CODEOBJECTS := $(patsubst $(SRCDIR)/%.c,$(OBJDIR)/%.o,$(CODEFILES)) $(NUSYSLIBDIR)/nusys_d.o
+CODESEGMENT := $(OBJDIR)/codesegment.o
+ASSETS := $(ASSDIR)/texture_data.h $(ASSDIR)/font.h
 
-APP = $(OBJDIR)/$(TARGET).out
-ROM = $(OBJDIR)/$(TARGET).n64
-
-CODEFILES   = 	$(wildcard $(SRCDIR)\*.c) $(wildcard $(SRCDIR)\*\*.c) 
-
-CODEOBJECTS =	$(subst $(SRCDIR),$(OBJDIR),$(CODEFILES:.c=.o))  $(NUSYSLIBDIR)/nusys.o
-
-CODESEGMENT =	$(OBJDIR)\codesegment.o
+.DEFAULT_GOAL := default
+.PHONY: default clean
 
 default: $(ROM)
 
-.PHONY: $(SRCDIR)\ff
+$(ASSETS): generate_assets.py
+	python3 generate_assets.py
 
-$(SRCDIR)\ff:
-  @mkdir -p $(SRCDIR)\ff
-
-$(OBJDIR)\ff\%.o: $(SRCDIR)\ff\%.c
+$(OBJDIR)/%.o: $(SRCDIR)/%.c $(ASSETS)
+	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) $< -o $@
 
-$(OBJDIR)\%.o: $(SRCDIR)\%.c
-	$(CC) $(CFLAGS) $< -o $@
+$(CODESEGMENT): $(CODEOBJECTS) Makefile
+	$(LD) -o $@ -r $(CODEOBJECTS) $(LDFLAGS)
 
-$(CODESEGMENT):	$(CODEOBJECTS) Makefile
-		$(LD) -o $(CODESEGMENT) -r $(CODEOBJECTS) $(LDFLAGS)
+$(ROM): $(CODESEGMENT) spec
+	$(MAKEROM) spec -I$(NUSYSINCDIR) -r $@ -e $(APP)
+	$(MAKEMASK) $@
 
-$(ROM):	$(CODESEGMENT)
-		$(MAKEROM) spec -I$(NUSYSINCDIR) -r $(ROM) -e $(APP)
-		$(MAKEMASK) $(ROM)
+clean:
+	rm -rf $(OBJDIR)

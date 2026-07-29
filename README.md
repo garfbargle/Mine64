@@ -1,47 +1,74 @@
-# Minecraft clone for the N64
+# Mine64 for Nintendo 64
 
-**NEW:** Save the game to your cartridge's SD card!
+Mine64 is a compact block-building game for original Nintendo 64 hardware.
+Version 0.2 adds a hardware-conscious two-player co-op mode, cartridge saves,
+and an asset pipeline that does not require Minecraft files.
 
-![screenshot](game.png)
+![Mine64 box art](mine64.png)
 
-## Build instructions
+![Mine64 in-game screenshot](game.png)
 
-Requires the N64 SDK.
+## v0.2 highlights
 
-### 1. Build libcart
+* Two-player horizontal split-screen: Player 2 can join a running world with
+  **START** on Controller 2.
+* Both players have independent movement, camera control, targeting, block
+  selection, placement, and breaking.
+* Co-op saves both player positions and inventories; older single-player saves
+  still load safely.
+* Co-op deliberately uses a narrower view and no more than 24 visible columns
+  per player. This keeps the RSP and display-list workload within the limits of
+  an unmodified N64.
+* Original, generated 16-colour block tiles and UI font replace the former
+  external Minecraft-art build dependency.
 
-Download and build libcart from https://github.com/devwizard64/libcart
+## Controls
 
-The Mine64 Makefile expects libcart to be available at `../libcart`.
+| Control | Action |
+| --- | --- |
+| Analog stick | Walk |
+| Hold Z + analog stick | Look around |
+| A / B | Place / break a block |
+| C-left / C-right | Select a block |
+| R | Jump |
+| D-pad | Save, when cartridge storage is available |
+| Controller 2 START | Join co-op during a running world |
 
-### 2. Extract Minecraft textures
+## SummerCart64
 
-Mine64 uses the textures and font from Minecraft Classic 0.30.
-To build Mine64, you need to extract two files from your own copy of Minecraft Classic
-as follows:
-
-1. Install Minecraft Classic 0.30 from the Minecraft launcher.
-2. Find `.minecraft/versions/c0.30_01c/c0.30_01c.jar` in your Minecraft folder.
-3. Extract `default.png` and `terrain.png` from the jar file into the Mine64 project directory.
-4. Create a directory called `assets` in the Mine64 project directory.
-5. Install Python dependencies with `pip install -r requirements.txt`.
-6. Run `python tex2c.py terrain.png` and `python font2c.py default.png`.
-
-This should generate two header files in the `assets` directory.
-
-### 3. Build Mine64
-
-You will need Wine to run the SDK on a modern operating system. On Linux (or WSL),
-run the following commands to build Mine64:
+The v0.2 ROM is intended to live alongside the original build, not replace it.
+On the cartridge SD card, launch:
 
 ```
-export ROOT=Z:\\path\\to\\ultra
-export N64KITDIR=Z:\\path\\to\\n64kit
-mkdir -p build/ff
-wine cmd.exe /c build.bat
+/roms/Mine64 v0.2.n64
 ```
 
-The rom can be found at `build/mine64.n64`.
+The original `/roms/Mine64.n64` and existing `mine64/world_*.m64` save files
+are left alone. Saves are stored on the cartridge SD card when libcart detects
+a supported flash cartridge.
+
+## Build
+
+v0.2 builds with a Modern N64 SDK-compatible environment containing the
+`mips-n64-*` toolchain, NuSystem, libultra, libcart, `spicy`, and `makemask`.
+With that environment installed and its compatibility root at `/etc/n64`:
+
+```
+make
+```
+
+The ROM is written to `build/mine64_v0_2.n64`. `generate_assets.py` runs
+automatically and creates the compact original tile set and UI font required by
+the game; no Minecraft assets or Python packages are needed. The build also
+uses `toolchain/spicy-ld.sh` to bridge the historical makerom flags and
+compiler-runtime objects to modern GNU ld.
+
+## Hardware notes
+
+Mine64 renders the same world mesh for both cameras rather than duplicating the
+world or adding player models. The split-screen viewport shares the original
+framebuffer, and the explicit co-op visibility cap keeps the main per-frame
+display list below its 1,024-command budget.
 
 ## Technical Details
 

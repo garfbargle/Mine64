@@ -4,25 +4,33 @@
 #include <nusys.h>
 #include "math.h"
 
-float pitch;
-float yaw;
+#define MAX_PLAYERS 2
 
-Vector3 cam;
+typedef struct {
+  Vector3 position;
+  float pitch;
+  float yaw;
+  float y_velocity;
+  int held_block;
+  u8 active;
 
-int held_block;
+  u8 target_x;
+  u8 target_y;
+  u8 target_z;
+  s8 build_offset_x;
+  s8 build_offset_y;
+  s8 build_offset_z;
+  u8 target_present;
+} Player;
 
-u8 target_x;
-u8 target_y;
-u8 target_z;
+extern Player players[MAX_PLAYERS];
+extern u8 active_player_count;
 
-s8 build_offset_x;
-s8 build_offset_y;
-s8 build_offset_z;
+void initPlayers();
+void updatePlayers();
+void updateTargetBlock(u8 player_num);
 
-u8 target_present;
-
-void initPlayer();
-void updateTargetBlock();
-void updatePlayer();
+/* Used by save-game compatibility code. */
+void activatePlayerTwo();
 
 #endif /* PLAYER_H */

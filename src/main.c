@@ -10,15 +10,13 @@
 void draw(void);
 
 void callbackGfx(int pendingGfx) {
-  updateTargetBlock();
-  
   if(pendingGfx < 2) {
     draw();
   }
 
   if (current_screen == GENERATING) {
     initWorld();
-    initPlayer();
+    initPlayers();
     initGeometry();
     makeWorldDisplayLists();
 
@@ -33,7 +31,7 @@ void callbackGfx(int pendingGfx) {
     current_screen = GAME;
   }
 
-  updatePlayer();
+  updatePlayers();
 }
 
 void callbackPreNMI() {

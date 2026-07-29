@@ -18,8 +18,11 @@ extern u32 dl_no;
 void initGraphics();
 void makeWorldDisplayLists();
 void makeDisplayListsAt(u8 x, u8 z);
+void drawWorld();
+void drawWireframes();
+void drawHUD();
+void draw();
 
 #endif /* GRAPHICS_H */
-
 
 
