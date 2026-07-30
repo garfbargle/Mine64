@@ -152,6 +152,9 @@ void loadGame() {
   players[0].position = legacy_header->position;
   players[0].pitch = legacy_header->pitch;
   players[0].yaw = legacy_header->yaw;
+  players[0].body_yaw = players[0].yaw;
+  players[0].walk_time = 0;
+  players[0].walk_swing = 0;
   players[0].held_block = legacy_header->held_block;
   players[0].y_velocity = 0;
   players[0].active = TRUE;
@@ -164,10 +167,16 @@ void loadGame() {
     players[0].position = header->player[0].position;
     players[0].pitch = header->player[0].pitch;
     players[0].yaw = header->player[0].yaw;
+    players[0].body_yaw = players[0].yaw;
+    players[0].walk_time = 0;
+    players[0].walk_swing = 0;
     players[0].held_block = header->player[0].held_block;
     players[1].position = header->player[1].position;
     players[1].pitch = header->player[1].pitch;
     players[1].yaw = header->player[1].yaw;
+    players[1].body_yaw = players[1].yaw;
+    players[1].walk_time = 0;
+    players[1].walk_swing = 0;
     players[1].held_block = header->player[1].held_block;
     players[1].y_velocity = 0;
     players[1].active = TRUE;
@@ -177,6 +186,9 @@ void loadGame() {
     players[0].position = header->player[0].position;
     players[0].pitch = header->player[0].pitch;
     players[0].yaw = header->player[0].yaw;
+    players[0].body_yaw = players[0].yaw;
+    players[0].walk_time = 0;
+    players[0].walk_swing = 0;
     players[0].held_block = header->player[0].held_block;
     cursor_pos = sizeof(Header);
   } else {

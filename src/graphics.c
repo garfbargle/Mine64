@@ -25,6 +25,77 @@ static Mtx b_models[CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE];
 
 static Mtx marker_model;
 
+/* Steve is deliberately built from a handful of shaded boxes instead of a
+   texture atlas.  It is cheap enough to submit once in each co-op viewport,
+   yet still reads as a character at the game's normal view distance. */
+#define STEVE_HEAD 0
+#define STEVE_BODY 1
+#define STEVE_LEFT_ARM 2
+#define STEVE_RIGHT_ARM 3
+#define STEVE_LEFT_LEG 4
+#define STEVE_RIGHT_LEG 5
+#define STEVE_PART_COUNT 6
+
+static Mtx steve_translate[MAX_PLAYERS][STEVE_PART_COUNT];
+static Mtx steve_rotate[MAX_PLAYERS][STEVE_PART_COUNT];
+
+#define STEVE_VERTEX(x, y, z, r, g, b) {x, y, z, 0, 0, 0, r, g, b, 255}
+
+/* Head, torso, arms, and legs.  Limbs start at y = 0 so their rotation has a
+   convincing shoulder/hip pivot instead of spinning around their middles. */
+static Vtx steve_head_verts[] = {
+  STEVE_VERTEX(-16, 16, 16, 198, 137, 90), STEVE_VERTEX(16, 16, 16, 198, 137, 90),
+  STEVE_VERTEX(16, -16, 16, 198, 137, 90), STEVE_VERTEX(-16, -16, 16, 198, 137, 90),
+  STEVE_VERTEX(16, 16, -16, 198, 137, 90), STEVE_VERTEX(-16, 16, -16, 198, 137, 90),
+  STEVE_VERTEX(-16, -16, -16, 198, 137, 90), STEVE_VERTEX(16, -16, -16, 198, 137, 90)
+};
+
+static Vtx steve_body_verts[] = {
+  STEVE_VERTEX(-18, 22, 9, 54, 140, 190), STEVE_VERTEX(18, 22, 9, 54, 140, 190),
+  STEVE_VERTEX(18, -22, 9, 54, 140, 190), STEVE_VERTEX(-18, -22, 9, 54, 140, 190),
+  STEVE_VERTEX(18, 22, -9, 54, 140, 190), STEVE_VERTEX(-18, 22, -9, 54, 140, 190),
+  STEVE_VERTEX(-18, -22, -9, 54, 140, 190), STEVE_VERTEX(18, -22, -9, 54, 140, 190)
+};
+
+static Vtx steve_arm_verts[] = {
+  STEVE_VERTEX(-7, 0, 7, 198, 137, 90), STEVE_VERTEX(7, 0, 7, 198, 137, 90),
+  STEVE_VERTEX(7, -44, 7, 198, 137, 90), STEVE_VERTEX(-7, -44, 7, 198, 137, 90),
+  STEVE_VERTEX(7, 0, -7, 198, 137, 90), STEVE_VERTEX(-7, 0, -7, 198, 137, 90),
+  STEVE_VERTEX(-7, -44, -7, 198, 137, 90), STEVE_VERTEX(7, -44, -7, 198, 137, 90)
+};
+
+static Vtx steve_leg_verts[] = {
+  STEVE_VERTEX(-8, 0, 8, 55, 70, 150), STEVE_VERTEX(8, 0, 8, 55, 70, 150),
+  STEVE_VERTEX(8, -44, 8, 55, 70, 150), STEVE_VERTEX(-8, -44, 8, 55, 70, 150),
+  STEVE_VERTEX(8, 0, -8, 55, 70, 150), STEVE_VERTEX(-8, 0, -8, 55, 70, 150),
+  STEVE_VERTEX(-8, -44, -8, 55, 70, 150), STEVE_VERTEX(8, -44, -8, 55, 70, 150)
+};
+
+/* Two blue eye quads on the local -Z face make it obvious where Steve is
+   looking, even without a character texture. */
+static Vtx steve_eye_verts[] = {
+  STEVE_VERTEX(-11, 8, -17, 55, 125, 210), STEVE_VERTEX(-5, 8, -17, 55, 125, 210),
+  STEVE_VERTEX(-5, 2, -17, 55, 125, 210), STEVE_VERTEX(-11, 2, -17, 55, 125, 210),
+  STEVE_VERTEX(5, 8, -17, 55, 125, 210), STEVE_VERTEX(11, 8, -17, 55, 125, 210),
+  STEVE_VERTEX(11, 2, -17, 55, 125, 210), STEVE_VERTEX(5, 2, -17, 55, 125, 210)
+};
+
+static Gfx steve_box_display_list[] = {
+  gsSP2Triangles(0, 1, 2, 0, 0, 2, 3, 0),
+  gsSP2Triangles(4, 5, 6, 0, 4, 6, 7, 0),
+  gsSP2Triangles(1, 4, 7, 0, 1, 7, 2, 0),
+  gsSP2Triangles(5, 0, 3, 0, 5, 3, 6, 0),
+  gsSP2Triangles(5, 4, 1, 0, 5, 1, 0, 0),
+  gsSP2Triangles(3, 2, 7, 0, 3, 7, 6, 0),
+  gsSPEndDisplayList()
+};
+
+static Gfx steve_eyes_display_list[] = {
+  gsSP2Triangles(0, 1, 2, 0, 0, 2, 3, 0),
+  gsSP2Triangles(4, 5, 6, 0, 4, 6, 7, 0),
+  gsSPEndDisplayList()
+};
+
 static OSTime lt;
 
 static u8 render_x;
@@ -246,6 +317,76 @@ void drawTextured(u8 texture, u8 player_num) {
   }
 }
 
+static void setStevePartTransform(u8 player_num, u8 part, Vector3 local_offset,
+    float pitch, float yaw) {
+  Player *player = &players[player_num];
+  Vector3 offset = rotateY(local_offset, -player->body_yaw);
+
+  guTranslate(&steve_translate[player_num][part], player->position.x + offset.x,
+    player->position.y + offset.y, player->position.z + offset.z);
+  guRotateRPY(&steve_rotate[player_num][part], pitch, yaw, 0);
+}
+
+static void makeStevePose(u8 player_num) {
+  Player *player = &players[player_num];
+  float head_pitch = player->pitch > 180 ? player->pitch - 360 : player->pitch;
+  float swing = sinf(player->walk_time) * 28 * player->walk_swing;
+
+  setStevePartTransform(player_num, STEVE_BODY, (Vector3) {0, -30, 0},
+    0, -player->body_yaw);
+  /* Unlike the torso, this orientation uses the current camera yaw/pitch. */
+  setStevePartTransform(player_num, STEVE_HEAD, (Vector3) {0, 8, 0},
+    head_pitch, -player->yaw);
+  setStevePartTransform(player_num, STEVE_LEFT_ARM, (Vector3) {-25, -8, 0},
+    swing, -player->body_yaw);
+  setStevePartTransform(player_num, STEVE_RIGHT_ARM, (Vector3) {25, -8, 0},
+    -swing, -player->body_yaw);
+  setStevePartTransform(player_num, STEVE_LEFT_LEG, (Vector3) {-10, -52, 0},
+    -swing, -player->body_yaw);
+  setStevePartTransform(player_num, STEVE_RIGHT_LEG, (Vector3) {10, -52, 0},
+    swing, -player->body_yaw);
+}
+
+static void drawStevePart(u8 player_num, u8 part, Vtx *verts, Gfx *part_dl) {
+  gSPMatrix(dlp++, OS_K0_TO_PHYSICAL(&steve_translate[player_num][part]),
+    G_MTX_MODELVIEW | G_MTX_LOAD | G_MTX_NOPUSH);
+  gSPMatrix(dlp++, OS_K0_TO_PHYSICAL(&steve_rotate[player_num][part]),
+    G_MTX_MODELVIEW | G_MTX_MUL | G_MTX_NOPUSH);
+  gSPVertex(dlp++, verts, 8, 0);
+  gSPDisplayList(dlp++, part_dl);
+}
+
+static void drawSteve(u8 player_num) {
+  makeStevePose(player_num);
+
+  drawStevePart(player_num, STEVE_BODY, steve_body_verts, steve_box_display_list);
+  drawStevePart(player_num, STEVE_LEFT_ARM, steve_arm_verts, steve_box_display_list);
+  drawStevePart(player_num, STEVE_RIGHT_ARM, steve_arm_verts, steve_box_display_list);
+  drawStevePart(player_num, STEVE_LEFT_LEG, steve_leg_verts, steve_box_display_list);
+  drawStevePart(player_num, STEVE_RIGHT_LEG, steve_leg_verts, steve_box_display_list);
+  drawStevePart(player_num, STEVE_HEAD, steve_head_verts, steve_box_display_list);
+
+  /* The eyes share the head transform, so their direction matches its pitch
+     and yaw exactly. */
+  drawStevePart(player_num, STEVE_HEAD, steve_eye_verts, steve_eyes_display_list);
+}
+
+static void drawOtherPlayers(u8 viewer_num) {
+  u8 player_num;
+
+  gSPTexture(dlp++, 0, 0, 0, G_TX_RENDERTILE, G_OFF);
+  gDPSetCombineMode(dlp++, G_CC_SHADE, G_CC_SHADE);
+  /* The box model has intentionally minimal geometry; disabling culling
+     keeps its face and eye quads reliable from every camera angle. */
+  gSPClearGeometryMode(dlp++, G_CULL_BACK);
+  for (player_num = 0; player_num < active_player_count; player_num++) {
+    if (player_num != viewer_num && players[player_num].active) {
+      drawSteve(player_num);
+    }
+  }
+  gSPSetGeometryMode(dlp++, G_CULL_BACK);
+}
+
 void drawWorld() {
   u8 i, player_num;
 
@@ -268,6 +409,9 @@ void drawWorld() {
     for (i = 0; i < NUM_TEXTURES; i++) {
       loadTexture(textures[i]->texture);
       drawTextured(i, player_num);
+    }
+    if (active_player_count == 2) {
+      drawOtherPlayers(player_num);
     }
   }
 

@@ -10,6 +10,10 @@ typedef struct {
   Vector3 position;
   float pitch;
   float yaw;
+  /* Transient pose state; it is intentionally not stored in save files. */
+  float body_yaw;
+  float walk_time;
+  float walk_swing;
   float y_velocity;
   int held_block;
   u8 active;

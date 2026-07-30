@@ -14,6 +14,8 @@ and an asset pipeline that does not require Minecraft files.
   **START** on Controller 2.
 * Both players have independent movement, camera control, targeting, block
   selection, placement, and breaking.
+* Each player sees the other as a lightweight Steve-style character, with a
+  walking swing and head/eye direction that follows their camera.
 * Co-op saves both player positions and inventories; older single-player saves
   still load safely.
 * Co-op deliberately uses a narrower view and no more than 24 visible columns
@@ -90,9 +92,10 @@ For the complete art-to-cartridge walkthrough, see
 ## Hardware notes
 
 Mine64 renders the same world mesh for both cameras rather than duplicating the
-world or adding player models. The split-screen viewport shares the original
-framebuffer, and the explicit co-op visibility cap keeps the main per-frame
-display list below its 1,024-command budget.
+world. In co-op it also submits one small, untextured Steve-style model per
+viewport. The split-screen viewport shares the original framebuffer, and the
+explicit co-op visibility cap keeps the main per-frame display list below its
+1,024-command budget.
 
 ## Technical Details
 

@@ -47,6 +47,9 @@ static void spawnPlayer(Player *player, int x, int z) {
 
   player->pitch = 0;
   player->yaw = 0;
+  player->body_yaw = 0;
+  player->walk_time = 0;
+  player->walk_swing = 0;
   player->y_velocity = 0;
   player->held_block = COBBLESTONE;
   player->active = TRUE;
@@ -273,6 +276,18 @@ static void updatePlayer(u8 player_num, float delta) {
     velocity.z -= stick_x * sinf(player->yaw * M_DTOR) + stick_y * cosf(player->yaw * M_DTOR);
     velocity.x *= MOVE_SPEED;
     velocity.z *= MOVE_SPEED;
+  }
+
+  /* The torso follows travel, while the avatar's head continues to follow
+     the camera direction when the player stops. */
+  if (velocity.x != 0 || velocity.z != 0) {
+    player->body_yaw = player->yaw;
+    player->walk_time += delta * 12;
+    player->walk_swing = min(1, player->walk_swing + delta / 8);
+  } else {
+    /* Ease a stopped avatar back to a neutral pose instead of leaving a
+       leg or arm hanging at the last animation frame. */
+    player->walk_swing = max(0, player->walk_swing - delta / 6);
   }
 
   if (cont->button & L_CBUTTONS) {
