@@ -18,17 +18,15 @@ static char *menu_text[] = {
   "World 3"
 };
 
-static char *world_names[] = {
-  "World 1",
-  "World 2",
-  "World 3"
-};
-
 static u8 option_lines[] = {2, 3, 4};
 
 static u8 selected_option = 0;
 /* The renderer uses this to swap the live world behind the selector. */
 static u8 menu_preview_requested = TRUE;
+static char world_name_edit[WORLD_NAME_LENGTH + 1];
+static u8 world_name_cursor;
+static char world_name_characters[] =
+  " ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
 
 static char *info_text[] = {
   "Mine64 v0.3",
@@ -53,6 +51,15 @@ static char *generating_text[] = {
 
 static char *loading_text[] = {
   "Loading world..."
+};
+
+static char *world_naming_text[] = {
+  "Name your world",
+  "Up Down: Letter",
+  "Left Right: Cursor",
+  "A: Clear Letter",
+  "Start: Create",
+  ""
 };
 
 static char *saved_text[] = {
@@ -162,6 +169,27 @@ static void drawMenuTitle() {
   drawString(version, (SCREEN_WD - width) / 2, 51);
 }
 
+static u32 stringWidth(const char *text) {
+  u32 width = 0;
+
+  while (*text) {
+    width += charWidth(*text);
+    text++;
+  }
+  return width;
+}
+
+static u8 worldNameCharacterIndex(char character) {
+  u8 i;
+
+  for (i = 0; world_name_characters[i]; i++) {
+    if (world_name_characters[i] == character) {
+      return i;
+    }
+  }
+  return 0;
+}
+
 void drawString(const char *text, u32 x, u32 y) {
   while (*text) {
     if (*text != ' ') {
@@ -209,6 +237,11 @@ void drawMenu() {
       text = loading_text;
       n_lines = sizeof(loading_text) / sizeof(char *);
       y_start = 18;
+      break;
+    case WORLD_NAMING:
+      text = world_naming_text;
+      n_lines = sizeof(world_naming_text) / sizeof(char *);
+      y_start = 62;
       break;
     case GAME:
       if (save_failed_message > 0) {
@@ -259,6 +292,8 @@ void drawMenu() {
       static char inventory_title[] = "P1 Inventory";
       inventory_title[1] = '1' + inventory_player;
       text_line = inventory_title;
+    } else if (current_screen == WORLD_NAMING && !saving_available && i == 5) {
+      text_line = "No cart save device";
     } else if (current_screen == MENU && i >= option_lines[0]) {
       u8 world = i - option_lines[0];
       text_line = files_present[world] ? world_names[world] : "New World";
@@ -307,6 +342,15 @@ void drawMenu() {
       j++;
     }
   }
+
+  if (current_screen == WORLD_NAMING) {
+    x = (SCREEN_WD - stringWidth(world_name_edit)) / 2;
+    drawString(world_name_edit, x, 130);
+    for (j = 0; j < world_name_cursor; j++) {
+      x += charWidth(world_name_edit[j]);
+    }
+    drawChar('^', x + 1, 140);
+  }
   
   if (current_screen == MENU) {
     option_y = option_lines[selected_option] * 12 + y_start;
@@ -339,11 +383,17 @@ void menuUp() {
 
 void menuAct() {
   if (current_screen == MENU) {
+    /* Do not launch while the selection is still preparing its replacement
+       preview; the currently drawn terrain must always match this slot. */
+    if (menu_preview_requested) {
+      return;
+    }
     game_file_num = selected_option + 1;
     if (files_present[selected_option]) {
-      current_screen = LOADING;
+      /* The selected save is already loaded for its live preview. */
+      current_screen = GAME;
     } else {
-      current_screen = GENERATING;
+      beginWorldNaming();
     }
   } else if (current_screen == INFO) {
     current_screen = MENU;
@@ -360,4 +410,61 @@ void menuPreviewLoaded() {
 
 u8 menuSelectedWorld() {
   return selected_option;
+}
+
+void beginWorldNaming() {
+  u8 i;
+
+  for (i = 0; i < WORLD_NAME_LENGTH; i++) {
+    world_name_edit[i] = ' ';
+  }
+  for (i = 0; i < WORLD_NAME_LENGTH && world_names[selected_option][i]; i++) {
+    world_name_edit[i] = world_names[selected_option][i];
+  }
+  world_name_edit[WORLD_NAME_LENGTH] = 0;
+  world_name_cursor = 0;
+  current_screen = WORLD_NAMING;
+}
+
+void worldNameCursorLeft() {
+  if (world_name_cursor > 0) {
+    world_name_cursor--;
+  }
+}
+
+void worldNameCursorRight() {
+  if (world_name_cursor < WORLD_NAME_LENGTH - 1) {
+    world_name_cursor++;
+  }
+}
+
+void worldNameCharacterPrevious() {
+  u8 index = worldNameCharacterIndex(world_name_edit[world_name_cursor]);
+  u8 count = sizeof(world_name_characters) - 1;
+
+  world_name_edit[world_name_cursor] = index == 0 ?
+    world_name_characters[count - 1] : world_name_characters[index - 1];
+}
+
+void worldNameCharacterNext() {
+  u8 index = worldNameCharacterIndex(world_name_edit[world_name_cursor]);
+  u8 count = sizeof(world_name_characters) - 1;
+
+  world_name_edit[world_name_cursor] = world_name_characters[
+    (index + 1) % count];
+}
+
+void worldNameErase() {
+  world_name_edit[world_name_cursor] = ' ';
+}
+
+void confirmWorldName() {
+  setWorldName(selected_option, world_name_edit);
+  game_file_num = selected_option + 1;
+  /* The name belongs to the terrain currently orbiting behind this dialog.
+     Saving here makes that candidate a real slot without regenerating it. */
+  if (saving_available && !saveGame()) {
+    save_failed_message = 120;
+  }
+  current_screen = GAME;
 }

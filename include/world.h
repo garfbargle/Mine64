@@ -3,9 +3,9 @@
 
 #include <nusys.h>
 
-#define MAX_X 96
+#define MAX_X 128
 #define MAX_Y 32
-#define MAX_Z 96
+#define MAX_Z 128
 
 #define CHUNK_SIZE 8
 

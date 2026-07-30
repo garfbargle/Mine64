@@ -421,7 +421,7 @@ void makeColumnDL(u8 cx, u8 cz, u8 texture) {
 
   for (cy = 0; cy < CHUNKS_Y; cy++) {
     chunk = cx * CHUNKS_Y * CHUNKS_Z + cy * CHUNKS_Z + cz;
-    c_quads = &chunk_quads[chunk];
+    c_quads = &column_quads[cy];
 
     for (i = 0; i < textures[texture]->n_faces; i++) {
       if (faces[i].sides) {
@@ -438,8 +438,17 @@ void makeColumnDL(u8 cx, u8 cz, u8 texture) {
   gSPEndDisplayList(column_dlp++);
 }
 
+static void makeColumnDisplayLists(u8 cx, u8 cz) {
+  u8 texture;
+
+  makeColumnGeometry(cx, cz);
+  for (texture = 0; texture < NUM_TEXTURES; texture++) {
+    makeColumnDL(cx, cz, texture);
+  }
+}
+
 void makeWorldDisplayLists() {
-  u8 cx, cz, i;
+  u8 cx, cz;
 
   /* This is a complete mesh rebuild, not an incremental block edit.  World
      previews can rebuild several slots back-to-back, so start from the
@@ -447,17 +456,14 @@ void makeWorldDisplayLists() {
   nuGfxTaskAllEndWait();
   column_dlp = column_display_list;
   column_display_list_full = FALSE;
-  for (i = 0; i < NUM_TEXTURES; i++) {
-    for (cx = 0; cx < CHUNKS_X; cx++) {
-      for (cz = 0; cz < CHUNKS_Z; cz++) {
-        makeColumnDL(cx, cz, i);
-      }
+  for (cx = 0; cx < CHUNKS_X; cx++) {
+    for (cz = 0; cz < CHUNKS_Z; cz++) {
+      makeColumnDisplayLists(cx, cz);
     }
   }
 }
 
 void makeDisplayListsAt(u8 x, u8 z) {
-  u8 i;
   u8 cx = x / CHUNK_SIZE;
   u8 cz = z / CHUNK_SIZE;
 
@@ -472,14 +478,12 @@ void makeDisplayListsAt(u8 x, u8 z) {
     column_display_list_full = FALSE;
     makeWorldDisplayLists();
   } else {
-    for (i = 0; i < NUM_TEXTURES; i++) {
-      makeColumnDL(cx, cz, i);
-      if (x % CHUNK_SIZE == 0 && cx > 0) {
-        makeColumnDL(cx - 1, cz, i);
-      }
-      if (z % CHUNK_SIZE == 0 && cz > 0) {
-        makeColumnDL(cx, cz - 1, i);
-      }
+    makeColumnDisplayLists(cx, cz);
+    if (x % CHUNK_SIZE == 0 && cx > 0) {
+      makeColumnDisplayLists(cx - 1, cz);
+    }
+    if (z % CHUNK_SIZE == 0 && cz > 0) {
+      makeColumnDisplayLists(cx, cz - 1);
     }
   }
 }
@@ -744,7 +748,8 @@ static void drawFallingTrees() {
 
 void drawWorld() {
   u8 i, player_num;
-  u8 cinematic = current_screen == LOADING_PREVIEW || current_screen == MENU;
+  u8 cinematic = current_screen == LOADING_PREVIEW || current_screen == MENU ||
+    current_screen == WORLD_NAMING;
   u8 viewer_count = cinematic ? 1 : active_player_count;
 
   dlp = &display_lists[dl_no][0];
@@ -1253,11 +1258,12 @@ void drawHUD() {
 
   if (current_screen != GAME && current_screen != INVENTORY &&
       current_screen != LOADING_PREVIEW &&
-      !(current_screen == MENU && !menuPreviewRequested())) {
+      !((current_screen == MENU || current_screen == WORLD_NAMING) &&
+        !menuPreviewRequested())) {
     clearBuffers(GPACK_RGBA5551(0, 0, 0, 1));
   } else if (current_screen == LOADING_PREVIEW) {
     drawLoadingOverlay();
-  } else if (current_screen == MENU) {
+  } else if (current_screen == MENU || current_screen == WORLD_NAMING) {
     /* The carousel has its own text overlay; never let the inventory panel
        fall through on top of its world preview. */
   } else if (current_screen == GAME) {
@@ -1317,7 +1323,8 @@ void draw() {
   } else if (current_screen == LOADING_PREVIEW) {
     updateLoadingCamera();
     drawWorld();
-  } else if (current_screen == MENU && !menuPreviewRequested()) {
+  } else if ((current_screen == MENU || current_screen == WORLD_NAMING) &&
+      !menuPreviewRequested()) {
     updateLoadingCamera();
     drawWorld();
   }

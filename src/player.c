@@ -601,7 +601,6 @@ static void placeBlock(u8 player_num, u8 x, u8 y, u8 z) {
   if (blockUsesInventory(player->held_block)) {
     held_stack->count--;
   }
-  regenerateBlock(x, y, z);
   makeDisplayListsAt(x, z);
   playSound(SOUND_PLACE);
 }
@@ -639,7 +638,6 @@ static u8 breakBlock(u8 x, u8 y, u8 z, u8 tool) {
   }
   blocks[x * MAX_Y * MAX_Z + y * MAX_Z + z] = AIR;
   treeBlockDestroyed(x, y, z);
-  regenerateBlock(x, y, z);
   makeDisplayListsAt(x, z);
   playSound(SOUND_BREAK);
   return TRUE;
@@ -1055,6 +1053,25 @@ void updatePlayers() {
     player->inventory_cursor = row * INVENTORY_COLUMNS + column;
     if (row == INVENTORY_STORAGE_ROWS) {
       selectHotbarSlot(player, column);
+    }
+    return;
+  }
+
+  if (current_screen == WORLD_NAMING) {
+    /* The world-name editor uses edge-triggered D-pad/C-button input so a
+       single tap always changes exactly one character or cursor position. */
+    if (cont_data[0].trigger & START_BUTTON) {
+      confirmWorldName();
+    } else if (cont_data[0].trigger & (L_JPAD | L_CBUTTONS)) {
+      worldNameCursorLeft();
+    } else if (cont_data[0].trigger & (R_JPAD | R_CBUTTONS)) {
+      worldNameCursorRight();
+    } else if (cont_data[0].trigger & (U_JPAD | U_CBUTTONS)) {
+      worldNameCharacterNext();
+    } else if (cont_data[0].trigger & (D_JPAD | D_CBUTTONS)) {
+      worldNameCharacterPrevious();
+    } else if (cont_data[0].trigger & (A_BUTTON | B_BUTTON)) {
+      worldNameErase();
     }
     return;
   }

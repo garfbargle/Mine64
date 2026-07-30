@@ -22,6 +22,12 @@ void callbackGfx(int pendingGfx) {
     initDroppedItems();
     initGeometry();
     makeWorldDisplayLists();
+    /* A named world becomes a real slot immediately when the flashcart
+       filesystem is available; RAM-only uploads still run, but cannot retain
+       worlds after a reset. */
+    if (saving_available && !saveGame()) {
+      save_failed_message = 120;
+    }
 
     beginLoadingPreview();
     current_screen = LOADING_PREVIEW;

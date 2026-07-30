@@ -10,6 +10,7 @@ enum Screen {
   LOADING,
   /* The world data is ready; keep it on screen briefly for the flyover. */
   LOADING_PREVIEW,
+  WORLD_NAMING,
   GAME,
   INVENTORY
 };
@@ -31,5 +32,12 @@ void menuAct();
 u8 menuPreviewRequested();
 void menuPreviewLoaded();
 u8 menuSelectedWorld();
+void beginWorldNaming();
+void worldNameCursorLeft();
+void worldNameCursorRight();
+void worldNameCharacterPrevious();
+void worldNameCharacterNext();
+void worldNameErase();
+void confirmWorldName();
 
 #endif /* MENU_H */

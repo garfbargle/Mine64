@@ -92,8 +92,9 @@ recommended deployment path:
 The menu path is `/Games/Mine64.n64`. The prior ROM is preserved as
 `/Games/Mine64_original.64`. The former 64x64-world saves
 (`mine64/world_*.m64`) are left alone. The
-larger-world build uses `mine64/world_large_*.m64`, so its saves cannot be
-misread with the old packed-world length. Saves are stored on the
+96x96-world saves (`mine64/world_large_*.m64`) are also preserved. This
+128x128-world build uses `mine64/world_128_*.m64`, so saves cannot be
+misread with a different packed-world length. Saves are stored on the
 cartridge SD card when libcart detects a supported flash cartridge.
 
 For development-only USB streaming, with the SummerCart64 connected, use:
@@ -253,15 +254,18 @@ fixed hardware budget, including third-person avatars and pickups. All
 per-frame display lists and referenced matrices are double-buffered so their
 memory stays immutable until the RSP finishes.
 
-The linked release program currently occupies about 3.3 MiB including its world,
+The linked release program currently occupies about 2.4 MiB including its world,
 geometry cache, NuSystem task buffers, and doubled render state. It remains
 within the stock console's 4 MiB RDRAM; an Expansion Pak is not required.
 
 ## Technical Details
 
-* The world consists of a 12x12 grid of "columns", each split into 4 vertical chunks of 8x8x8 blocks each (a 96x32x96-block world).
+* The world consists of a 16x16 grid of "columns", each split into 4 vertical chunks of 8x8x8 blocks each (a 128x32x128-block world).
 * For each chunk a greedy scanning algorithm merges adjacent block faces with the same texture,
 to reduce the number of quads that need to be rendered.
+* Greedy geometry is held only for the four chunks in the column currently
+being compiled. The resulting display lists persist, while the scratch mesh is
+reused for the next column and for edited columns.
 * `quads.h` contains the vertex data for all possible shapes and orientations of merged quad.
 These quads are translated into place for rendering.
 * Display lists for each column are recomputed every time a block changes in the column.

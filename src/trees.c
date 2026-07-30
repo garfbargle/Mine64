@@ -278,16 +278,16 @@ static u8 treeHasLogAbove(TreeRecord *tree, u8 part) {
 static void removeTreeBlocks(TreeRecord *tree) {
   u8 changed_columns[CHUNKS_X * CHUNKS_Z];
   u8 part, bit, cx, cz;
+  u16 column;
 
-  for (cx = 0; cx < CHUNKS_X * CHUNKS_Z; cx++) {
-    changed_columns[cx] = FALSE;
+  for (column = 0; column < CHUNKS_X * CHUNKS_Z; column++) {
+    changed_columns[column] = FALSE;
   }
 
   for (part = 0; part < TREE_TRUNK_PARTS; part++) {
     if (tree->trunk_mask & (1 << part)) {
       u8 y = tree->base_y + 1 + part;
       blocks[blockIndex(tree->x, y, tree->z)] = AIR;
-      regenerateBlock(tree->x, y, tree->z);
       changed_columns[(tree->x / CHUNK_SIZE) * CHUNKS_Z + tree->z / CHUNK_SIZE] = TRUE;
     }
   }
@@ -300,7 +300,6 @@ static void removeTreeBlocks(TreeRecord *tree) {
       u8 y = tree->canopy_y + local_y;
       u8 z = tree->z + local_z - 2;
       blocks[blockIndex(x, y, z)] = AIR;
-      regenerateBlock(x, y, z);
       changed_columns[(x / CHUNK_SIZE) * CHUNKS_Z + z / CHUNK_SIZE] = TRUE;
     }
   }

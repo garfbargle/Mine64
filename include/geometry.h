@@ -43,9 +43,10 @@ typedef struct {
   DualQuadList z_quads[CHUNK_SIZE];
 } ChunkQuads;
 
-extern ChunkQuads chunk_quads[NUM_CHUNKS];
-
+/* Geometry is generated into one reusable vertical-column scratch buffer
+   immediately before that column's display lists are compiled. */
+extern ChunkQuads column_quads[CHUNKS_Y];
 void initGeometry();
-void regenerateBlock(u8 x, u8 y, u8 z);
+void makeColumnGeometry(u8 cx, u8 cz);
 
 #endif /* GEOMETRY_H */

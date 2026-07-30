@@ -213,27 +213,27 @@ u32 game_file_num;
 char world_names[3][WORLD_NAME_LENGTH + 1];
 
 static char *file_names[] = {
-  "mine64/world_large_1.m64",
-  "mine64/world_large_2.m64",
-  "mine64/world_large_3.m64"
+  "mine64/world_128_1.m64",
+  "mine64/world_128_2.m64",
+  "mine64/world_128_3.m64"
 };
 
 static char *temporary_file_names[] = {
-  "mine64/temp_large_1.tmp",
-  "mine64/temp_large_2.tmp",
-  "mine64/temp_large_3.tmp"
+  "mine64/temp_128_1.tmp",
+  "mine64/temp_128_2.tmp",
+  "mine64/temp_128_3.tmp"
 };
 
 static char *backup_file_names[] = {
-  "mine64/world_large_1.bak",
-  "mine64/world_large_2.bak",
-  "mine64/world_large_3.bak"
+  "mine64/world_128_1.bak",
+  "mine64/world_128_2.bak",
+  "mine64/world_128_3.bak"
 };
 
 static char *name_file_names[] = {
-  "mine64/world_large_1.name",
-  "mine64/world_large_2.name",
-  "mine64/world_large_3.name"
+  "mine64/world_128_1.name",
+  "mine64/world_128_2.name",
+  "mine64/world_128_3.name"
 };
 
 static void setDefaultWorldName(u8 slot) {

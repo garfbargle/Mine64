@@ -6,7 +6,10 @@
 #define NOT_VISIBLE 1
 #define OBSTRUCTED 2
 
-ChunkQuads chunk_quads[NUM_CHUNKS];
+/* The display lists retain their final quad commands, so retaining greedy
+   meshes for the entire world only wastes RDRAM.  One column holds the four
+   vertical chunks needed while its lists are compiled. */
+ChunkQuads column_quads[CHUNKS_Y];
 
 typedef struct {
   u8 lower;
@@ -268,54 +271,16 @@ void makeChunkAxisQuads(DualQuadList *axis_quads, u8 cr, u8 cs, u8 ct, u8 max_r,
 }
 
 void initGeometry() {
-  u8 cx, cy, cz;
+  /* Columns are generated just-in-time by makeColumnGeometry(). */
+}
+
+void makeColumnGeometry(u8 cx, u8 cz) {
+  u8 cy;
   ChunkQuads *cq;
-  for (cx = 0; cx < CHUNKS_X; cx++) {
-    for (cy = 0; cy < CHUNKS_Y; cy++) {
-      for (cz = 0; cz < CHUNKS_Z; cz++) {
-        cq = &chunk_quads[cx * CHUNKS_Y * CHUNKS_Z + cy * CHUNKS_Z + cz];
-
-        makeChunkAxisQuads(cq->x_quads, cx, cz, cy, MAX_X - 1, XZY, TRUE);
-        makeChunkAxisQuads(cq->y_quads, cy, cx, cz, MAX_Y,     YXZ, FALSE);
-        makeChunkAxisQuads(cq->z_quads, cz, cx, cy, MAX_Z - 1, ZXY, TRUE);
-      }
-    }
-  }
-}
-
-void regeneratePlanes(u8 x, u8 y, u8 z, u8 regen_x, u8 regen_y, u8 regen_z) {
-  u8 cx = x / CHUNK_SIZE;
-  u8 cy = y / CHUNK_SIZE;
-  u8 cz = z / CHUNK_SIZE;
-
-  u8 bx = x % CHUNK_SIZE;
-  u8 by = y % CHUNK_SIZE;
-  u8 bz = z % CHUNK_SIZE;
-
-  ChunkQuads *cq = &chunk_quads[cx * CHUNKS_Y * CHUNKS_Z + cy * CHUNKS_Z + cz];
-
-  if (regen_x) {
-    makeChunkPlaneQuads(cq->x_quads, cx, cz, cy, bx, MAX_X - 1, XZY, TRUE);
-  }
-
-  if (regen_y) {
-    makeChunkPlaneQuads(cq->y_quads, cy, cx, cz, by, MAX_Y,     YXZ, FALSE);
-  }
-
-  if (regen_z) {
-    makeChunkPlaneQuads(cq->z_quads, cz, cx, cy, bz, MAX_Z - 1, ZXY, TRUE);
-  }
-}
-
-void regenerateBlock(u8 x, u8 y, u8 z) {
-  regeneratePlanes(x, y, z, x < MAX_X-1, y < MAX_Y, z < MAX_Z-1);
-  if (x > 0) {
-    regeneratePlanes(x - 1, y, z, TRUE, FALSE, FALSE);
-  }
-  if (y > 0) {
-    regeneratePlanes(x, y - 1, z, FALSE, TRUE, FALSE);
-  }
-  if (z > 0) {
-    regeneratePlanes(x, y, z - 1, FALSE, FALSE, TRUE);
+  for (cy = 0; cy < CHUNKS_Y; cy++) {
+    cq = &column_quads[cy];
+    makeChunkAxisQuads(cq->x_quads, cx, cz, cy, MAX_X - 1, XZY, TRUE);
+    makeChunkAxisQuads(cq->y_quads, cy, cx, cz, MAX_Y,     YXZ, FALSE);
+    makeChunkAxisQuads(cq->z_quads, cz, cx, cy, MAX_Z - 1, ZXY, TRUE);
   }
 }
