@@ -214,6 +214,44 @@ static u8 worldNameKeyColumns(u8 row) {
   return columns;
 }
 
+static void drawMenuButton(u32 x, u32 y, u8 red, u8 green, u8 blue,
+    u8 light_red, u8 light_green, u8 light_blue) {
+  /* Pixel circles read more like N64 controller buttons than a modern round
+     rectangle, while still being crisp on the console's low resolution. */
+  setMenuFillColor(20, 22, 18);
+  gDPFillRectangle(dlp++, x - 4, y - 9, x + 4, y + 9);
+  gDPFillRectangle(dlp++, x - 7, y - 6, x + 7, y + 6);
+  gDPFillRectangle(dlp++, x - 9, y - 3, x + 9, y + 3);
+  setMenuFillColor(red, green, blue);
+  gDPFillRectangle(dlp++, x - 3, y - 7, x + 3, y + 7);
+  gDPFillRectangle(dlp++, x - 6, y - 4, x + 6, y + 4);
+  gDPFillRectangle(dlp++, x - 7, y - 2, x + 7, y + 2);
+  setMenuFillColor(light_red, light_green, light_blue);
+  gDPFillRectangle(dlp++, x - 3, y - 6, x + 3, y - 4);
+  gDPFillRectangle(dlp++, x - 5, y - 3, x - 3, y - 2);
+}
+
+static void drawMenuDPad(u32 x, u32 y) {
+  setMenuFillColor(20, 22, 18);
+  gDPFillRectangle(dlp++, x - 4, y - 10, x + 4, y + 10);
+  gDPFillRectangle(dlp++, x - 10, y - 4, x + 10, y + 4);
+  setMenuFillColor(101, 105, 97);
+  gDPFillRectangle(dlp++, x - 3, y - 8, x + 3, y + 8);
+  gDPFillRectangle(dlp++, x - 8, y - 3, x + 8, y + 3);
+  setMenuFillColor(160, 165, 150);
+  gDPFillRectangle(dlp++, x - 2, y - 7, x + 2, y - 5);
+  gDPFillRectangle(dlp++, x - 7, y - 2, x - 5, y + 2);
+}
+
+static void drawStartButton(u32 x, u32 y) {
+  setMenuFillColor(20, 22, 18);
+  gDPFillRectangle(dlp++, x - 28, y - 7, x + 28, y + 7);
+  setMenuFillColor(100, 105, 96);
+  gDPFillRectangle(dlp++, x - 26, y - 5, x + 26, y + 5);
+  setMenuFillColor(151, 156, 141);
+  gDPFillRectangle(dlp++, x - 24, y - 4, x + 24, y - 2);
+}
+
 static void drawWorldNaming() {
   u8 i;
   u8 row;
@@ -222,24 +260,39 @@ static void drawWorldNaming() {
   u32 key_x = 75;
   u32 key_y = 116;
 
-  /* This is intentionally a solid, arcade-like card: it stays legible over
-     every terrain preview while letting the spinning world remain visible. */
+  /* Cobblestone, wood, and block keys mirror the game's own materials while
+     the compact card still leaves the terrain preview in view. */
   gDPPipeSync(dlp++);
   gDPSetCycleType(dlp++, G_CYC_FILL);
   gDPSetRenderMode(dlp++, G_RM_NOOP, G_RM_NOOP2);
-  setMenuFillColor(8, 19, 33);
+  setMenuFillColor(50, 54, 47);
   gDPFillRectangle(dlp++, 29, 26, 290, 214);
-  setMenuFillColor(72, 168, 190);
+  setMenuFillColor(143, 148, 133);
   gDPFillRectangle(dlp++, 29, 26, 290, 28);
-  gDPFillRectangle(dlp++, 29, 212, 290, 214);
   gDPFillRectangle(dlp++, 29, 26, 31, 214);
+  setMenuFillColor(24, 27, 23);
+  gDPFillRectangle(dlp++, 29, 212, 290, 214);
   gDPFillRectangle(dlp++, 288, 26, 290, 214);
+  /* Cobblestone seams and chips in the exposed border. */
+  setMenuFillColor(36, 39, 34);
+  gDPFillRectangle(dlp++, 32, 51, 45, 53);
+  gDPFillRectangle(dlp++, 32, 116, 45, 118);
+  gDPFillRectangle(dlp++, 32, 180, 45, 182);
+  gDPFillRectangle(dlp++, 274, 67, 287, 69);
+  gDPFillRectangle(dlp++, 274, 132, 287, 134);
+  gDPFillRectangle(dlp++, 274, 195, 287, 197);
 
-  setMenuFillColor(16, 43, 62);
+  setMenuFillColor(77, 48, 26);
   gDPFillRectangle(dlp++, 47, 67, 272, 98);
-  setMenuFillColor(104, 204, 210);
+  setMenuFillColor(181, 133, 73);
   gDPFillRectangle(dlp++, 47, 67, 272, 68);
+  gDPFillRectangle(dlp++, 47, 67, 49, 98);
+  setMenuFillColor(42, 27, 17);
   gDPFillRectangle(dlp++, 47, 97, 272, 98);
+  gDPFillRectangle(dlp++, 270, 67, 272, 98);
+  setMenuFillColor(109, 69, 35);
+  gDPFillRectangle(dlp++, 52, 70, 70, 72);
+  gDPFillRectangle(dlp++, 235, 93, 260, 95);
 
   for (i = 0; i < WORLD_NAME_LENGTH; i++) {
     u32 x = slot_x + i * 17;
@@ -249,11 +302,11 @@ static void drawWorldNaming() {
       (world_name_cursor == WORLD_NAME_LENGTH &&
         i == WORLD_NAME_LENGTH - 1);
 
-    setMenuFillColor(selected ? 230 : 34, selected ? 212 : 79,
-      selected ? 90 : 102);
+    setMenuFillColor(selected ? 230 : 42, selected ? 204 : 45,
+      selected ? 80 : 38);
     gDPFillRectangle(dlp++, x, 76, x + 14, 92);
-    setMenuFillColor(selected ? 82 : 12, selected ? 72 : 29,
-      selected ? 21 : 44);
+    setMenuFillColor(selected ? 91 : 20, selected ? 72 : 23,
+      selected ? 17 : 17);
     gDPFillRectangle(dlp++, x + 2, 78, x + 12, 90);
   }
 
@@ -264,33 +317,49 @@ static void drawWorldNaming() {
       u8 selected = row == world_name_key_row &&
         column == world_name_key_column;
 
-      setMenuFillColor(selected ? 102 : 31, selected ? 214 : 91,
-        selected ? 192 : 122);
+      setMenuFillColor(selected ? 216 : 49, selected ? 191 : 53,
+        selected ? 77 : 47);
       gDPFillRectangle(dlp++, x, y, x + 15, y + 13);
-      setMenuFillColor(selected ? 20 : 10, selected ? 53 : 25,
-        selected ? 48 : 37);
+      setMenuFillColor(selected ? 93 : 102, selected ? 78 : 106,
+        selected ? 28 : 96);
       gDPFillRectangle(dlp++, x + 2, y + 2, x + 13, y + 11);
+      setMenuFillColor(selected ? 143 : 154, selected ? 122 : 159,
+        selected ? 43 : 145);
+      gDPFillRectangle(dlp++, x + 3, y + 3, x + 12, y + 4);
     }
   }
+  drawMenuButton(63, 188, 54, 145, 66, 105, 203, 95);
+  drawMenuButton(167, 188, 175, 48, 41, 232, 87, 71);
+  drawMenuDPad(48, 204);
+  drawMenuButton(120, 204, 183, 142, 43, 235, 196, 79);
+  drawMenuButton(140, 204, 183, 142, 43, 235, 196, 79);
+  drawStartButton(244, 204);
   gDPPipeSync(dlp++);
 
   beginText();
-  drawCenteredString("NAME WORLD", 39);
+  drawCenteredString("CREATE WORLD", 39);
   drawCenteredString("YOUR WORLD NAME", 57);
   for (i = 0; i < WORLD_NAME_LENGTH; i++) {
     if (world_name_edit[i] != ' ') {
       drawChar(world_name_edit[i], slot_x + i * 17 + 4, 80);
     }
   }
-  drawCenteredString("PICK A LETTER", 103);
+  drawCenteredString("SELECT A BLOCK LETTER", 103);
   for (row = 0; row < sizeof(world_name_keyboard) / sizeof(char *); row++) {
     for (column = 0; world_name_keyboard[row][column]; column++) {
       drawChar(world_name_keyboard[row][column], key_x + column * 17 + 4,
         key_y + row * 16 + 3);
     }
   }
-  drawCenteredString("A: ADD   B: DELETE", 184);
-  drawCenteredString("C LR: CURSOR   START: CREATE", 197);
+  drawChar('B', 60, 184);
+  drawString("DELETE", 77, 184);
+  drawChar('A', 164, 184);
+  drawString("ADD", 181, 184);
+  drawString("PICK", 65, 200);
+  drawChar('C', 117, 200);
+  drawChar('C', 137, 200);
+  drawString("CURSOR", 151, 200);
+  drawString("START", 227, 200);
   if (!saving_available) {
     drawCenteredString("NO CART SAVE DEVICE", 205);
   }

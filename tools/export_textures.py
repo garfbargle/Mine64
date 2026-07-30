@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from generate_assets import PALETTES, tile
-from import_textures import decode_png, median_cut, usable_tile_pixels
+from import_textures import TILE_NAMES, decode_png, median_cut, usable_tile_pixels
 
 TILE_SIZE = 16
 COLUMNS = 4
@@ -45,7 +45,9 @@ def write_png(path, width, height, pixels):
 
 
 def main():
-    names = list(PALETTES)
+    # The game can generate non-terrain art (such as celestial sprites) too,
+    # but this exporter represents the 4x3 block-texture atlas only.
+    names = list(TILE_NAMES)
     rows = (len(names) + COLUMNS - 1) // COLUMNS
     width = COLUMNS * TILE_SIZE
     height = rows * TILE_SIZE

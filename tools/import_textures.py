@@ -18,7 +18,7 @@ from zlib import decompress
 ROOT = Path(__file__).resolve().parents[1]
 path.insert(0, str(ROOT))
 
-from generate_assets import PALETTES, tile
+from generate_assets import PALETTES, rgba5551 as generated_rgba5551, tile
 
 OUTPUT = ROOT / "assets" / "texture_data.h"
 TILE_SIZE = 16
@@ -205,6 +205,22 @@ def main():
             name,
             ", ".join("0x%08X" % word for word in words),
             ", ".join("0x%04X" % word for word in palette),
+        ))
+    # The atlas is deliberately just the twelve terrain textures. Preserve
+    # generated UI/sky textures (sun and moon phases) that share this compact
+    # C header without requiring artists to add them to the 4x3 source image.
+    for name, palette in PALETTES.items():
+        if name in TILE_NAMES:
+            continue
+        words = pack_nibbles([tile(name, x, y)
+                              for y in range(TILE_SIZE)
+                              for x in range(TILE_SIZE)])
+        palette_words = [generated_rgba5551(colour) for colour in palette] + \
+            [0] * (16 - len(palette))
+        chunks.append("\nTexture %s_texture = { { %s }, { %s } };\n" % (
+            name,
+            ", ".join("0x%08X" % word for word in words),
+            ", ".join("0x%04X" % word for word in palette_words),
         ))
     OUTPUT.parent.mkdir(exist_ok=True)
     OUTPUT.write_text("".join(chunks))
