@@ -225,6 +225,106 @@ void appendAll(Scanline *scan, QuadList *quads) {
   }
 }
 
+static u8 splitQuadAt(QuadList *list, u8 index, u8 cut, u8 vertical,
+    u8 total_quads) {
+  Quad original = list->quads[index];
+  Quad *first = &list->quads[index];
+  u8 right = original.bs + original.width + 1;
+  u8 upper = original.bt + original.height + 1;
+
+  /* A plane contains at most one exposed face per 8x8 cell, so a fully
+     refined pair of front/back lists still fits the shared 64-quad buffer. */
+  if (list->n >= CHUNK_SIZE * CHUNK_SIZE ||
+      total_quads >= CHUNK_SIZE * CHUNK_SIZE) {
+    return FALSE;
+  }
+
+  if (vertical) {
+    if (cut <= original.bs || cut >= right) {
+      return FALSE;
+    }
+    first->width = cut - original.bs - 1;
+    appendQuad(list, cut, original.bt, right - cut,
+      original.height + 1, original.block);
+  } else {
+    if (cut <= original.bt || cut >= upper) {
+      return FALSE;
+    }
+    first->height = cut - original.bt - 1;
+    appendQuad(list, original.bs, cut, original.width + 1,
+      upper - cut, original.block);
+  }
+  return TRUE;
+}
+
+static u8 splitOneTjunction(QuadList *front, QuadList *back) {
+  QuadList *lists[2] = {front, back};
+  u8 ai, al, bi, bl;
+
+  for (al = 0; al < 2; al++) {
+    for (ai = 0; ai < lists[al]->n; ai++) {
+      Quad a = lists[al]->quads[ai];
+      u8 a_left = a.bs;
+      u8 a_right = a.bs + a.width + 1;
+      u8 a_lower = a.bt;
+      u8 a_upper = a.bt + a.height + 1;
+
+      for (bl = 0; bl < 2; bl++) {
+        for (bi = 0; bi < lists[bl]->n; bi++) {
+          Quad b;
+          u8 b_left, b_right, b_lower, b_upper;
+
+          if (al == bl && ai == bi) {
+            continue;
+          }
+          b = lists[bl]->quads[bi];
+          b_left = b.bs;
+          b_right = b.bs + b.width + 1;
+          b_lower = b.bt;
+          b_upper = b.bt + b.height + 1;
+
+          /* If a neighbouring rectangle ends midway along A's horizontal
+             edge, split A vertically so both primitives use that endpoint. */
+          if (a_lower == b_upper || a_upper == b_lower) {
+            if (b_left > a_left && b_left < a_right &&
+                splitQuadAt(lists[al], ai, b_left, TRUE,
+                  front->n + back->n)) {
+              return TRUE;
+            }
+            if (b_right > a_left && b_right < a_right &&
+                splitQuadAt(lists[al], ai, b_right, TRUE,
+                  front->n + back->n)) {
+              return TRUE;
+            }
+          }
+
+          /* Do the corresponding refinement along vertical shared edges. */
+          if (a_left == b_right || a_right == b_left) {
+            if (b_lower > a_lower && b_lower < a_upper &&
+                splitQuadAt(lists[al], ai, b_lower, FALSE,
+                  front->n + back->n)) {
+              return TRUE;
+            }
+            if (b_upper > a_lower && b_upper < a_upper &&
+                splitQuadAt(lists[al], ai, b_upper, FALSE,
+                  front->n + back->n)) {
+              return TRUE;
+            }
+          }
+        }
+      }
+    }
+  }
+  return FALSE;
+}
+
+static void splitTjunctions(QuadList *front, QuadList *back) {
+  /* Splitting can introduce a new endpoint on the opposite edge, so restart
+     the search after each refinement until the whole plane is conforming. */
+  while (splitOneTjunction(front, back)) {
+  }
+}
+
 void makeChunkPlaneQuads(DualQuadList *axis_quads, u8 cr, u8 cs, u8 ct, u8 br, u8 max_r, u8 axes, u8 split_grass) {
   u8 bs, r, s, i;
 
@@ -254,6 +354,7 @@ void makeChunkPlaneQuads(DualQuadList *axis_quads, u8 cr, u8 cs, u8 ct, u8 br, u
 
     appendAll(&scan1, &quads1);
     appendAll(&scan2, &quads2);
+    splitTjunctions(&quads1, &quads2);
 
     both_quads->n_front = quads1.n;
     both_quads->n_back = quads2.n;

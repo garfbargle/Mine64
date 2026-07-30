@@ -1219,7 +1219,14 @@ void drawWorld() {
     }
     gSPDisplayList(dlp++, draw_setup_display_list);
     loadCameraMatrices(player_num);
-    if (!cinematic) {
+    if (cinematic) {
+      /* The loading/menu orbit makes subpixel terrain edges move continuously.
+         Edge AA is worth its framebuffer-read cost for this single cinematic
+         viewport and softens any remaining cross-plane or chunk silhouette
+         mismatch after the greedy mesh's T-junction refinement. */
+      gDPSetRenderMode(dlp++, G_RM_AA_ZB_OPA_SURF,
+        G_RM_AA_ZB_OPA_SURF2);
+    } else {
       drawCelestialBodies(player_num);
       /* Celestial sprites use AA texture-edge mode.  Terrain must explicitly
        * restore its opaque no-read render mode afterwards. */
