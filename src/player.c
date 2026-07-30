@@ -5,6 +5,7 @@
 #include "blocks.h"
 #include "graphics.h"
 #include "geometry.h"
+#include "items.h"
 #include "storage.h"
 
 #define START_X 32
@@ -15,7 +16,6 @@
 #define JUMP_SPEED (BLOCK_SIZE / 4.5)
 #define TERMINAL_SPEED (BLOCK_SIZE / 2)
 #define GRAVITY (BLOCK_SIZE / 40)
-
 #define BOX_RADIUS 0.35
 #define BOX_HEIGHT 1.8
 #define EYE_HEIGHT 1.5
@@ -42,6 +42,53 @@ static u16 act_held = FALSE;
 static u8 block_dec_held[MAX_PLAYERS];
 static u8 block_inc_held[MAX_PLAYERS];
 
+void resetPlayerInventory(Player *player) {
+  u8 slot;
+  int selected_slot = player->held_block - FIRST_PLACEABLE_BLOCK;
+
+  if (selected_slot < 0 || selected_slot >= INVENTORY_COLUMNS) {
+    selected_slot = COBBLESTONE - FIRST_PLACEABLE_BLOCK;
+  }
+
+  for (slot = 0; slot < INVENTORY_SIZE; slot++) {
+    player->inventory[slot].item = AIR;
+    player->inventory[slot].count = 0;
+  }
+  for (slot = 0; slot < INVENTORY_COLUMNS; slot++) {
+    player->inventory[INVENTORY_HOTBAR_START + slot].item = slot + FIRST_PLACEABLE_BLOCK;
+    /* Logs are gathered from trees; the other current block types retain
+       their creative stacks until their own gathering rules are added. */
+    player->inventory[INVENTORY_HOTBAR_START + slot].count =
+      slot + FIRST_PLACEABLE_BLOCK == WOOD ? 0 : MAX_ITEM_STACK;
+  }
+
+  player->selected_hotbar_slot = selected_slot;
+  player->inventory_cursor = INVENTORY_HOTBAR_START + selected_slot;
+  player->held_block = player->inventory[player->inventory_cursor].item;
+}
+
+static void selectHotbarSlot(Player *player, u8 slot) {
+  player->selected_hotbar_slot = slot;
+  player->inventory_cursor = INVENTORY_HOTBAR_START + slot;
+  player->held_block = player->inventory[player->inventory_cursor].item;
+}
+
+u8 addItemToInventory(Player *player, u8 item, u8 count) {
+  ItemStack *stack;
+  u8 added;
+
+  /* Wood has one intentionally limited stack.  This is the stack shown in
+     the hotbar and used by placement, so full wood remains on the ground. */
+  if (item == WOOD) {
+    stack = &player->inventory[INVENTORY_HOTBAR_START + (WOOD - FIRST_PLACEABLE_BLOCK)];
+    added = count < MAX_ITEM_STACK - stack->count ? count : MAX_ITEM_STACK - stack->count;
+    stack->count += added;
+    return added;
+  }
+
+  return 0;
+}
+
 static void spawnPlayer(Player *player, int x, int z) {
   int y;
 
@@ -52,8 +99,11 @@ static void spawnPlayer(Player *player, int x, int z) {
   player->walk_swing = 0;
   player->y_velocity = 0;
   player->held_block = COBBLESTONE;
+  resetPlayerInventory(player);
   player->active = TRUE;
   player->target_present = FALSE;
+  player->breaking = FALSE;
+  player->break_progress = 0;
   player->position.x = (x + 0.5) * BLOCK_SIZE;
   player->position.z = (z + 0.5) * BLOCK_SIZE;
 
@@ -201,8 +251,16 @@ static float detectCollision(Player *player, Vector3 velocity, float max_t, int 
 static void placeBlock(u8 player_num, u8 x, u8 y, u8 z) {
   int bx, by, bz, i;
   Vector3i min_block, max_block;
+  Player *player = &players[player_num];
+  ItemStack *held_stack = &player->inventory[
+    INVENTORY_HOTBAR_START + player->selected_hotbar_slot];
 
   if (x >= MAX_X || y >= MAX_Y || z >= MAX_Z) {
+    return;
+  }
+
+  if (player->held_block == WOOD &&
+      (held_stack->item != WOOD || held_stack->count == 0)) {
     return;
   }
 
@@ -220,15 +278,58 @@ static void placeBlock(u8 player_num, u8 x, u8 y, u8 z) {
     }
   }
 
-  blocks[x * MAX_Y * MAX_Z + y * MAX_Z + z] = players[player_num].held_block;
+  blocks[x * MAX_Y * MAX_Z + y * MAX_Z + z] = player->held_block;
+  if (player->held_block == WOOD) {
+    held_stack->count--;
+  }
   regenerateBlock(x, y, z);
   makeDisplayListsAt(x, z);
 }
 
 static void breakBlock(u8 x, u8 y, u8 z) {
+  u8 block = blocks[x * MAX_Y * MAX_Z + y * MAX_Z + z];
+
+  /* The log turns into a physical pickup rather than entering inventory
+     immediately.  A full stack therefore leaves the wood on the ground. */
+  if (block == WOOD) {
+    spawnDroppedItem(WOOD, 1, x, y, z);
+  }
   blocks[x * MAX_Y * MAX_Z + y * MAX_Z + z] = AIR;
   regenerateBlock(x, y, z);
   makeDisplayListsAt(x, z);
+}
+
+static void resetBreaking(Player *player) {
+  player->breaking = FALSE;
+  player->break_progress = 0;
+}
+
+static void updateBreaking(u8 player_num, float delta) {
+  Player *player = &players[player_num];
+  NUContData *cont = &cont_data[player_num];
+
+  /* For now, punching is intentionally a tree-harvesting action.  Other
+     terrain remains untouched until it has a proper tool/drop rule. */
+  if (!(cont->button & B_BUTTON) || !player->target_present ||
+      blocks[player->target_x * MAX_Y * MAX_Z + player->target_y * MAX_Z + player->target_z] != WOOD) {
+    resetBreaking(player);
+    return;
+  }
+
+  if (!player->breaking || player->breaking_x != player->target_x ||
+      player->breaking_y != player->target_y || player->breaking_z != player->target_z) {
+    player->breaking = TRUE;
+    player->breaking_x = player->target_x;
+    player->breaking_y = player->target_y;
+    player->breaking_z = player->target_z;
+    player->break_progress = 0;
+  }
+
+  player->break_progress += delta;
+  if (player->break_progress >= WOOD_BREAK_TIME) {
+    breakBlock(player->target_x, player->target_y, player->target_z);
+    resetBreaking(player);
+  }
 }
 
 static u8 onGround(Player *player) {
@@ -292,15 +393,20 @@ static void updatePlayer(u8 player_num, float delta) {
 
   if (cont->button & L_CBUTTONS) {
     if (!block_dec_held[player_num]) {
+      u8 selected_slot;
       block_dec_held[player_num] = TRUE;
-      if (--player->held_block < FIRST_PLACEABLE_BLOCK) player->held_block = BLOCK_TYPE_COUNT;
+      selected_slot = player->selected_hotbar_slot == 0 ?
+        INVENTORY_COLUMNS - 1 : player->selected_hotbar_slot - 1;
+      selectHotbarSlot(player, selected_slot);
     }
   } else block_dec_held[player_num] = FALSE;
 
   if (cont->button & R_CBUTTONS) {
     if (!block_inc_held[player_num]) {
+      u8 selected_slot;
       block_inc_held[player_num] = TRUE;
-      if (++player->held_block > BLOCK_TYPE_COUNT) player->held_block = FIRST_PLACEABLE_BLOCK;
+      selected_slot = (player->selected_hotbar_slot + 1) % INVENTORY_COLUMNS;
+      selectHotbarSlot(player, selected_slot);
     }
   } else block_inc_held[player_num] = FALSE;
 
@@ -327,9 +433,7 @@ static void updatePlayer(u8 player_num, float delta) {
     placeBlock(player_num, player->build_offset_x + player->target_x,
       player->build_offset_y + player->target_y, player->build_offset_z + player->target_z);
   }
-  if ((cont->trigger & B_BUTTON) && player->target_present) {
-    breakBlock(player->target_x, player->target_y, player->target_z);
-  }
+  updateBreaking(player_num, delta);
 }
 
 void updatePlayers() {
@@ -343,6 +447,34 @@ void updatePlayers() {
   time = osGetTime();
   delta = OS_CYCLES_TO_USEC(time - last_time) * 60 / 1000000.f;
   last_time = time;
+
+  if (current_screen == INVENTORY) {
+    Player *player = &players[0];
+    u8 row = player->inventory_cursor / INVENTORY_COLUMNS;
+    u8 column = player->inventory_cursor % INVENTORY_COLUMNS;
+
+    if (cont_data[0].trigger & START_BUTTON) {
+      current_screen = GAME;
+      return;
+    }
+    if (cont_data[0].trigger & L_CBUTTONS) {
+      column = column == 0 ? INVENTORY_COLUMNS - 1 : column - 1;
+    } else if (cont_data[0].trigger & R_CBUTTONS) {
+      column = (column + 1) % INVENTORY_COLUMNS;
+    } else if (cont_data[0].trigger & U_JPAD) {
+      row = row == 0 ? INVENTORY_STORAGE_ROWS : row - 1;
+    } else if (cont_data[0].trigger & D_JPAD) {
+      row = row == INVENTORY_STORAGE_ROWS ? 0 : row + 1;
+    } else {
+      return;
+    }
+
+    player->inventory_cursor = row * INVENTORY_COLUMNS + column;
+    if (row == INVENTORY_STORAGE_ROWS) {
+      selectHotbarSlot(player, column);
+    }
+    return;
+  }
 
   if (current_screen != GAME) {
     down_pressed = (cont_data[0].button & D_CBUTTONS) || cont_data[0].stick_y < -50;
@@ -360,9 +492,14 @@ void updatePlayers() {
   if (!players[1].active && (cont_data[1].trigger & START_BUTTON)) {
     activatePlayerTwo();
   }
+  if (cont_data[0].trigger & START_BUTTON) {
+    current_screen = INVENTORY;
+    return;
+  }
   for (i = 0; i < active_player_count; i++) {
     updatePlayer(i, delta);
   }
+  updateDroppedItems(delta);
 
   if (saving_available && (cont_data[0].trigger & (U_JPAD | D_JPAD | L_JPAD | R_JPAD))) {
     saveGame();

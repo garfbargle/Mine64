@@ -2,6 +2,7 @@
 #include "ff/ff.h"
 
 #include "storage.h"
+#include "blocks.h"
 #include "player.h"
 #include "world.h"
 
@@ -10,6 +11,7 @@ static FATFS fs;
 // "MI64"
 #define MAGIC_NUM 0x4D493634
 #define BUFFER_LEN 128
+#define SAVE_VERSION 2
 
 typedef struct {
   u32 magic_num;
@@ -27,6 +29,7 @@ typedef struct {
   float pitch;
   float yaw;
   u32 held_block;
+  u32 wood_count;
 } SavedPlayer;
 
 typedef struct {
@@ -37,6 +40,24 @@ typedef struct {
   u32 player_count;
   SavedPlayer player[MAX_PLAYERS];
 } Header;
+
+/* The first co-op save format did not contain an inventory count.  Its
+   separate definition keeps old save files readable after the v2 extension. */
+typedef struct {
+  Vector3 position;
+  float pitch;
+  float yaw;
+  u32 held_block;
+} SavedPlayerV1;
+
+typedef struct {
+  u32 magic_num;
+  u32 version;
+  u32 file_num;
+  u32 save_count;
+  u32 player_count;
+  SavedPlayerV1 player[MAX_PLAYERS];
+} HeaderV1;
 
 static u32 save_count = 0;
 
@@ -105,7 +126,7 @@ void saveGame() {
   save_count++;
 
   header->magic_num = MAGIC_NUM;
-  header->version = 1;
+  header->version = SAVE_VERSION;
   header->file_num = game_file_num;
   header->save_count = save_count;
   header->player_count = active_player_count;
@@ -113,10 +134,14 @@ void saveGame() {
   header->player[0].pitch = players[0].pitch;
   header->player[0].yaw = players[0].yaw;
   header->player[0].held_block = players[0].held_block;
+  header->player[0].wood_count = players[0].inventory[
+    INVENTORY_HOTBAR_START + (WOOD - FIRST_PLACEABLE_BLOCK)].count;
   header->player[1].position = players[1].position;
   header->player[1].pitch = players[1].pitch;
   header->player[1].yaw = players[1].yaw;
   header->player[1].held_block = players[1].held_block;
+  header->player[1].wood_count = players[1].inventory[
+    INVENTORY_HOTBAR_START + (WOOD - FIRST_PLACEABLE_BLOCK)].count;
 
   cursor_pos = sizeof(Header);
   while (cursor_pos < BUFFER_LEN) {
@@ -139,9 +164,11 @@ void saveGame() {
 void loadGame() {
   FIL file;
   Header *header = (Header *) file_buffer;
+  HeaderV1 *header_v1 = (HeaderV1 *) file_buffer;
   LegacyHeader *legacy_header = (LegacyHeader *) file_buffer;
   int page_num = 0;
   u8 packed;
+  u8 wood_count[2] = {0, 0};
   u8 *blocks_ptr;
   const u8 *blocks_end = blocks + NUM_BLOCKS;
 
@@ -159,11 +186,15 @@ void loadGame() {
   players[0].y_velocity = 0;
   players[0].active = TRUE;
   players[0].target_present = FALSE;
+  players[0].breaking = FALSE;
+  players[0].break_progress = 0;
   players[1].active = FALSE;
   players[1].target_present = FALSE;
+  players[1].breaking = FALSE;
+  players[1].break_progress = 0;
   active_player_count = 1;
 
-  if (legacy_header->version >= 1 && header->player_count == 2) {
+  if (legacy_header->version >= SAVE_VERSION && header->player_count == 2) {
     players[0].position = header->player[0].position;
     players[0].pitch = header->player[0].pitch;
     players[0].yaw = header->player[0].yaw;
@@ -171,6 +202,8 @@ void loadGame() {
     players[0].walk_time = 0;
     players[0].walk_swing = 0;
     players[0].held_block = header->player[0].held_block;
+    wood_count[0] = header->player[0].wood_count > MAX_ITEM_STACK ?
+      MAX_ITEM_STACK : header->player[0].wood_count;
     players[1].position = header->player[1].position;
     players[1].pitch = header->player[1].pitch;
     players[1].yaw = header->player[1].yaw;
@@ -178,11 +211,13 @@ void loadGame() {
     players[1].walk_time = 0;
     players[1].walk_swing = 0;
     players[1].held_block = header->player[1].held_block;
+    wood_count[1] = header->player[1].wood_count > MAX_ITEM_STACK ?
+      MAX_ITEM_STACK : header->player[1].wood_count;
     players[1].y_velocity = 0;
     players[1].active = TRUE;
     active_player_count = 2;
     cursor_pos = sizeof(Header);
-  } else if (legacy_header->version >= 1) {
+  } else if (legacy_header->version >= SAVE_VERSION) {
     players[0].position = header->player[0].position;
     players[0].pitch = header->player[0].pitch;
     players[0].yaw = header->player[0].yaw;
@@ -190,9 +225,46 @@ void loadGame() {
     players[0].walk_time = 0;
     players[0].walk_swing = 0;
     players[0].held_block = header->player[0].held_block;
+    wood_count[0] = header->player[0].wood_count > MAX_ITEM_STACK ?
+      MAX_ITEM_STACK : header->player[0].wood_count;
     cursor_pos = sizeof(Header);
+  } else if (legacy_header->version >= 1 && header_v1->player_count == 2) {
+    players[0].position = header_v1->player[0].position;
+    players[0].pitch = header_v1->player[0].pitch;
+    players[0].yaw = header_v1->player[0].yaw;
+    players[0].body_yaw = players[0].yaw;
+    players[0].walk_time = 0;
+    players[0].walk_swing = 0;
+    players[0].held_block = header_v1->player[0].held_block;
+    players[1].position = header_v1->player[1].position;
+    players[1].pitch = header_v1->player[1].pitch;
+    players[1].yaw = header_v1->player[1].yaw;
+    players[1].body_yaw = players[1].yaw;
+    players[1].walk_time = 0;
+    players[1].walk_swing = 0;
+    players[1].held_block = header_v1->player[1].held_block;
+    players[1].y_velocity = 0;
+    players[1].active = TRUE;
+    active_player_count = 2;
+    cursor_pos = sizeof(HeaderV1);
+  } else if (legacy_header->version >= 1) {
+    players[0].position = header_v1->player[0].position;
+    players[0].pitch = header_v1->player[0].pitch;
+    players[0].yaw = header_v1->player[0].yaw;
+    players[0].body_yaw = players[0].yaw;
+    players[0].walk_time = 0;
+    players[0].walk_swing = 0;
+    players[0].held_block = header_v1->player[0].held_block;
+    cursor_pos = sizeof(HeaderV1);
   } else {
     cursor_pos = sizeof(LegacyHeader);
+  }
+
+  resetPlayerInventory(&players[0]);
+  players[0].inventory[INVENTORY_HOTBAR_START + (WOOD - FIRST_PLACEABLE_BLOCK)].count = wood_count[0];
+  if (players[1].active) {
+    resetPlayerInventory(&players[1]);
+    players[1].inventory[INVENTORY_HOTBAR_START + (WOOD - FIRST_PLACEABLE_BLOCK)].count = wood_count[1];
   }
 
   for (blocks_ptr = blocks; blocks_ptr < blocks_end; blocks_ptr += 2) {

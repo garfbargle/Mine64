@@ -49,9 +49,10 @@ static char *info_text[] = {
   "",
   "Walk: Analog stick",
   "Look around: Analog stick + Z trigger",
-  "Place block: A button",
-  "Break block: B button",
+  "Place block: A button (wood is limited)",
+  "Hold B to punch a tree log",
   "Select block: C buttons left/right",
+  "Inventory: START button",
   "Jump: Right shoulder",
   "Save game: D-Pad",
   "Co-op: Player 2 presses START"
@@ -71,6 +72,16 @@ static char *saved_text[] = {
 
 static char *player_two_joined_text[] = {
   "Player 2 joined"
+};
+
+static char *inventory_text[] = {
+  "Inventory",
+  "Craft",
+  "Output",
+  "Items",
+  "C Left Right: Move",
+  "D Pad: Move Rows",
+  "Start: Close"
 };
 
 static Gfx menu_setup_display_list[] = {
@@ -152,6 +163,11 @@ void drawMenu() {
       }
       y_start = SCREEN_HT / 3;
       break;
+    case INVENTORY:
+      text = inventory_text;
+      n_lines = sizeof(inventory_text) / sizeof(char *);
+      y_start = 26;
+      break;
   }
 
   if (current_screen == GAME && save_message_cooldown == 0 && player_two_joined_message == 0) {
@@ -198,7 +214,17 @@ void drawMenu() {
     while (text_line[j]) {
       chr = text_line[j];
       if (chr != ' ') {
-        drawChar(chr, x + SCREEN_WD / 2 - center, i * 12 + y_start);
+        if (current_screen == INVENTORY && i == 1) {
+          drawChar(chr, x + 48, 43);
+        } else if (current_screen == INVENTORY && i == 2) {
+          drawChar(chr, x + 86, 43);
+        } else if (current_screen == INVENTORY && i == 3) {
+          drawChar(chr, x + 115, 43);
+        } else if (current_screen == INVENTORY && i > 3) {
+          drawChar(chr, x + 174, (i - 4) * 10 + 145);
+        } else {
+          drawChar(chr, x + SCREEN_WD / 2 - center, i * 12 + y_start);
+        }
       }
 
       x += charWidth(chr);

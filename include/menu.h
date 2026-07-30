@@ -8,7 +8,8 @@ enum Screen {
   INFO,
   GENERATING,
   LOADING,
-  GAME
+  GAME,
+  INVENTORY
 };
 
 extern enum Screen current_screen;
@@ -16,6 +17,7 @@ extern u32 save_message_cooldown;
 extern u8 player_two_joined_message;
 
 void drawMenu();
+void drawChar(char chr, u32 x, u32 y);
 void menuDown();
 void menuUp();
 void menuAct();

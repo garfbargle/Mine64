@@ -30,15 +30,23 @@ and an asset pipeline that does not require Minecraft files.
 | --- | --- |
 | Analog stick | Walk |
 | Hold Z + analog stick | Look around |
-| A / B | Place / break a block |
+| A / hold B | Place / punch a tree log |
 | C-left / C-right | Cycle the selected hotbar block |
+| START (Controller 1) | Open / close inventory |
 | R | Jump |
 | D-pad | Save, when cartridge storage is available |
 | Controller 2 START | Join co-op during a running world |
 
 The bottom hotbar contains all nine placeable block types. Its bright slot and
 the enlarged block at the lower right show what each player is holding; that is
-the block placed with **A**.
+the block placed with **A**. Punching a log makes a wood pickup pop out. Walk
+close to collect it into a stack of up to 64; placing a wood block consumes
+one. Hold B on a log to punch it—releasing B or looking away resets the
+breaking progress.
+
+Press **START** to open the inventory. It currently provides a 3-row storage
+grid, a selectable nine-slot hotbar, and a visible 2x2 crafting area. The
+crafting cells are UI-only for now; recipes will be added next.
 
 ## SummerCart64
 

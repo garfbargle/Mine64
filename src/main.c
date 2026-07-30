@@ -5,6 +5,7 @@
 #include "player.h"
 #include "geometry.h"
 #include "graphics.h"
+#include "items.h"
 #include "storage.h"
 
 void draw(void);
@@ -17,6 +18,7 @@ void callbackGfx(int pendingGfx) {
   if (current_screen == GENERATING) {
     initWorld();
     initPlayers();
+    initDroppedItems();
     initGeometry();
     makeWorldDisplayLists();
 
@@ -25,6 +27,7 @@ void callbackGfx(int pendingGfx) {
 
   if (current_screen == LOADING) {
     loadGame();
+    initDroppedItems();
     initGeometry();
     makeWorldDisplayLists();
     

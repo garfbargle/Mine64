@@ -12,7 +12,7 @@
 extern Gfx* dlp;
 Gfx display_lists[NUM_DISPLAY_LISTS][1024];
 Gfx line_display_list[512];
-Gfx hud_display_list[512];
+Gfx hud_display_list[1024];
 extern u32 dl_no;
 
 void initGraphics();
@@ -24,5 +24,4 @@ void drawHUD();
 void draw();
 
 #endif /* GRAPHICS_H */
-
 
