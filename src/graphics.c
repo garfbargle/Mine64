@@ -998,7 +998,7 @@ static u8 playerHeldItem(Player *player) {
   return held->count > 0 ? held->item : AIR;
 }
 
-static float swordSwingAngle(Player *player) {
+static float punchSwingAngle(Player *player) {
   float phase;
 
   if (player->attack_time <= 0) {
@@ -1009,11 +1009,19 @@ static float swordSwingAngle(Player *player) {
   return -58.f + sinf(phase * 180.f * M_DTOR) * 135.f;
 }
 
+static float miningSwingAngle(Player *player) {
+  if (!player->breaking || player->break_time <= 0) {
+    return 0;
+  }
+  return sinf(player->break_progress * 32.f * M_DTOR) * 28.f;
+}
+
 static void makeStevePose(u8 player_num) {
   Player *player = &players[player_num];
   float head_pitch = player->pitch > 180 ? player->pitch - 360 : player->pitch;
   float swing = sinf(player->walk_time) * 28 * player->walk_swing;
-  float right_arm_pitch = -swing + swordSwingAngle(player);
+  float right_arm_pitch = -swing + punchSwingAngle(player) +
+    miningSwingAngle(player);
   float left_arm_pitch = swing;
   float left_leg_pitch = -swing;
   float right_leg_pitch = swing;
@@ -1024,7 +1032,8 @@ static void makeStevePose(u8 player_num) {
     float phase = 1.f - player->vault_time / PLAYER_VAULT_DURATION;
     float tuck = sinf(phase * 180.f * M_DTOR);
     left_arm_pitch = -55.f * tuck;
-    right_arm_pitch = -65.f * tuck + swordSwingAngle(player);
+    right_arm_pitch = -65.f * tuck + punchSwingAngle(player) +
+      miningSwingAngle(player);
     left_leg_pitch = 48.f * tuck;
     right_leg_pitch = -35.f * tuck;
   }
@@ -1117,7 +1126,7 @@ static void drawSteve(u8 player_num) {
   drawStevePart(player_num, STEVE_HEAD, steve_eye_verts, steve_eyes_display_list);
 }
 
-static void drawFirstPersonTool(u8 player_num) {
+static void drawFirstPersonHand(u8 player_num) {
   Player *player = &players[player_num];
   u8 item = playerHeldItem(player);
   Vector3 forward = {0, 0, -1};
@@ -1125,7 +1134,7 @@ static void drawFirstPersonTool(u8 player_num) {
   Vector3 position;
   float swing;
 
-  if (player->camera_mode != CAMERA_FIRST_PERSON || !itemIsTool(item)) {
+  if (player->camera_mode != CAMERA_FIRST_PERSON) {
     return;
   }
   forward = rotateX(forward, player->pitch);
@@ -1137,10 +1146,7 @@ static void drawFirstPersonTool(u8 player_num) {
   position = add(playerCameraPosition(player_num), mul(forward, 72.f));
   position = add(position, mul(right, 34.f));
   position.y -= 36.f;
-  swing = swordSwingAngle(player);
-  if (player->breaking && player->break_time > 0) {
-    swing += sinf(player->break_progress * 32.f * M_DTOR) * 28.f;
-  }
+  swing = punchSwingAngle(player) + miningSwingAngle(player);
   guTranslate(&first_person_sword_translate[dl_no][player_num], position.x,
     position.y, position.z);
   guRotateRPY(&first_person_sword_rotate[dl_no][player_num],
@@ -1152,7 +1158,9 @@ static void drawFirstPersonTool(u8 player_num) {
     G_MTX_MODELVIEW | G_MTX_MUL | G_MTX_NOPUSH);
   gSPVertex(dlp++, first_person_arm_verts, 8, 0);
   gSPDisplayList(dlp++, steve_box_display_list);
-  drawToolGeometry(item);
+  if (itemIsTool(item)) {
+    drawToolGeometry(item);
+  }
   gSPSetGeometryMode(dlp++, G_CULL_BACK);
 }
 
@@ -1534,7 +1542,7 @@ void drawWorld() {
       drawOtherPlayers(player_num);
     }
     if (!cinematic) {
-      drawFirstPersonTool(player_num);
+      drawFirstPersonHand(player_num);
     }
   }
 

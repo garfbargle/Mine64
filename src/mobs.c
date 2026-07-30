@@ -322,7 +322,7 @@ void updateMobs(float delta) {
   }
 }
 
-static Mob *swordTarget(u8 attacker_num) {
+static Mob *punchTarget(u8 attacker_num) {
   Player *attacker = &players[attacker_num];
   Vector3 forward = rotateY((Vector3) {0, 0, -1}, -attacker->yaw);
   Mob *target = NULL;
@@ -376,7 +376,7 @@ static u8 emitMobDrops(Mob *target) {
   return TRUE;
 }
 
-u8 swingSwordAtMob(u8 attacker_num) {
+u8 punchMob(u8 attacker_num) {
   Player *attacker = &players[attacker_num];
   ItemStack *held = &attacker->inventory[INVENTORY_HOTBAR_START +
     attacker->selected_hotbar_slot];
@@ -386,16 +386,19 @@ u8 swingSwordAtMob(u8 attacker_num) {
   float horizontal_distance;
   u8 damage;
 
-  if (held->count == 0 || !itemIsSword(held->item) ||
-      attacker->attack_time > 0) {
+  if (attacker->attack_time > 0) {
     return FALSE;
   }
-  target = swordTarget(attacker_num);
+  target = punchTarget(attacker_num);
   if (target == NULL) {
     return FALSE;
   }
-  damage = held->item == IRON_SWORD ? 8 :
-    (held->item == STONE_SWORD ? 6 : 4);
+  /* Every held item, including an empty hand, can punch.  Only swords use
+     their weapon damage; this keeps early encounters survivable without
+     making a random block as effective as a crafted weapon. */
+  damage = held->count > 0 && held->item == IRON_SWORD ? 8 :
+    (held->count > 0 && held->item == STONE_SWORD ? 6 :
+    (held->count > 0 && held->item == WOOD_SWORD ? 4 : 1));
   if (target->health <= damage) {
     if (!emitMobDrops(target)) {
       return FALSE;

@@ -208,6 +208,32 @@ static u8 recipeHasOnly(Player *player, u16 used_slots) {
   return TRUE;
 }
 
+/* A shaped recipe may be placed in any matching column of the 3x3 table.
+   Keeping this in one helper prevents the wood, stone, and iron swords from
+   drifting into subtly different layouts. */
+static u8 getSwordRecipe(Player *player, u8 material, u8 sword,
+                         ItemStack *result, u16 *used_slots) {
+  u8 column;
+
+  if (!player->crafting_table_open) {
+    return FALSE;
+  }
+  for (column = 0; column < CRAFTING_TABLE_COLUMNS; column++) {
+    u16 used = (1 << column) | (1 << (column + CRAFTING_TABLE_COLUMNS)) |
+      (1 << (column + CRAFTING_TABLE_COLUMNS * 2));
+    if (recipeSlotIs(player, column, material) &&
+        recipeSlotIs(player, column + CRAFTING_TABLE_COLUMNS, material) &&
+        recipeSlotIs(player, column + CRAFTING_TABLE_COLUMNS * 2, STICK) &&
+        recipeHasOnly(player, used)) {
+      result->item = sword;
+      result->count = 1;
+      *used_slots = used;
+      return TRUE;
+    }
+  }
+  return FALSE;
+}
+
 /* Returns both the visible result and the ingredient slots used by one craft.
    Recipes follow their familiar 3x3 layouts, including the vertical sword
    and the three-wide pickaxe head. */
@@ -243,12 +269,7 @@ static u8 getCraftRecipe(Player *player, ItemStack *result, u16 *used_slots) {
     *used_slots = (1 << 0) | (1 << 1) | (1 << 3) | (1 << 4);
     return TRUE;
   }
-  if (player->crafting_table_open && recipeSlotIs(player, 0, PLANKS) &&
-      recipeSlotIs(player, 3, PLANKS) && recipeSlotIs(player, 6, STICK) &&
-      recipeHasOnly(player, (1 << 0) | (1 << 3) | (1 << 6))) {
-    result->item = WOOD_SWORD;
-    result->count = 1;
-    *used_slots = (1 << 0) | (1 << 3) | (1 << 6);
+  if (getSwordRecipe(player, PLANKS, WOOD_SWORD, result, used_slots)) {
     return TRUE;
   }
   if (player->crafting_table_open && recipeSlotIs(player, 0, PLANKS) &&
@@ -270,12 +291,7 @@ static u8 getCraftRecipe(Player *player, ItemStack *result, u16 *used_slots) {
     *used_slots = (1 << 0) | (1 << 1) | (1 << 3) | (1 << 4) | (1 << 7);
     return TRUE;
   }
-  if (player->crafting_table_open && recipeSlotIs(player, 0, COBBLESTONE) &&
-      recipeSlotIs(player, 3, COBBLESTONE) && recipeSlotIs(player, 6, STICK) &&
-      recipeHasOnly(player, (1 << 0) | (1 << 3) | (1 << 6))) {
-    result->item = STONE_SWORD;
-    result->count = 1;
-    *used_slots = (1 << 0) | (1 << 3) | (1 << 6);
+  if (getSwordRecipe(player, COBBLESTONE, STONE_SWORD, result, used_slots)) {
     return TRUE;
   }
   if (player->crafting_table_open && recipeSlotIs(player, 0, COBBLESTONE) &&
@@ -298,12 +314,7 @@ static u8 getCraftRecipe(Player *player, ItemStack *result, u16 *used_slots) {
     *used_slots = (1 << 0) | (1 << 1) | (1 << 3) | (1 << 4) | (1 << 7);
     return TRUE;
   }
-  if (player->crafting_table_open && recipeSlotIs(player, 0, IRON_CHUNK) &&
-      recipeSlotIs(player, 3, IRON_CHUNK) && recipeSlotIs(player, 6, STICK) &&
-      recipeHasOnly(player, (1 << 0) | (1 << 3) | (1 << 6))) {
-    result->item = IRON_SWORD;
-    result->count = 1;
-    *used_slots = (1 << 0) | (1 << 3) | (1 << 6);
+  if (getSwordRecipe(player, IRON_CHUNK, IRON_SWORD, result, used_slots)) {
     return TRUE;
   }
   if (player->crafting_table_open && recipeSlotIs(player, 0, IRON_CHUNK) &&
@@ -1385,9 +1396,15 @@ static u8 updatePlayer(u8 player_num, float delta) {
         player->build_offset_z + player->target_z);
     }
   }
-  if ((cont->trigger & B_BUTTON) &&
-      (swingSwordAtMob(player_num) || swingSword(player_num))) {
-    resetBreaking(player);
+  if (cont->trigger & B_BUTTON) {
+    if (punchMob(player_num) || swingSword(player_num)) {
+      resetBreaking(player);
+    } else {
+      /* A tap should always read as a punch, even if it hits air or starts
+         mining.  Continuous mining has its own rhythmic arm motion. */
+      player->attack_time = PLAYER_ATTACK_DURATION;
+      updateBreaking(player_num, delta);
+    }
   } else {
     updateBreaking(player_num, delta);
   }

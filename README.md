@@ -71,7 +71,7 @@ retaining the stable 112×32×112 renderer and loading-screen presentation.
 | C-down | Open inventory or the targeted crafting table |
 | C-left / C-right | Cycle the selected hotbar block |
 | A | Use a crafting table, place a block, or eat held food |
-| Hold B / tap B | Mine / attack a nearby mob or player with a sword |
+| Hold B / tap B | Mine / punch a nearby mob; swords deal more damage |
 | START | Open / close that player's inventory |
 | R | Jump |
 | Hold L + R while moving | Vault a one-block obstacle |

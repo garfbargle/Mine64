@@ -44,7 +44,8 @@ extern Mob mobs[MAX_MOBS];
 void initMobs();
 void updateMobs(float delta);
 
-/* Returns TRUE only when an in-range mob received the sword hit. */
-u8 swingSwordAtMob(u8 attacker_num);
+/* Returns TRUE only when an in-range mob received a punch or tool hit.
+   Swords retain their higher damage, but an empty hand can always fight. */
+u8 punchMob(u8 attacker_num);
 
 #endif /* MOBS_H */
