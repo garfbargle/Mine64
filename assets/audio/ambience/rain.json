@@ -1,0 +1,19 @@
+{
+  "format": "Nintendo 64 VADPCM (VAPC)",
+  "sample_rate_hz": 12000,
+  "channels": 1,
+  "sample_count": 120000,
+  "duration_seconds": 10.0,
+  "encoded_bytes": 67500,
+  "pcm_bytes": 240000,
+  "compression_ratio": 3.556,
+  "codebook": {
+    "order": 2,
+    "predictors": 4
+  },
+  "loop": {
+    "start_sample": 0,
+    "end_sample": 120000,
+    "count": -1
+  }
+}
