@@ -319,7 +319,11 @@ void updateLoadingCamera() {
   /* Aim into the near/middle terrain rather than across the whole map. This
      crops the square world boundary out of the composition and gives ridges
      a stronger silhouette above the status deck. */
-  loading_camera.pitch = -36.f;
+  /* Player pitch is normalized to 0..360, and the column culler relies on
+     that convention when choosing the conservative world-height edge.  -36
+     renders the same view, but makes culling treat this downward camera as an
+     upward one and clips columns before they leave the screen. */
+  loading_camera.pitch = 324.f;
   loading_camera.camera_mode = CAMERA_FIRST_PERSON;
   camera_position = loading_camera.position;
 
