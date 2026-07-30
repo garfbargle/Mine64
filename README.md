@@ -322,6 +322,36 @@ The linked release program currently occupies about 3.1 MiB including its world,
 geometry cache, NuSystem task buffers, and doubled render state. It remains
 within the stock console's 4 MiB RDRAM; an Expansion Pak is not required.
 
+### Two hardware faults that emulators do not reproduce
+
+Both of these cost a long debugging session. Neither shows up under emulation,
+and both present as "the picture is fine and then the console stops dead".
+
+**Drain the RDP pipe before reconfiguring it.** Changing cycle type, render
+mode, combine mode, or the loaded texture tile while a primitive is still in
+flight is an RDP hazard. Hardware locks up hard — no restart, power cycle
+required. Whether it bites depends on how busy the pipe still is, so it tracks
+scene complexity: dense terrain locks, flat terrain survives, and the same ROM
+looks intermittent. Symptoms before the lock include torn frames and garbled
+text glyphs, because attributes changed underneath a primitive.
+
+`beginText()` therefore opens with `gsDPPipeSync()`, and every branch of
+`drawHUD()` drains the pipe before `drawMenu()` reconfigures the RDP for text.
+Issuing a texture rectangle while the RDP is still in `G_CYC_FILL` — for
+example straight after `clearBuffers()` — locks the console immediately and
+reproducibly. If new drawing code mixes fill rectangles and textured
+primitives, sync between them.
+
+**Never busy-wait on the graphics thread.** `nuGfxTaskAllEndWait()` spins on
+`nuGfxTaskSpool`, but `callbackGfx` runs on NuSystem's graphics thread at
+priority 50, while the completion that clears that counter is posted by the
+scheduler's own graphics thread at priority **17** (set in `nusched.c`, not in
+any header). The N64 scheduler is strictly priority-based with no time
+slicing, so a spin at 50 starves 17 forever and the wait never ends. To
+serialise against the RSP, gate on the `pendingGfx` argument NuSystem already
+passes to `callbackGfx` and do arena-rewriting work *before* the next `draw()`
+submits a task — never wait.
+
 ## Technical Details
 
 * The world consists of a 14x14 grid of "columns", each split into 4 vertical chunks of 8x8x8 blocks each (a 112x32x112-block world).

@@ -47,12 +47,42 @@ Gfx frame_display_lists[NUM_DISPLAY_LISTS][FRAME_DISPLAY_LIST_SIZE];
 #define NUM_COLUMN_ARENAS 2
 #define MESH_REBUILD_BUDGET 1
 #define MESH_COMPACTION_RESERVE (DISPLAY_LIST_SIZE / 10)
+/* Headroom the terrain passes leave for the HUD, menu text and trailing sync. */
+#define FRAME_COMMAND_TAIL_RESERVE 2048
 static Gfx column_display_lists[NUM_COLUMN_ARENAS][DISPLAY_LIST_SIZE];
 Gfx *column_dlp;
 static Gfx *column_starts[NUM_COLUMN_ARENAS][NUM_TEXTURES]
   [CHUNKS_X * CHUNKS_Z];
 static Gfx *column_arena_ends[NUM_COLUMN_ARENAS];
 static u8 active_column_arena;
+/* Hard ceiling for terrain branches within one frame list.  Release builds
+   compile out assert(), so an overflow here would silently run past this
+   frame's buffer into the next one and hand the RSP a corrupt list -- which
+   presents as a console that renders correctly and then hangs. */
+static Gfx *frame_dlp_limit;
+/* Non-zero means a frame had to shed terrain or was dropped outright.  Shown
+   on the picker so this failure mode can never be silent again. */
+u32 frame_overflows;
+/*
+ * Splash diagnostics.  The console renders correctly and then stops dead on a
+ * delay that varies with the world, so the useful question is what the last
+ * good frame actually cost -- not what the code looks like.
+ */
+u32 diag_frame_commands;
+u32 diag_peak_frame_commands;
+u32 diag_terrain_branches;
+u32 diag_visible_columns;
+u32 diag_arena_used;
+u32 diag_mesh_failures;
+u32 diag_frames;
+u32 diag_arena_id;
+/* Runtime bisect switches, driven from the C buttons on the picker.  Each one
+   removes a suspect subsystem so the fault can be cornered in a single flash
+   rather than one rebuild per hypothesis. */
+u8 diag_draw_terrain = TRUE;
+u8 diag_refine_seams = TRUE;
+u8 diag_column_cap = 96;
+u32 diag_build_active;
 /* Set while compiling the reduced scenic mesh; makeQuadDL drops everything
    below the surface shell. */
 static u8 building_surface_mesh;
@@ -896,13 +926,6 @@ static u8 makeColumnDisplayLists(u8 cx, u8 cz) {
   return TRUE;
 }
 
-/* The scenic menu mesh and the gameplay mesh differ only in detail, so they
-   occupy the two arenas independently: switching worlds in the picker never
-   disturbs a compiled gameplay mesh, and entering a world never has to wait
-   for the preview to be discarded. */
-#define GAME_COLUMN_ARENA 0
-#define PREVIEW_COLUMN_ARENA 1
-
 /*
  * A complete mesh rebuild rewrites the arena the RSP executes terrain from,
  * so it may only run while no graphics task is in flight.  callbackGfx
@@ -915,41 +938,112 @@ static u8 makeColumnDisplayLists(u8 cx, u8 cz) {
  * own graphics thread at priority 17, which can never preempt a busy-wait at
  * 50, so the wait deadlocks the console instead of ending.
  */
-static u8 buildAllColumns(u8 arena, u8 surface_only) {
-  u8 cx, cz;
-  u16 column;
-  u8 build_complete = TRUE;
+static u8 mesh_build_active;
+static u16 mesh_build_cursor;
+static u8 mesh_build_arena;
+static u8 mesh_build_surface_only;
+static u8 mesh_build_complete;
 
-  building_surface_mesh = surface_only;
+/*
+ * A complete mesh rebuild rewrites an arena the RSP executes terrain from, so
+ * it may only run while no graphics task is in flight.  callbackGfx guarantees
+ * that by stepping it only when NuSystem reports pendingGfx == 0, and by
+ * submitting the next frame afterwards rather than before.
+ *
+ * Do not wait for the RSP here.  nuGfxTaskAllEndWait() busy-spins on
+ * nuGfxTaskSpool, and this runs on the NuSystem graphics thread at priority
+ * 50.  The completion that clears that counter is posted by the scheduler's
+ * own graphics thread at priority 17, which can never preempt a busy-wait at
+ * 50, so the wait deadlocks the console instead of ending.
+ *
+ * The build always targets the arena that is not on screen and publishes it
+ * only when complete, so the outgoing world keeps rendering throughout.
+ */
+void beginWorldMeshBuild(u8 surface_only) {
+  u16 column;
+
   compacting_columns = FALSE;
   dirty_column_cursor = 0;
   for (column = 0; column < CHUNKS_X * CHUNKS_Z; column++) {
     dirty_columns[column] = FALSE;
   }
-  resetColumnArenaBuild(arena);
-  for (cx = 0; cx < CHUNKS_X && build_complete; cx++) {
-    for (cz = 0; cz < CHUNKS_Z; cz++) {
-      if (!makeColumnDisplayLists(cx, cz)) {
-        build_complete = FALSE;
-        break;
-      }
-    }
+  mesh_build_arena = active_column_arena ^ 1;
+  mesh_build_surface_only = surface_only;
+  mesh_build_cursor = 0;
+  mesh_build_complete = TRUE;
+  mesh_build_active = TRUE;
+  resetColumnArenaBuild(mesh_build_arena);
+}
+
+u8 worldMeshBuildActive() {
+  return mesh_build_active;
+}
+
+u8 worldMeshBuildProgress() {
+  if (!mesh_build_active) {
+    return 100;
   }
-  column_arena_ends[arena] = column_dlp;
-  active_column_arena = arena;
+  return (u8) ((mesh_build_cursor * 100) / (CHUNKS_X * CHUNKS_Z));
+}
+
+u8 worldMeshBuildComplete() {
+  return mesh_build_complete;
+}
+
+/* Returns TRUE once the arena has been published. */
+u8 stepWorldMeshBuild(u16 columns) {
+  if (!mesh_build_active) {
+    return TRUE;
+  }
+  /* resetColumnArenaBuild left column_dlp at the target arena; nothing else
+     touches it while a build is running, because the incremental gameplay
+     rebuild only runs from the GAME branch of draw(). */
+  building_surface_mesh = mesh_build_surface_only;
+  /* Seam refinement is a cosmetic fix for hairline cracks between quads.  The
+     scenic camera never gets close enough to see one, and it is the single
+     most expensive part of compiling a world. */
+  geometrySetTjunctionRefinement(diag_refine_seams && !mesh_build_surface_only);
+  while (columns > 0 && mesh_build_cursor < CHUNKS_X * CHUNKS_Z) {
+    u8 cx = mesh_build_cursor / CHUNKS_Z;
+    u8 cz = mesh_build_cursor % CHUNKS_Z;
+
+    if (!makeColumnDisplayLists(cx, cz)) {
+      diag_mesh_failures++;
+      mesh_build_complete = FALSE;
+      mesh_build_cursor = CHUNKS_X * CHUNKS_Z;
+      break;
+    }
+    mesh_build_cursor++;
+    columns--;
+  }
   building_surface_mesh = FALSE;
-  return build_complete;
+  geometrySetTjunctionRefinement(TRUE);
+
+  if (mesh_build_cursor >= CHUNKS_X * CHUNKS_Z) {
+    column_arena_ends[mesh_build_arena] = column_dlp;
+    active_column_arena = mesh_build_arena;
+    mesh_build_active = FALSE;
+    return TRUE;
+  }
+  return FALSE;
+}
+
+static u8 buildAllColumns(u8 surface_only) {
+  beginWorldMeshBuild(surface_only);
+  while (!stepWorldMeshBuild(CHUNKS_X * CHUNKS_Z)) {
+  }
+  return mesh_build_complete;
 }
 
 u8 makeWorldDisplayLists() {
   /* World selection compiles only the surface shell the fixed camera can
      actually see.  It is roughly an order of magnitude less geometry than the
      cave-riddled gameplay mesh, which is what the orbit was choking on. */
-  return buildAllColumns(PREVIEW_COLUMN_ARENA, TRUE);
+  return buildAllColumns(TRUE);
 }
 
 u8 makeGameWorldDisplayLists() {
-  return buildAllColumns(GAME_COLUMN_ARENA, FALSE);
+  return buildAllColumns(FALSE);
 }
 
 static void markColumnDirty(u8 cx, u8 cz) {
@@ -1061,6 +1155,13 @@ void drawTextured(u8 texture, u8 player_num) {
   for (cx = 0; cx < CHUNKS_X; cx++) {
     for (cz = 0; cz < CHUNKS_Z; cz++) {
       if (visible_columns[player_num][cx * CHUNKS_Z + cz]) {
+        /* Dropping the most distant terrain is survivable; overrunning the
+           frame buffer is not. */
+        if (dlp >= frame_dlp_limit) {
+          frame_overflows++;
+          return;
+        }
+        diag_terrain_branches++;
         gSPDisplayList(dlp++, column_starts[active_column_arena][texture]
           [cx * CHUNKS_Z + cz]);
       }
@@ -2582,9 +2683,21 @@ void drawHUD() {
     clearBuffers(GPACK_RGBA5551(0, 0, 0, 1));
   } else if (current_screen == LOADING_PREVIEW) {
     drawLoadingOverlay();
+  } else if ((current_screen == MENU || current_screen == WORLD_NAMING) &&
+      !diag_draw_terrain) {
+    /* Bisect: menu with no terrain pass at all.  clearBuffers leaves the RDP
+       in FILL cycle mode, which would lock the console the moment drawMenu
+       issues a texture rectangle. */
+    updateLoadingCamera();
+    clearBuffers(GPACK_RGBA5551(48, 123, 211, 1));
+    gDPPipeSync(dlp++);
+    gDPSetCycleType(dlp++, G_CYC_1CYCLE);
   } else if (current_screen == MENU || current_screen == WORLD_NAMING) {
     /* The carousel has its own text overlay; never let the inventory panel
-       fall through on top of its world preview. */
+       fall through on top of its world preview.  Every other branch here ends
+       by draining the pipe before drawMenu reconfigures the RDP for text --
+       this one must too. */
+    gDPPipeSync(dlp++);
   } else if (current_screen == GAME) {
     loaded_texture = NULL;
     /* World and targeting passes leave the scissor on their final player
@@ -2638,8 +2751,15 @@ void drawHUD() {
 }
 
 void draw(int can_reclaim_mesh_arena) {
+  Gfx *frame_start = &frame_display_lists[dl_no][0];
+
   loaded_texture = NULL;
-  dlp = &frame_display_lists[dl_no][0];
+  diag_terrain_branches = 0;
+  dlp = frame_start;
+  /* Leave room for every pass that runs after the terrain branches: HUD,
+     menu text, and the trailing sync. */
+  frame_dlp_limit = frame_start + FRAME_DISPLAY_LIST_SIZE -
+    FRAME_COMMAND_TAIL_RESERVE;
   gSPDisplayList(dlp++, setup_display_list);
 
   if (current_screen == GAME) {
@@ -2668,11 +2788,33 @@ void draw(int can_reclaim_mesh_arena) {
   }
   drawHUD();
 
+  if (dlp > frame_start + FRAME_DISPLAY_LIST_SIZE - 2) {
+    /*
+     * Every variable pass reserves space before drawing, but keep the release
+     * build fail-safe too: submit a harmless empty frame rather than hand the
+     * RSP a list that has already run past its buffer.  assert() is compiled
+     * out by -DNDEBUG, so it cannot be the only thing standing here.
+     */
+    frame_overflows++;
+    dlp = frame_start;
+  }
+  diag_frame_commands = (u32) (dlp - frame_start);
+  if (diag_frame_commands > diag_peak_frame_commands) {
+    diag_peak_frame_commands = diag_frame_commands;
+  }
+  diag_arena_used = (u32) (column_arena_ends[active_column_arena] -
+    column_display_lists[active_column_arena]);
+  /* Which arena is on screen, and whether a build is mid-flight.  If A reads
+     zero while terrain still draws, the published arena and the one the column
+     pointers refer to have diverged. */
+  diag_arena_id = active_column_arena;
+  diag_build_active = mesh_build_active;
+  diag_frames++;
   gDPFullSync(dlp++);
   gSPEndDisplayList(dlp++);
-  assert(dlp - frame_display_lists[dl_no] <= FRAME_DISPLAY_LIST_SIZE);
-  nuGfxTaskStart(frame_display_lists[dl_no],
-    (s32)(dlp - frame_display_lists[dl_no]) * sizeof (Gfx),
+  assert(dlp - frame_start <= FRAME_DISPLAY_LIST_SIZE);
+  nuGfxTaskStart(frame_start,
+    (s32)(dlp - frame_start) * sizeof (Gfx),
     NU_GFX_UCODE_F3DEX, NU_SC_SWAPBUFFER);
 
   /* Switch display list buffers */

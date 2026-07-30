@@ -12,79 +12,151 @@
 #include "day_cycle.h"
 
 /*
- * Replacing the world rewrites every column display list in the mesh arena
- * the RSP renders terrain from.  That may only happen when NuSystem reports
- * no graphics task in flight, and it must finish before the next task is
- * submitted -- otherwise the RSP walks commands that are being overwritten
- * underneath it.
+ * Replacing the world rewrites every column display list in the mesh arena the
+ * RSP renders terrain from.  That may only happen when NuSystem reports no
+ * graphics task in flight, and it must finish before the next task is
+ * submitted -- otherwise the RSP walks commands being overwritten underneath
+ * it.
  *
- * The build also runs far longer than one retrace, and nothing else on this
- * thread submits frames, so the picture freezes for its duration.  Announce
- * it for one frame first: that frame is on screen while the build runs.
+ * Generating a world is also roughly two seconds of noise sampling and
+ * compiling its mesh is about another, both far longer than a retrace.  Since
+ * nothing else on this thread submits frames, doing either in one pass stops
+ * the picture and the controller dead.  So the job runs in slices: the
+ * outgoing world keeps orbiting out of the arena that is still on screen while
+ * its replacement is generated and compiled into the other one.
  */
-#define WORLD_BUILD_IDLE 0
-#define WORLD_BUILD_ANNOUNCE 1
-#define WORLD_BUILD_RUN 2
+#define WORLD_JOB_IDLE 0
+#define WORLD_JOB_GENERATE 1
+#define WORLD_JOB_MESH 2
 
-static u8 world_build_stage = WORLD_BUILD_IDLE;
+#define WORLD_JOB_PREVIEW 0
+#define WORLD_JOB_GAME 1
 
-static u8 worldBuildRequested() {
-  return current_screen == GENERATING || current_screen == LOADING ||
-    (current_screen == MENU && menuPreviewRequested()) ||
-    ((current_screen == MENU || current_screen == WORLD_NAMING) &&
-      menuGameRequested());
+/*
+ * Budgets are per graphics callback.  A terrain column costs several octave
+ * samples plus a cave test for most of its height, and a mesh column costs a
+ * full greedy pass over four chunks, so these are deliberately small: the
+ * point is a world that arrives smoothly, not one that arrives fastest.
+ */
+#define WORLD_GEN_COLUMNS_PER_STEP 48
+#define WORLD_MESH_COLUMNS_PER_STEP 3
+
+static u8 world_job_stage = WORLD_JOB_IDLE;
+static u8 world_job_kind;
+/* Which slot the running preview is for.  The cursor can move again while a
+   world is still building, and the finished preview must not be mistaken for
+   the slot now highlighted. */
+static u8 world_job_world;
+/* Slicing makes a world arrive smoothly but not faster -- it is still seconds
+   of noise sampling.  Scrolling past a slot should not pay for it, so wait for
+   the cursor to settle before committing to a build. */
+#define WORLD_PREVIEW_SETTLE_FRAMES 12
+static u8 world_preview_settle;
+static u8 world_preview_last_world = 0xFF;
+
+static u8 worldGameBuildRequested() {
+  return (current_screen == MENU || current_screen == WORLD_NAMING) &&
+    menuGameRequested();
 }
 
-static void runWorldBuild() {
-  if (current_screen == GENERATING) {
-    initWorld();
-    initPlayers();
-    initDroppedItems();
-    initMobs();
-    initGeometry();
-    world_incomplete_message = !makeWorldDisplayLists();
-    /* A named world becomes a real slot immediately when the flashcart
-       filesystem is available; RAM-only uploads still run, but cannot retain
-       worlds after a reset. */
-    if (saving_available && !saveGame()) {
-      save_failed_message = 120;
-    }
+static u8 worldPreviewBuildRequested() {
+  return current_screen == MENU && menuPreviewRequested();
+}
 
-    beginLoadingPreview();
-    current_screen = LOADING_PREVIEW;
-  } else if (current_screen == LOADING) {
+u8 worldJobActive() {
+  return world_job_stage != WORLD_JOB_IDLE;
+}
+
+u8 worldJobProgress() {
+  if (world_job_stage == WORLD_JOB_GENERATE) {
+    /* Generation dominates, so give it most of the bar. */
+    return (u8) ((worldGenerationProgress() * 3) / 4);
+  }
+  if (world_job_stage == WORLD_JOB_MESH) {
+    return (u8) (75 + worldMeshBuildProgress() / 4);
+  }
+  return 100;
+}
+
+/* TRUE once the highlighted slot has held still long enough to be worth
+   generating.  Entering a world is never delayed by this. */
+static u8 previewSelectionSettled() {
+  u8 selected = menuSelectedWorld();
+
+  if (selected != world_preview_last_world) {
+    world_preview_last_world = selected;
+    world_preview_settle = 0;
+    return FALSE;
+  }
+  if (world_preview_settle < WORLD_PREVIEW_SETTLE_FRAMES) {
+    world_preview_settle++;
+    return FALSE;
+  }
+  return TRUE;
+}
+
+static void beginWorldJob() {
+  if (worldGameBuildRequested()) {
+    /* The picked world is already generated and loaded -- only its display
+       lists are still the reduced scenic mesh, so this recompiles them at full
+       detail without touching the terrain the player chose. */
+    world_job_kind = WORLD_JOB_GAME;
+    world_job_stage = WORLD_JOB_MESH;
+    beginWorldMeshBuild(FALSE);
+    return;
+  }
+
+  /* The title menu is also a world picker.  Preparing the highlighted slot
+     gives the renderer a real world to orbit rather than a background image. */
+  world_job_kind = WORLD_JOB_PREVIEW;
+  world_job_world = menuSelectedWorld();
+  game_file_num = world_job_world + 1;
+  if (files_present[world_job_world]) {
+    /* Reading a save is a single bounded cart transfer, not a long compute,
+       so it stays in one piece. */
     loadGame();
     initDroppedItems();
     initMobs();
     initGeometry();
-    world_incomplete_message = !makeWorldDisplayLists();
+    world_job_stage = WORLD_JOB_MESH;
+    beginWorldMeshBuild(TRUE);
+  } else {
+    beginWorldGeneration();
+    world_job_stage = WORLD_JOB_GENERATE;
+  }
+}
 
-    beginLoadingPreview();
-    current_screen = LOADING_PREVIEW;
-  } else if ((current_screen == MENU || current_screen == WORLD_NAMING) &&
-      menuGameRequested()) {
-    /* The picked world is already generated and loaded -- only its display
-       lists are still the reduced scenic mesh, so this recompiles them at
-       full detail without touching the terrain the player just chose. */
-    world_incomplete_message = !makeGameWorldDisplayLists();
-    menuGameStarted();
-  } else if (current_screen == MENU && menuPreviewRequested()) {
-    /* The title menu is also a world picker.  Preparing the highlighted slot
-       here gives the renderer a real world to orbit rather than a generic
-       background image. */
-    game_file_num = menuSelectedWorld() + 1;
-    if (files_present[menuSelectedWorld()]) {
-      loadGame();
-    } else {
-      initWorld();
-      initPlayers();
+static void stepWorldJob() {
+  if (world_job_stage == WORLD_JOB_GENERATE) {
+    if (!stepWorldGeneration(WORLD_GEN_COLUMNS_PER_STEP)) {
+      return;
     }
+    /* Spawn placement reads the finished terrain, so it cannot run until
+       generation has completed. */
+    initPlayers();
     initDroppedItems();
     initMobs();
     initGeometry();
-    world_incomplete_message = !makeWorldDisplayLists();
-    beginLoadingPreview();
-    menuPreviewLoaded();
+    world_job_stage = WORLD_JOB_MESH;
+    beginWorldMeshBuild(TRUE);
+    return;
+  }
+
+  if (world_job_stage == WORLD_JOB_MESH) {
+    if (!stepWorldMeshBuild(WORLD_MESH_COLUMNS_PER_STEP)) {
+      return;
+    }
+    world_incomplete_message = !worldMeshBuildComplete();
+    world_job_stage = WORLD_JOB_IDLE;
+    if (world_job_kind == WORLD_JOB_GAME) {
+      menuGameStarted();
+    } else if (world_job_world == menuSelectedWorld()) {
+      beginLoadingPreview();
+      menuPreviewLoaded();
+    }
+    /* Otherwise the cursor moved while this world was building.  Leave the
+       request standing so the next callback starts the slot now highlighted;
+       the world just finished still renders until it is replaced. */
   }
 }
 
@@ -97,18 +169,16 @@ void callbackGfx(int pendingGfx) {
    * pace itself to the actual RSP/RDP cost.
    */
   if (pendingGfx == 0) {
-    if (world_build_stage == WORLD_BUILD_RUN) {
-      world_build_stage = WORLD_BUILD_IDLE;
-      runWorldBuild();
+    if (world_job_stage != WORLD_JOB_IDLE) {
+      stepWorldJob();
+    } else if (worldGameBuildRequested()) {
+      beginWorldJob();
+    } else if (worldPreviewBuildRequested() && previewSelectionSettled()) {
+      beginWorldJob();
     }
     /* A mesh arena can only be recycled when no submitted task can still
        reference its display lists. */
     draw(TRUE);
-    /* Promote only once a frame has actually been submitted: that frame is
-       what remains on screen while the next callback's build runs. */
-    if (world_build_stage == WORLD_BUILD_ANNOUNCE) {
-      world_build_stage = WORLD_BUILD_RUN;
-    }
   }
 
   if (current_screen == LOADING_PREVIEW && loadingPreviewFinished()) {
@@ -124,13 +194,6 @@ void callbackGfx(int pendingGfx) {
 #ifdef ENABLE_AUDIO
   updateAudio(current_screen);
 #endif
-
-  /* Arm after input has settled.  A request raised by this frame's input gets
-     one drawn frame to put its card or its outgoing preview on screen before
-     the build stalls the thread. */
-  if (world_build_stage == WORLD_BUILD_IDLE && worldBuildRequested()) {
-    world_build_stage = WORLD_BUILD_ANNOUNCE;
-  }
 }
 
 void callbackPreNMI() {

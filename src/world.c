@@ -327,89 +327,162 @@ static void generateWaystones() {
   }
 }
 
-void initWorld() {
-  static u8 terrain_height_rows[3][MAX_Z + 2];
-  u8 *previous_heights = terrain_height_rows[0];
-  u8 *current_heights = terrain_height_rows[1];
-  u8 *next_heights = terrain_height_rows[2];
-  int x, y, z;
+/*
+ * Generating a world is roughly two seconds of noise sampling -- far longer
+ * than a retrace -- and nothing else on the graphics thread submits frames.
+ * Run it in slices so the picker keeps orbiting the outgoing world and keeps
+ * reading the controller instead of going dead for the duration.
+ *
+ * The loop state that used to live on initWorld's stack therefore has to
+ * persist between slices.
+ */
+#define WORLD_GEN_IDLE 0
+#define WORLD_GEN_TERRAIN 1
+#define WORLD_GEN_WAYSTONES 2
+#define WORLD_GEN_TREES 3
+
+static u8 world_gen_stage = WORLD_GEN_IDLE;
+static int world_gen_x;
+static int world_gen_z;
+static u8 terrain_height_rows[3][MAX_Z + 2];
+static u8 *previous_heights;
+static u8 *current_heights;
+static u8 *next_heights;
+
+static void generateTerrainColumn(int x, int z) {
+  int y;
   int height, dirt_depth, water_level;
   float biome, slope;
   u8 block, do_sand, exposed_stone;
 
+  height = shapedSurfaceHeight(x, z, current_heights[z + 1], &water_level);
+  biome = perlin2d(x + 883, z + 521, 0.025f, 3);
+  slope = absolute((float)(next_heights[z + 1] - previous_heights[z + 1])) +
+    absolute((float)(current_heights[z + 2] - current_heights[z]));
+  /* Sand belongs at shorelines and a few shallow lowland patches.  Do
+   * not let a broad biome signal turn hills or mountain shoulders into
+   * implausible vertical sand stacks. */
+  do_sand = height <= SEA_LEVEL + 1 ||
+    (height <= SEA_LEVEL + 3 && biome < 0.42f);
+  exposed_stone = height > 21 || slope >= 5;
+  dirt_depth = 3 + (int)(biome * 2.0f);
+
+  for (y = 0; y < MAX_Y; y++) {
+    if (y >= height && y <= water_level) {
+      block = WATER;
+    } else if (y >= height)  {
+      block = AIR;
+    } else if (y == 0) {
+      block = BEDROCK;
+    } else if (isCave(x, y, z, height)) {
+      block = AIR;
+    } else if (y < height - dirt_depth) {
+      if (y < 13 && oreInCell(x, y, z, 5, 7)) {
+        block = IRON_ORE;
+      } else if (y < 23 && oreInCell(x, y, z, 4, 5)) {
+        block = COAL_ORE;
+      } else {
+        block = STONE;
+      }
+    } else if (do_sand) {
+      block = SAND;
+    } else if (exposed_stone && y >= height - 2) {
+      block = STONE;
+    } else if (y == height - 1) {
+      block = GRASS;
+    } else {
+      block = DIRT;
+    }
+
+    blockSet(x, y, z, block);
+  }
+}
+
+void beginWorldGeneration() {
   seed = (u32) osGetTime();
   setDayCycleWorldTicks(DAY_CYCLE_START_TICK);
   initTrees();
 
   windowClaimFixedExtent();
 
+  previous_heights = terrain_height_rows[0];
+  current_heights = terrain_height_rows[1];
+  next_heights = terrain_height_rows[2];
   fillTerrainHeightRow(previous_heights, -1);
   fillTerrainHeightRow(current_heights, 0);
   fillTerrainHeightRow(next_heights, 1);
 
-  for (x = 0; x < MAX_X; x++) {
-    for (z = 0; z < MAX_Z; z++) {
-      height = shapedSurfaceHeight(x, z, current_heights[z + 1],
-        &water_level);
-      biome = perlin2d(x + 883, z + 521, 0.025f, 3);
-      slope = absolute((float)(next_heights[z + 1] -
-        previous_heights[z + 1])) +
-        absolute((float)(current_heights[z + 2] - current_heights[z]));
-      /* Sand belongs at shorelines and a few shallow lowland patches.  Do
-       * not let a broad biome signal turn hills or mountain shoulders into
-       * implausible vertical sand stacks. */
-      do_sand = height <= SEA_LEVEL + 1 ||
-        (height <= SEA_LEVEL + 3 && biome < 0.42f);
-      exposed_stone = height > 21 || slope >= 5;
-      dirt_depth = 3 + (int)(biome * 2.0f);
+  world_gen_x = 0;
+  world_gen_z = 0;
+  world_gen_stage = WORLD_GEN_TERRAIN;
+}
 
-      for (y = 0; y < MAX_Y; y++) {
-        if (y >= height && y <= water_level) {
-          block = WATER;
-        } else if (y >= height)  {
-          block = AIR;
-        } else if (y == 0) {
-          block = BEDROCK;
-        } else if (isCave(x, y, z, height)) {
-          block = AIR;
-        } else if (y < height - dirt_depth) {
-          if (y < 13 && oreInCell(x, y, z, 5, 7)) {
-            block = IRON_ORE;
-          } else if (y < 23 && oreInCell(x, y, z, 4, 5)) {
-            block = COAL_ORE;
-          } else {
-            block = STONE;
-          }
-        } else if (do_sand) {
-          block = SAND;
-        } else if (exposed_stone && y >= height - 2) {
-          block = STONE;
-        } else if (y == height - 1) {
-          block = GRASS;
-        } else {
-          block = DIRT;
+u8 worldGenerationActive() {
+  return world_gen_stage != WORLD_GEN_IDLE;
+}
+
+u8 worldGenerationProgress() {
+  if (world_gen_stage == WORLD_GEN_IDLE) {
+    return 100;
+  }
+  /* Terrain dominates the cost; treat decoration as the last tenth so the bar
+     does not stall visibly at the end. */
+  if (world_gen_stage == WORLD_GEN_TERRAIN) {
+    return (u8) ((world_gen_x * 90) / MAX_X);
+  }
+  return (u8) (90 + (world_gen_stage == WORLD_GEN_TREES ?
+    (world_gen_x * 10) / MAX_X : 0));
+}
+
+u8 stepWorldGeneration(u32 columns) {
+  while (columns > 0 && world_gen_stage != WORLD_GEN_IDLE) {
+    if (world_gen_stage == WORLD_GEN_TERRAIN) {
+      generateTerrainColumn(world_gen_x, world_gen_z);
+      columns--;
+      if (++world_gen_z >= MAX_Z) {
+        world_gen_z = 0;
+        /* The slope test reads one column either side, so rotate the three
+           sampled rows exactly where the original single pass did. */
+        if (world_gen_x + 1 < MAX_X) {
+          u8 *old_previous = previous_heights;
+          previous_heights = current_heights;
+          current_heights = next_heights;
+          next_heights = old_previous;
+          fillTerrainHeightRow(next_heights, world_gen_x + 2);
         }
-
-        blockSet(x, y, z, block);
+        if (++world_gen_x >= MAX_X) {
+          world_gen_x = 0;
+          world_gen_stage = WORLD_GEN_WAYSTONES;
+        }
       }
-    }
-
-    if (x + 1 < MAX_X) {
-      u8 *old_previous = previous_heights;
-      previous_heights = current_heights;
-      current_heights = next_heights;
-      next_heights = old_previous;
-      fillTerrainHeightRow(next_heights, x + 2);
+    } else if (world_gen_stage == WORLD_GEN_WAYSTONES) {
+      /* Ten landmarks with a bounded retry each -- cheap enough to finish in
+         one slice, and it consumes the shared RNG stream in one piece. */
+      generateWaystones();
+      world_gen_x = 0;
+      world_gen_z = 0;
+      world_gen_stage = WORLD_GEN_TREES;
+    } else {
+      if (random(1000) < perlin2d(world_gen_x, world_gen_z, 0.02, 2) * 8 - 2) {
+        trySpawnTree(world_gen_x, world_gen_z);
+      }
+      columns--;
+      if (++world_gen_z >= MAX_Z) {
+        world_gen_z = 0;
+        if (++world_gen_x >= MAX_X) {
+          world_gen_stage = WORLD_GEN_IDLE;
+        }
+      }
     }
   }
+  return world_gen_stage == WORLD_GEN_IDLE;
+}
 
-  generateWaystones();
-
-  for (x = 0; x < MAX_X; x++) {
-    for (z = 0; z < MAX_Z; z++) {
-      if (random(1000) < perlin2d(x, z, 0.02, 2) * 8 - 2) {
-        trySpawnTree(x, z);
-      }
-    }
+/* Whole-world generation for callers that cannot yield, such as the storage
+   fallback when a save will not open.  Identical output to the sliced path:
+   the same RNG stream is consumed in the same order. */
+void initWorld() {
+  beginWorldGeneration();
+  while (!stepWorldGeneration(MAX_X * MAX_Z)) {
   }
 }

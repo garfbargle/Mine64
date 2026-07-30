@@ -131,7 +131,17 @@ void windowReset();
    generation and whole-world loading. */
 void windowClaimFixedExtent();
 
+/* Whole-world generation in one blocking pass.  Prefer the sliced form below
+   from anything that runs on the graphics thread. */
 void initWorld();
+
+/* Sliced generation.  stepWorldGeneration consumes at most `columns` terrain
+   columns and returns TRUE once the world is finished, so a caller can keep
+   submitting frames while a world builds. */
+void beginWorldGeneration();
+u8 stepWorldGeneration(u32 columns);
+u8 worldGenerationActive();
+u8 worldGenerationProgress();
 u8 tryPlantTree(int x, int y, int z);
 
 #endif /* WORLD_H */

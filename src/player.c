@@ -1526,6 +1526,22 @@ void updatePlayers() {
   }
 
   if (current_screen != GAME) {
+    if (current_screen == MENU) {
+      /* Bisect switches.  Each removes one suspect so the fault can be
+         cornered without a rebuild per hypothesis. */
+      if (cont_data[0].trigger & L_CBUTTONS) {
+        diag_draw_terrain = !diag_draw_terrain;
+      }
+      if (cont_data[0].trigger & R_CBUTTONS) {
+        diag_refine_seams = !diag_refine_seams;
+      }
+      if (cont_data[0].trigger & U_CBUTTONS) {
+        diag_column_cap = diag_column_cap > 8 ? diag_column_cap - 16 : 8;
+      }
+      if (cont_data[0].trigger & D_CBUTTONS) {
+        diag_column_cap = diag_column_cap < 96 ? diag_column_cap + 16 : 96;
+      }
+    }
     down_pressed = cont_data[0].stick_y < -50;
     up_pressed = cont_data[0].stick_y > 50;
     act_pressed = cont_data[0].button & (START_BUTTON | A_BUTTON | B_BUTTON);

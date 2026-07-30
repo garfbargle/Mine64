@@ -11,6 +11,25 @@
    vertical chunks needed while its lists are compiled. */
 ChunkQuads column_quads[CHUNKS_Y];
 
+/*
+ * T-junction refinement restarts a full O(n^2) pairwise scan after every
+ * split, and every split adds another quad, so the work is O(n^3) in the
+ * quads on a plane.  A fragmented plane can therefore stall inside a single
+ * column for seconds -- indistinguishable from a hang, and dependent on world
+ * content, which is why it only bites some worlds.
+ *
+ * Cap the refinements instead.  A skipped one leaves a hairline seam between
+ * two quads; an uncapped one stops the console.
+ */
+#define MAX_TJUNCTION_REFINEMENTS 8
+
+static u8 refine_tjunctions = TRUE;
+u32 tjunction_refinement_caps;
+
+void geometrySetTjunctionRefinement(u8 enabled) {
+  refine_tjunctions = enabled;
+}
+
 typedef struct {
   u8 lower;
   u8 upper;
@@ -319,9 +338,20 @@ static u8 splitOneTjunction(QuadList *front, QuadList *back) {
 }
 
 static void splitTjunctions(QuadList *front, QuadList *back) {
+  u8 refinements = 0;
+
+  if (!refine_tjunctions) {
+    return;
+  }
   /* Splitting can introduce a new endpoint on the opposite edge, so restart
-     the search after each refinement until the whole plane is conforming. */
-  while (splitOneTjunction(front, back)) {
+     the search after each refinement -- but stop well before the quad budget
+     makes that quadratic rescan the dominant cost of the whole world. */
+  while (refinements < MAX_TJUNCTION_REFINEMENTS &&
+      splitOneTjunction(front, back)) {
+    refinements++;
+  }
+  if (refinements >= MAX_TJUNCTION_REFINEMENTS) {
+    tjunction_refinement_caps++;
   }
 }
 
