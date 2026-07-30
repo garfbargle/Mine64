@@ -18,7 +18,7 @@ static FATFS fs;
 #define LEGACY_COOP_HEADER_SIZE 256
 #define LEGACY_MAX_PLAYERS 2
 #define BUFFER_LEN 512
-#define SAVE_VERSION 9
+#define SAVE_VERSION 10
 
 typedef struct {
   u32 magic_num;
@@ -173,13 +173,14 @@ static UINT buffer_bytes_read = 0;
 /* The reserved bytes of player zero record the chunk dimensions. */
 static void saveWorldDimensions(Header *header) {
   header->player[0].reserved[0] = CHUNKS_X;
-  header->player[0].reserved[1] = CHUNKS_Y;
+  header->player[0].reserved[1] =
+    (header->player[0].reserved[1] & 0xF0) | (CHUNKS_Y & 0x0F);
   header->player[0].reserved[2] = CHUNKS_Z;
 }
 
 static u8 savedWorldDimensionsMatch(SavedPlayer *saved_players) {
   return saved_players[0].reserved[0] == CHUNKS_X &&
-    saved_players[0].reserved[1] == CHUNKS_Y &&
+    (saved_players[0].reserved[1] & 0x0F) == CHUNKS_Y &&
     saved_players[0].reserved[2] == CHUNKS_Z;
 }
 
@@ -206,7 +207,7 @@ static u32 checksumSave(SavedPlayer *players_to_save, u32 player_count,
   u32 index;
 
   for (index = 0; index < NUM_BLOCKS; index++) {
-    checksum = checksumByte(checksum, blocks[index]);
+    checksum = checksumByte(checksum, blockGetIndex(index));
   }
   return checksum;
 }
@@ -373,6 +374,9 @@ static void savePlayerState(SavedPlayer *saved, Player *player) {
   for (slot = 0; slot < sizeof(saved->reserved); slot++) {
     saved->reserved[slot] = 0;
   }
+  /* Save v10 uses the spare high nibble beside the chunk-height marker for
+     objective progress without growing the fixed 512-byte header. */
+  saved->reserved[1] = (player->objective_stage & 0x0F) << 4;
   for (slot = 0; slot < INVENTORY_SIZE; slot++) {
     saved->inventory[slot] = player->inventory[slot];
   }
@@ -423,6 +427,11 @@ static void restoreSavedInventory(Player *player, SavedPlayer *saved) {
   player->inventory_area = INVENTORY_AREA_ITEMS;
   player->crafting_table_open = FALSE;
   player->held_block = player->inventory[player->inventory_cursor].item;
+  player->objective_stage = saved->reserved[1] >> 4;
+  if (player->objective_stage > PLAYER_OBJECTIVE_COUNT) {
+    player->objective_stage = 0;
+  }
+  player->objective_time = 180.f;
 }
 
 static void restorePlayerState(Player *player, Vector3 position, float pitch,
@@ -433,13 +442,18 @@ static void restorePlayerState(Player *player, Vector3 position, float pitch,
   player->body_yaw = yaw;
   player->walk_time = 0;
   player->walk_swing = 0;
+  player->vault_time = 0;
+  player->camera_y_offset = 0;
   player->knockback_velocity = (Vector3) {0, 0, 0};
   player->attack_time = 0;
   player->hurt_time = 0;
+  player->objective_stage = 0;
+  player->objective_time = 180.f;
   player->health = PLAYER_MAX_HEALTH;
   player->camera_mode = CAMERA_FIRST_PERSON;
   player->held_block = held_block;
   player->y_velocity = 0;
+  player->fall_distance = 0;
   player->active = TRUE;
   player->target_present = FALSE;
   player->breaking = FALSE;
@@ -544,12 +558,11 @@ u8 saveGame() {
   Header *header = (Header *) file_buffer;
   FRESULT result;
   u8 write_ok = TRUE;
-  u8 packed;
   u8 slot;
   u8 player_num;
   u8 had_previous_file;
   u8 *blocks_ptr;
-  const u8 *blocks_end = blocks + NUM_BLOCKS;
+  const u8 *blocks_end = block_data + NUM_BLOCK_BYTES;
   u8 *trees_ptr;
   const u8 *trees_end = (const u8 *) trees + sizeof(trees);
 
@@ -589,9 +602,11 @@ u8 saveGame() {
   }
   write_ok = writePage(&file);
 
-  for (blocks_ptr = blocks; write_ok && blocks_ptr < blocks_end; blocks_ptr += 2) {
-    packed = (blocks_ptr[0] << 4) | blocks_ptr[1];
-    file_buffer[cursor_pos++] = packed;
+  /* The live world is already nibble-packed, so saving can stream it without
+     a second full-world buffer or any expansion/compression pass. */
+  for (blocks_ptr = block_data; write_ok && blocks_ptr < blocks_end;
+      blocks_ptr++) {
+    file_buffer[cursor_pos++] = *blocks_ptr;
 
     if (cursor_pos >= BUFFER_LEN) {
       write_ok = writePage(&file);
@@ -668,8 +683,9 @@ void loadGame() {
   u8 *blocks_ptr;
   u8 *trees_ptr;
   u32 tree_byte;
+  u32 block_index;
   u8 player_num;
-  const u8 *blocks_end = blocks + NUM_BLOCKS;
+  const u8 *blocks_end = block_data + NUM_BLOCK_BYTES;
 
   if (game_file_num < 1 || game_file_num > 3) {
     initWorld();
@@ -919,7 +935,8 @@ void loadGame() {
     return;
   }
 
-  for (blocks_ptr = blocks; blocks_ptr < blocks_end; blocks_ptr += 2) {
+  block_index = 0;
+  for (blocks_ptr = block_data; blocks_ptr < blocks_end; blocks_ptr++) {
     if (cursor_pos >= buffer_bytes_read) {
       if (!readPage(&file)) {
         read_ok = FALSE;
@@ -928,17 +945,20 @@ void loadGame() {
     }
 
     packed = file_buffer[cursor_pos++];
-    blocks_ptr[0] = packed >> 4;
-    blocks_ptr[1] = packed & 0xF;
-    if (!BLOCK_IS_VALID(blocks_ptr[0])) {
-      blocks_ptr[0] = AIR;
+    if (!BLOCK_IS_VALID(packed >> 4)) {
+      packed &= 0x0F;
     }
-    if (!BLOCK_IS_VALID(blocks_ptr[1])) {
-      blocks_ptr[1] = AIR;
+    if (!BLOCK_IS_VALID(packed & 0x0F)) {
+      packed &= 0xF0;
     }
+    *blocks_ptr = packed;
     if (full_inventory_saved) {
-      computed_checksum = checksumByte(computed_checksum, blocks_ptr[0]);
-      computed_checksum = checksumByte(computed_checksum, blocks_ptr[1]);
+      computed_checksum = checksumByte(computed_checksum,
+        blockGetIndex(block_index++));
+      if (block_index < NUM_BLOCKS) {
+        computed_checksum = checksumByte(computed_checksum,
+          blockGetIndex(block_index++));
+      }
     }
   }
 

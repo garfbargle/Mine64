@@ -1,15 +1,29 @@
 # Mine64 for Nintendo 64
 
 Mine64 is a compact block-building game for original Nintendo 64 hardware.
-Version 0.3 adds hardware-stable four-player co-op, deeper mining and crafting,
-safer cartridge saves, and an asset pipeline that does not require Minecraft
-files.
+Version 0.4 adds a complete wood-to-iron progression, expanded mobs and
+combat, traversal and survival mechanics, and a more informative HUD while
+retaining the stable 112×32×112 renderer and loading-screen presentation.
 
 ![Mine64 box art](mine64.png)
 
 ![Mine64 in-game screenshot](game.png)
 
-## v0.3 highlights
+## v0.4 highlights
+
+* Coal and iron form compact underground veins above an unbreakable bedrock
+  floor. Mossy waystones provide sparse landmarks without increasing the
+  permanent world dimensions.
+* Wooden, stone, and iron swords, pickaxes, and axes have distinct held,
+  pickup, hotbar, and inventory silhouettes.
+* Sprint toward a one-block obstacle while holding **L + R** to vault it.
+  Long falls hurt, while slime gel can automatically cushion one landing.
+* A bounded eight-slot mob pool supports sheep, pigs, and hostile night
+  slimes. Animals flee attackers and drop species-specific resources.
+* Apples and raw meat restore health. The HUD now includes half-hearts, a
+  compass, progressive opening objectives, and a compact C-button guide.
+* Runtime terrain is nibble-packed, halving the live world-array cost while
+  keeping the proven 112×32×112 rendering and visibility budgets.
 
 * Up to four players: Controller 2 joins with horizontal split-screen; adding
   Player 3 or 4 switches to a 2x2 split-screen. Players join a running world
@@ -24,11 +38,13 @@ files.
   walking swing and head/eye direction that follows their camera.
 * Co-op saves both player positions and inventories; older single-player saves
   still load safely.
-* Save v4 preserves exact hotbar, inventory, crafting, and carried-item state.
+* Save v10 preserves exact hotbar, inventory, crafting, carried-item,
+  objective, world clock, tree, and packed-terrain state.
   It validates player/world data with a checksum and uses temporary plus backup
   files so an interrupted cartridge write can recover the previous world.
-* All terrain can now be mined. Wooden pickaxes gather stone, cobblestone, and
-  bricks and break them much faster, while wooden swords cut leaves quickly.
+* Gatherable terrain becomes a protected physical pickup. Rock requires a
+  pickaxe to yield resources; coal accepts any pickaxe, while iron requires
+  stone or better. Axes accelerate wood and preserve whole-tree felling.
 * New worlds combine oceans, lakes, winding river channels, lowlands, rolling
   grasslands, ridge-shaped mountain regions, beaches/deserts, variable soil
   depths, exposed stone cliffs, and underground cave networks.
@@ -36,8 +52,6 @@ files.
   and then pulls into the nearby player. Tools are non-stackable, pickups are
   protected when the entity pool is full, and partial inventory transfers can
   no longer duplicate items.
-* Passive sheep wander nearby grassland. They never attack: a wooden sword
-  defeats one in two hits and releases a small wool pickup for upcoming beds.
 * Long frame hitches are clamped before physics simulation, preventing world
   generation or storage delays from pushing players through terrain.
 * Co-op deliberately uses a narrower view and no more than 24 visible columns
@@ -54,26 +68,25 @@ files.
 | Hold L + analog stick | Sprint |
 | Hold Z + analog stick | Look around |
 | C-up | Toggle first-person / third-person camera |
-| A / hold B | Use a crafting table or place / mine; tap B with a sword to attack a nearby sheep or player |
+| C-down | Open inventory or the targeted crafting table |
 | C-left / C-right | Cycle the selected hotbar block |
+| A | Use a crafting table, place a block, or eat held food |
+| Hold B / tap B | Mine / attack a nearby mob or player with a sword |
 | START | Open / close that player's inventory |
 | R | Jump |
+| Hold L + R while moving | Vault a one-block obstacle |
 | D-pad (either player) | Save, when cartridge storage is available |
 | Controller 2-4 START | Join co-op during a running world |
 
 The bottom hotbar starts empty. Its bright slot and the enlarged block at the
 lower right show what each player is holding; that is the block placed with
 **A**. Hold B to mine—releasing B or looking away resets the breaking progress.
-Every current terrain block can be broken and the gatherable ones pop out as a
-small cube before flying into the player when collected. Stone, cobblestone,
-and bricks are slow to punch and yield nothing without a wooden pickaxe; the
-pickaxe both mines them faster and gathers their cube. A wooden sword clears
-leaves quickly. In co-op, face a nearby player and tap **B** to swing: each
-hit removes two hearts and knocks the target back. A player who loses all ten
-hearts respawns at full health with their inventory intact. Equipped swords
-are visible in both first- and third-person views. Passive sheep wander on
-nearby grass; face one and tap **B** twice with a wooden sword to receive one
-to three wool. Sheep do not fight back and respawn over time near players.
+Gatherable terrain pops out before flying into the player. Rock requires a
+pickaxe to yield resources; coal accepts any pickaxe, while iron requires
+stone or better. Axes speed up logs and planks, and bedrock does not break.
+In co-op, face a nearby player and tap **B** to swing. A player who loses all
+ten hearts respawns at full health with their inventory intact. Sheep and pigs
+flee attacks; hostile slimes pursue players at night.
 
 Either player can press **START** to open their inventory. It has a 3-row
 storage grid, a selectable nine-slot hotbar, and a working 2x2 crafting area.
@@ -85,9 +98,9 @@ pick up and re-place the result. The labelled Hand slot remains available for
 moving whole stacks around the inventory: press **A** on an item slot to pick
 up or place a stack, or **B** to split one item. One log makes four planks; two
 vertical planks make four sticks; and four planks make a crafting table.
-Place a crafting table, look at it, then press **A** to open its 3x3 grid for
-wooden swords and wooden pickaxes. **START** also opens this grid while the
-table is targeted.
+Place a crafting table, look at it, then press **A**, **C-down**, or **START**
+to open its 3×3 grid. Planks make wooden tools, cobblestone makes stone tools,
+and iron chunks make iron tools.
 
 ## SummerCart64
 
@@ -236,7 +249,9 @@ used in this order: dirt, stone, grass top, grass side, cobblestone, sand, log
 end, log side, leaves, planks, bricks, water.
 `make` automatically converts each cell into a 16x16, 16-colour CI4 tile.
 The importer preserves crisp source pixels with nearest sampling and reduces
-each tile to its own N64 palette.
+each tile to its own N64 palette. Coal ore, iron ore, bedrock, and mossy
+cobblestone are generated as companion tiles, keeping the editable atlas at
+its compact 4×3 size.
 
 ### Music asset pipeline
 
@@ -302,13 +317,15 @@ fixed hardware budget, including third-person avatars and pickups. All
 per-frame display lists and referenced matrices are double-buffered so their
 memory stays immutable until the RSP finishes.
 
-The linked release program currently occupies about 2.4 MiB including its world,
+The linked release program currently occupies about 3.1 MiB including its world,
 geometry cache, NuSystem task buffers, and doubled render state. It remains
 within the stock console's 4 MiB RDRAM; an Expansion Pak is not required.
 
 ## Technical Details
 
 * The world consists of a 14x14 grid of "columns", each split into 4 vertical chunks of 8x8x8 blocks each (a 112x32x112-block world).
+* Runtime blocks remain nibble-packed; hot accessors decode the requested
+half-byte without allocating an expanded terrain mirror.
 * For each chunk a greedy scanning algorithm merges adjacent block faces with the same texture,
 to reduce the number of quads that need to be rendered.
 * Greedy geometry is held only for the four chunks in the column currently

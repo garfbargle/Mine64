@@ -80,6 +80,22 @@ def tile(kind, x, y):
         return 1 + (mottled(x, y, 1) >> 1)
     if kind == "stone":
         return 1 + (mottled(x, y, 3) >> 1)
+    if kind in ("coal_ore", "iron_ore"):
+        # Reuse stone's broad clusters, then lay sparse 2x2 ore seams over
+        # them.  Large marks survive composite video far better than speckles.
+        seam = ((x // 2) * 7 + (y // 2) * 11 + (x // 4) * (y // 4)) % 17
+        if seam < 2:
+            return 4 + seam
+        return 1 + (mottled(x, y, 3) >> 1)
+    if kind == "bedrock":
+        return 1 + ((mottled(x, y, 6) + (x // 4) + (y // 4)) % 3)
+    if kind == "mossy_cobblestone":
+        shifted_x = (x + ((y // 4) & 1) * 3) & 15
+        if y % 4 == 0 or shifted_x % 8 == 0:
+            return 1
+        if ((x // 4) * 3 + y // 3) % 7 < 2:
+            return 4
+        return 2 + ((shifted_x // 4 + y // 4) & 1)
     if kind == "grass_top":
         return int(GRASS_TOP[y][x])
     if kind == "grass_side":
@@ -154,6 +170,13 @@ def tile(kind, x, y):
 PALETTES = {
     "dirt": [(79, 47, 25), (105, 65, 35), (132, 86, 47), (0, 0, 0)],
     "stone": [(71, 76, 78), (94, 100, 102), (119, 124, 124), (0, 0, 0)],
+    "coal_ore": [(71, 76, 78), (94, 100, 102), (119, 124, 124),
+                 (0, 0, 0), (27, 29, 31), (47, 50, 51)],
+    "iron_ore": [(71, 76, 78), (94, 100, 102), (119, 124, 124),
+                 (0, 0, 0), (151, 104, 72), (190, 137, 92)],
+    "bedrock": [(25, 27, 29), (43, 46, 48), (62, 66, 67), (0, 0, 0)],
+    "mossy_cobblestone": [(45, 51, 48), (66, 73, 72), (91, 99, 97),
+                          (113, 121, 117), (45, 91, 48)],
     "grass_top": [(30, 76, 34), (43, 101, 43), (58, 123, 50), (76, 143, 57)],
     "grass_side": [(30, 76, 34), (43, 101, 43), (58, 123, 50), (79, 47, 25), (105, 65, 35), (132, 86, 47)],
     "cobblestone": [(57, 62, 64), (85, 91, 93), (108, 114, 115), (132, 137, 137)],

@@ -1,5 +1,6 @@
 #include <nusys.h>
 #include "blocks.h"
+#include "items.h"
 #include "texture_data.h"
 
 typedef struct {
@@ -16,6 +17,22 @@ FaceSpec dirt_faces[] = {
 
 FaceSpec stone_faces[] = {
   {STONE, TRUE, TRUE, TRUE}
+};
+
+FaceSpec coal_ore_faces[] = {
+  {COAL_ORE, TRUE, TRUE, TRUE}
+};
+
+FaceSpec iron_ore_faces[] = {
+  {IRON_ORE, TRUE, TRUE, TRUE}
+};
+
+FaceSpec bedrock_faces[] = {
+  {BEDROCK, TRUE, TRUE, TRUE}
+};
+
+FaceSpec mossy_cobblestone_faces[] = {
+  {MOSSY_COBBLESTONE, TRUE, TRUE, TRUE}
 };
 
 FaceSpec grass_top_faces[] = {
@@ -73,6 +90,22 @@ TextureSpec stone_spec = {
   &stone_texture, 1, stone_faces
 };
 
+TextureSpec coal_ore_spec = {
+  &coal_ore_texture, 1, coal_ore_faces
+};
+
+TextureSpec iron_ore_spec = {
+  &iron_ore_texture, 1, iron_ore_faces
+};
+
+TextureSpec bedrock_spec = {
+  &bedrock_texture, 1, bedrock_faces
+};
+
+TextureSpec mossy_cobblestone_spec = {
+  &mossy_cobblestone_texture, 1, mossy_cobblestone_faces
+};
+
 TextureSpec grass_top_spec = {
   &grass_top_texture, 1, grass_top_faces
 };
@@ -115,14 +148,16 @@ TextureSpec bricks_spec = {
 
 TextureSpec *textures[] = {
   &dirt_spec, &stone_spec, &grass_top_spec, &grass_side_spec, &cobblestone_spec, &sand_spec,
-  &water_spec, &wood_top_spec, &wood_side_spec, &leaves_spec, &planks_spec, &bricks_spec
+  &water_spec, &wood_top_spec, &wood_side_spec, &leaves_spec, &planks_spec, &bricks_spec,
+  &coal_ore_spec, &iron_ore_spec, &bedrock_spec, &mossy_cobblestone_spec
 };
 
-Texture *preview_textures[] = {
+Texture *preview_textures[ITEM_TYPE_COUNT + 1] = {
   NULL, &dirt_texture, &stone_texture, &grass_side_texture,
   &cobblestone_texture, &sand_texture, &wood_side_texture,
   &leaves_texture, &planks_texture, &bricks_texture, &planks_texture,
-  NULL, NULL, NULL, &leaves_texture, NULL, &wool_texture
+  NULL, NULL, NULL, NULL, NULL,
+  NULL, NULL, NULL, &leaves_texture, &wool_texture
 };
 
 #define NUM_TEXTURES (sizeof(textures) / sizeof(textures[0]))

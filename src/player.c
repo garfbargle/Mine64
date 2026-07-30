@@ -13,8 +13,8 @@
 #include "audio.h"
 #include "world.h"
 
-#define START_X 32
-#define START_Z 48
+#define START_X (MAX_X / 2)
+#define START_Z (MAX_Z / 2)
 
 #define STICK_DAMPER 22
 #define MOVE_SPEED (1 / 8.f)
@@ -260,6 +260,72 @@ static u8 getCraftRecipe(Player *player, ItemStack *result, u16 *used_slots) {
     *used_slots = (1 << 0) | (1 << 1) | (1 << 2) | (1 << 4) | (1 << 7);
     return TRUE;
   }
+  if (player->crafting_table_open && recipeSlotIs(player, 0, PLANKS) &&
+      recipeSlotIs(player, 1, PLANKS) && recipeSlotIs(player, 3, PLANKS) &&
+      recipeSlotIs(player, 4, STICK) && recipeSlotIs(player, 7, STICK) &&
+      recipeHasOnly(player,
+        (1 << 0) | (1 << 1) | (1 << 3) | (1 << 4) | (1 << 7))) {
+    result->item = WOOD_AXE;
+    result->count = 1;
+    *used_slots = (1 << 0) | (1 << 1) | (1 << 3) | (1 << 4) | (1 << 7);
+    return TRUE;
+  }
+  if (player->crafting_table_open && recipeSlotIs(player, 0, COBBLESTONE) &&
+      recipeSlotIs(player, 3, COBBLESTONE) && recipeSlotIs(player, 6, STICK) &&
+      recipeHasOnly(player, (1 << 0) | (1 << 3) | (1 << 6))) {
+    result->item = STONE_SWORD;
+    result->count = 1;
+    *used_slots = (1 << 0) | (1 << 3) | (1 << 6);
+    return TRUE;
+  }
+  if (player->crafting_table_open && recipeSlotIs(player, 0, COBBLESTONE) &&
+      recipeSlotIs(player, 1, COBBLESTONE) &&
+      recipeSlotIs(player, 2, COBBLESTONE) && recipeSlotIs(player, 4, STICK) &&
+      recipeSlotIs(player, 7, STICK) && recipeHasOnly(player,
+        (1 << 0) | (1 << 1) | (1 << 2) | (1 << 4) | (1 << 7))) {
+    result->item = STONE_PICKAXE;
+    result->count = 1;
+    *used_slots = (1 << 0) | (1 << 1) | (1 << 2) | (1 << 4) | (1 << 7);
+    return TRUE;
+  }
+  if (player->crafting_table_open && recipeSlotIs(player, 0, COBBLESTONE) &&
+      recipeSlotIs(player, 1, COBBLESTONE) &&
+      recipeSlotIs(player, 3, COBBLESTONE) && recipeSlotIs(player, 4, STICK) &&
+      recipeSlotIs(player, 7, STICK) && recipeHasOnly(player,
+        (1 << 0) | (1 << 1) | (1 << 3) | (1 << 4) | (1 << 7))) {
+    result->item = STONE_AXE;
+    result->count = 1;
+    *used_slots = (1 << 0) | (1 << 1) | (1 << 3) | (1 << 4) | (1 << 7);
+    return TRUE;
+  }
+  if (player->crafting_table_open && recipeSlotIs(player, 0, IRON_CHUNK) &&
+      recipeSlotIs(player, 3, IRON_CHUNK) && recipeSlotIs(player, 6, STICK) &&
+      recipeHasOnly(player, (1 << 0) | (1 << 3) | (1 << 6))) {
+    result->item = IRON_SWORD;
+    result->count = 1;
+    *used_slots = (1 << 0) | (1 << 3) | (1 << 6);
+    return TRUE;
+  }
+  if (player->crafting_table_open && recipeSlotIs(player, 0, IRON_CHUNK) &&
+      recipeSlotIs(player, 1, IRON_CHUNK) &&
+      recipeSlotIs(player, 2, IRON_CHUNK) && recipeSlotIs(player, 4, STICK) &&
+      recipeSlotIs(player, 7, STICK) && recipeHasOnly(player,
+        (1 << 0) | (1 << 1) | (1 << 2) | (1 << 4) | (1 << 7))) {
+    result->item = IRON_PICKAXE;
+    result->count = 1;
+    *used_slots = (1 << 0) | (1 << 1) | (1 << 2) | (1 << 4) | (1 << 7);
+    return TRUE;
+  }
+  if (player->crafting_table_open && recipeSlotIs(player, 0, IRON_CHUNK) &&
+      recipeSlotIs(player, 1, IRON_CHUNK) &&
+      recipeSlotIs(player, 3, IRON_CHUNK) && recipeSlotIs(player, 4, STICK) &&
+      recipeSlotIs(player, 7, STICK) && recipeHasOnly(player,
+        (1 << 0) | (1 << 1) | (1 << 3) | (1 << 4) | (1 << 7))) {
+    result->item = IRON_AXE;
+    result->count = 1;
+    *used_slots = (1 << 0) | (1 << 1) | (1 << 3) | (1 << 4) | (1 << 7);
+    return TRUE;
+  }
   result->item = AIR;
   result->count = 0;
   *used_slots = 0;
@@ -416,9 +482,14 @@ static void spawnPlayer(Player *player, int x, int z) {
   player->walk_time = 0;
   player->walk_swing = 0;
   player->y_velocity = 0;
+  player->fall_distance = 0;
+  player->vault_time = 0;
+  player->camera_y_offset = 0;
   player->knockback_velocity = (Vector3) {0, 0, 0};
   player->attack_time = 0;
   player->hurt_time = 0;
+  player->objective_stage = 0;
+  player->objective_time = 420.f;
   player->health = PLAYER_MAX_HEALTH;
   player->camera_mode = CAMERA_FIRST_PERSON;
   player->held_block = COBBLESTONE;
@@ -432,7 +503,7 @@ static void spawnPlayer(Player *player, int x, int z) {
   player->position.z = (z + 0.5) * BLOCK_SIZE;
 
   for (y = MAX_Y - 1; y >= 0; y--) {
-    if (BLOCK_IS_SOLID(blocks[x * MAX_Y * MAX_Z + y * MAX_Z + z])) {
+    if (BLOCK_IS_SOLID(blockGet(x, y, z))) {
       player->position.y = (y + 1 + EYE_HEIGHT) * BLOCK_SIZE;
       return;
     }
@@ -449,7 +520,7 @@ static void respawnPlayer(Player *player, int x, int z) {
   player->position.x = (x + 0.5f) * BLOCK_SIZE;
   player->position.z = (z + 0.5f) * BLOCK_SIZE;
   for (y = MAX_Y - 1; y >= 0; y--) {
-    if (BLOCK_IS_SOLID(blocks[x * MAX_Y * MAX_Z + y * MAX_Z + z])) {
+    if (BLOCK_IS_SOLID(blockGet(x, y, z))) {
       player->position.y = (y + 1 + EYE_HEIGHT) * BLOCK_SIZE;
       break;
     }
@@ -458,12 +529,46 @@ static void respawnPlayer(Player *player, int x, int z) {
     player->position.y = (MAX_Y + EYE_HEIGHT) * BLOCK_SIZE;
   }
   player->y_velocity = 0;
+  player->fall_distance = 0;
+  player->vault_time = 0;
+  player->camera_y_offset = 0;
   player->knockback_velocity = (Vector3) {0, 0, 0};
   player->attack_time = 0;
   player->hurt_time = 0;
+  player->objective_time = 180.f;
   player->health = PLAYER_MAX_HEALTH;
   player->breaking = FALSE;
   player->break_progress = 0;
+}
+
+void damagePlayer(u8 player_num, u8 damage, Vector3 source) {
+  Player *player;
+  float dx;
+  float dz;
+  float distance;
+
+  if (player_num >= active_player_count) {
+    return;
+  }
+  player = &players[player_num];
+  if (!player->active || player->hurt_time > 0) {
+    return;
+  }
+  player->health = player->health > damage ? player->health - damage : 0;
+  player->hurt_time = PLAYER_ATTACK_DURATION;
+  dx = player->position.x - source.x;
+  dz = player->position.z - source.z;
+  distance = sqrtf(dx * dx + dz * dz);
+  if (distance > 1.f) {
+    player->knockback_velocity.x = dx / distance * 10.f;
+    player->knockback_velocity.z = dz / distance * 10.f;
+  }
+  player->y_velocity = max(player->y_velocity, 4.f);
+  playSound(SOUND_PUNCH);
+  if (player->health == 0) {
+    respawnPlayer(player, START_X + player_num * 3,
+      START_Z + (player_num & 1 ? 0 : 3));
+  }
 }
 
 void initPlayers() {
@@ -507,8 +612,9 @@ void updateTargetBlock(u8 player_num) {
   player->target_z = origin.z / BLOCK_SIZE;
 
   player->target_present = TRUE;
-  while (player->target_x >= MAX_X || player->target_y >= MAX_Y || player->target_z >= MAX_Z ||
-    !blocks[player->target_x * MAX_Y * MAX_Z + player->target_y * MAX_Z + player->target_z]) {
+  while (player->target_x >= MAX_X || player->target_y >= MAX_Y ||
+      player->target_z >= MAX_Z ||
+      !blockGet(player->target_x, player->target_y, player->target_z)) {
     t = 9999;
 
     rayStepAxis(origin.x, direction.x, player->target_x, &t, &step, 0);
@@ -573,20 +679,99 @@ static u8 boxObstructed(Vector3 pos, int override_axis, int override_block) {
   Vector3i min_block, max_block;
 
   boxBlockRange(pos, &min_block, &max_block);
-  *ati(&min_block, override_axis) = override_block;
-  *ati(&max_block, override_axis) = override_block;
+  if (override_axis >= 0) {
+    *ati(&min_block, override_axis) = override_block;
+    *ati(&max_block, override_axis) = override_block;
+  }
 
   for (x = min_block.x; x <= max_block.x; x++) {
     for (y = min_block.y; y <= max_block.y; y++) {
       for (z = min_block.z; z <= max_block.z; z++) {
         if (x < 0 || y < 0 || z < 0 || x >= MAX_X || z >= MAX_Z ||
-            (y < MAX_Y && BLOCK_IS_SOLID(blocks[x * MAX_Y * MAX_Z + y * MAX_Z + z]))) {
+            (y < MAX_Y && BLOCK_IS_SOLID(blockGet(x, y, z)))) {
           return TRUE;
         }
       }
     }
   }
   return FALSE;
+}
+
+static u8 tryVault(Player *player, Vector3 velocity, float delta,
+    u8 vault_button) {
+  Vector3 candidate = player->position;
+  Vector3 raised;
+
+  if (!vault_button || player->vault_time > 0 ||
+      (velocity.x == 0 && velocity.z == 0)) {
+    return FALSE;
+  }
+  candidate.x += velocity.x * delta * 1.35f;
+  candidate.z += velocity.z * delta * 1.35f;
+  if (!boxObstructed(div(candidate, BLOCK_SIZE), -1, 0)) {
+    return FALSE;
+  }
+
+  /* Both the destination and the vertical lift must fit the full player box.
+     This prevents a mantle from entering a low ceiling or vaulting a wall
+     taller than one block. */
+  raised = candidate;
+  raised.y += BLOCK_SIZE + 2.f;
+  if (boxObstructed(div(raised, BLOCK_SIZE), -1, 0)) {
+    return FALSE;
+  }
+  raised = player->position;
+  raised.y += BLOCK_SIZE + 2.f;
+  if (boxObstructed(div(raised, BLOCK_SIZE), -1, 0)) {
+    return FALSE;
+  }
+
+  player->position.y += BLOCK_SIZE + 2.f;
+  player->camera_y_offset -= BLOCK_SIZE;
+  player->vault_time = PLAYER_VAULT_DURATION;
+  player->y_velocity = 2.f;
+  return TRUE;
+}
+
+static u8 consumeInventoryItem(Player *player, u8 item) {
+  u8 slot;
+
+  for (slot = 0; slot < INVENTORY_SIZE; slot++) {
+    ItemStack *stack = &player->inventory[slot];
+    if (stack->item == item && stack->count > 0) {
+      stack->count--;
+      if (stack->count == 0) {
+        stack->item = AIR;
+      }
+      return TRUE;
+    }
+  }
+  return FALSE;
+}
+
+static void landPlayer(Player *player) {
+  if (player->fall_distance > BLOCK_SIZE * 3.f) {
+    if (consumeInventoryItem(player, SLIME_GEL)) {
+      u8 player_num = player - players;
+      pickup_item[player_num] = SLIME_GEL;
+      pickup_message[player_num] = 60;
+      playSound(SOUND_PICKUP);
+      player->fall_distance = 0;
+      return;
+    }
+    u8 damage = (player->fall_distance / BLOCK_SIZE - 2.f) * 2.f;
+    if (damage > 0) {
+      player->health = player->health > damage ? player->health - damage : 0;
+      player->hurt_time = PLAYER_ATTACK_DURATION;
+      playSound(SOUND_PUNCH);
+      if (player->health == 0) {
+        u8 player_num = player - players;
+        respawnPlayer(player, START_X + player_num * 3,
+          START_Z + (player_num & 1 ? 0 : 3));
+      }
+    }
+  }
+  player->fall_distance = 0;
 }
 
 static float detectCollision(Player *player, Vector3 velocity, float max_t, int *collision_axis) {
@@ -666,7 +851,7 @@ static void placeBlock(u8 player_num, u8 x, u8 y, u8 z) {
     }
   }
 
-  blocks[x * MAX_Y * MAX_Z + y * MAX_Z + z] = player->held_block;
+  blockSet(x, y, z, player->held_block);
   if (blockUsesInventory(player->held_block)) {
     held_stack->count--;
   }
@@ -678,19 +863,39 @@ static u8 dropForBlock(u8 block, u8 tool, u8 *item) {
   /* Rock is deliberately breakable by hand, but only a pickaxe harvests a
      cube.  The remaining current terrain is soft or wooden enough to gather
      with the tools the game already offers. */
-  if ((block == STONE || block == COBBLESTONE || block == BRICKS) &&
-      tool != WOOD_PICKAXE) {
+  if (block == BEDROCK) {
+    return FALSE;
+  }
+  if ((block == STONE || block == COBBLESTONE || block == BRICKS ||
+      block == MOSSY_COBBLESTONE || block == COAL_ORE) &&
+      !itemIsPickaxe(tool)) {
+    return FALSE;
+  }
+  if (block == IRON_ORE &&
+      tool != STONE_PICKAXE && tool != IRON_PICKAXE) {
     return FALSE;
   }
   if (block == LEAVES) {
     return rollLeafDrop(item);
+  }
+  if (block == COAL_ORE) {
+    *item = COAL;
+    return TRUE;
+  }
+  if (block == IRON_ORE) {
+    *item = IRON_CHUNK;
+    return TRUE;
+  }
+  if (block == MOSSY_COBBLESTONE) {
+    *item = COBBLESTONE;
+    return TRUE;
   }
   *item = block;
   return TRUE;
 }
 
 static u8 breakBlock(u8 x, u8 y, u8 z, u8 tool) {
-  u8 block = blocks[x * MAX_Y * MAX_Z + y * MAX_Z + z];
+  u8 block = blockGet(x, y, z);
   u8 item;
 
   if (block == WOOD && beginTreeFelling(x, y, z)) {
@@ -705,7 +910,7 @@ static u8 breakBlock(u8 x, u8 y, u8 z, u8 tool) {
       !spawnDroppedItem(item, 1, x, y, z)) {
     return FALSE;
   }
-  blocks[x * MAX_Y * MAX_Z + y * MAX_Z + z] = AIR;
+  blockSet(x, y, z, AIR);
   treeBlockDestroyed(x, y, z);
   makeDisplayListsAt(x, z);
   playSound(SOUND_BREAK);
@@ -771,7 +976,7 @@ static u8 swingSword(u8 attacker_num) {
   float dz;
   float horizontal_distance;
 
-  if (heldItem(attacker) != WOOD_SWORD || attacker->attack_time > 0) {
+  if (!itemIsSword(heldItem(attacker)) || attacker->attack_time > 0) {
     return FALSE;
   }
   target = swordTarget(attacker_num);
@@ -780,7 +985,11 @@ static u8 swingSword(u8 attacker_num) {
   }
 
   attacker->attack_time = PLAYER_ATTACK_DURATION;
-  target->health = target->health > 4 ? target->health - 4 : 0;
+  {
+    u8 damage = heldItem(attacker) == IRON_SWORD ? 8 :
+      (heldItem(attacker) == STONE_SWORD ? 6 : 4);
+    target->health = target->health > damage ? target->health - damage : 0;
+  }
   target->hurt_time = PLAYER_ATTACK_DURATION;
   dx = target->position.x - attacker->position.x;
   dz = target->position.z - attacker->position.z;
@@ -799,9 +1008,12 @@ static u8 swingSword(u8 attacker_num) {
 }
 
 static float blockBreakTime(u8 block, u8 tool) {
+  u8 pickaxe = itemIsPickaxe(tool);
+  u8 axe = itemIsAxe(tool);
+
   switch (block) {
     case LEAVES:
-      return tool == WOOD_SWORD ? 5.f : 12.f;
+      return itemIsSword(tool) ? 5.f : 12.f;
     case DIRT:
     case GRASS:
     case SAND:
@@ -809,14 +1021,127 @@ static float blockBreakTime(u8 block, u8 tool) {
     case WOOD:
     case PLANKS:
     case CRAFTING_TABLE:
-      return 36.f;
+      return axe ? (tool == IRON_AXE ? 8.f :
+        (tool == STONE_AXE ? 12.f : 20.f)) : 36.f;
     case STONE:
     case COBBLESTONE:
     case BRICKS:
-      return tool == WOOD_PICKAXE ? 32.f : 120.f;
+    case MOSSY_COBBLESTONE:
+    case COAL_ORE:
+      return pickaxe ? (tool == IRON_PICKAXE ? 12.f :
+        (tool == STONE_PICKAXE ? 18.f : 32.f)) : 120.f;
+    case IRON_ORE:
+      return tool == IRON_PICKAXE ? 14.f : (tool == STONE_PICKAXE ? 24.f :
+        (tool == WOOD_PICKAXE ? 80.f : 140.f));
+    case BEDROCK:
+      return 0;
     default:
       return 0;
   }
+}
+
+static u8 consumeHeldFood(Player *player) {
+  ItemStack *held = &player->inventory[INVENTORY_HOTBAR_START +
+    player->selected_hotbar_slot];
+  u8 healing;
+
+  if (held->count == 0 || player->health >= PLAYER_MAX_HEALTH) {
+    return FALSE;
+  }
+  healing = held->item == APPLE ? 4 :
+    ((held->item == RAW_MUTTON || held->item == RAW_PORK) ? 3 : 0);
+  if (healing == 0) {
+    return FALSE;
+  }
+  player->health = min(PLAYER_MAX_HEALTH, player->health + healing);
+  held->count--;
+  if (held->count == 0) {
+    held->item = AIR;
+  }
+  playSound(SOUND_PICKUP);
+  return TRUE;
+}
+
+static u8 inventoryHas(Player *player, u8 item) {
+  u8 slot;
+  for (slot = 0; slot < INVENTORY_SIZE; slot++) {
+    if (player->inventory[slot].item == item &&
+        player->inventory[slot].count > 0) {
+      return TRUE;
+    }
+  }
+  return FALSE;
+}
+
+static u8 inventoryHasToolClass(Player *player, u8 tool_class) {
+  u8 slot;
+  for (slot = 0; slot < INVENTORY_SIZE; slot++) {
+    u8 item = player->inventory[slot].count > 0 ?
+      player->inventory[slot].item : AIR;
+    if ((tool_class == 0 && itemIsPickaxe(item)) ||
+        (tool_class == 1 &&
+         (item == STONE_PICKAXE || item == STONE_SWORD ||
+          item == STONE_AXE || item == IRON_PICKAXE ||
+          item == IRON_SWORD || item == IRON_AXE))) {
+      return TRUE;
+    }
+  }
+  return FALSE;
+}
+
+static u8 objectiveComplete(Player *player) {
+  switch (player->objective_stage) {
+    case 0:
+      return inventoryHas(player, WOOD);
+    case 1:
+      return inventoryHas(player, PLANKS);
+    case 2:
+      return inventoryHas(player, CRAFTING_TABLE) ||
+        inventoryHasToolClass(player, 0);
+    case 3:
+      return inventoryHasToolClass(player, 0);
+    case 4:
+      return inventoryHas(player, COBBLESTONE) ||
+        inventoryHasToolClass(player, 1) || inventoryHas(player, COAL);
+    case 5:
+      return inventoryHasToolClass(player, 1);
+    case 6:
+      return inventoryHas(player, COAL);
+    case 7:
+      return inventoryHas(player, IRON_SWORD) ||
+        inventoryHas(player, IRON_PICKAXE) || inventoryHas(player, IRON_AXE);
+    default:
+      return FALSE;
+  }
+}
+
+static void updatePlayerObjective(Player *player, float delta) {
+  player->objective_time = max(0, player->objective_time - delta);
+  while (player->objective_stage < PLAYER_OBJECTIVE_COUNT &&
+      objectiveComplete(player)) {
+    player->objective_stage++;
+    player->objective_time = 300.f;
+  }
+}
+
+const char *playerObjectiveTitle(Player *player) {
+  static const char *titles[] = {
+    "GATHER WOOD", "MAKE PLANKS", "BUILD A TABLE", "CRAFT A PICKAXE",
+    "MINE COBBLESTONE", "FORGE STONE TOOLS", "FIND COAL",
+    "FORGE IRON TOOLS", "EXPLORE"
+  };
+  return titles[player->objective_stage < PLAYER_OBJECTIVE_COUNT ?
+    player->objective_stage : PLAYER_OBJECTIVE_COUNT];
+}
+
+const char *playerObjectiveHint(Player *player) {
+  static const char *hints[] = {
+    "FELL A TREE", "CRAFT FROM A LOG", "USE FOUR PLANKS",
+    "USE A CRAFT TABLE", "DIG STONE", "CRAFT WITH COBBLE",
+    "SEARCH BELOW", "MINE DEEPER", "THE WORLD IS YOURS"
+  };
+  return hints[player->objective_stage < PLAYER_OBJECTIVE_COUNT ?
+    player->objective_stage : PLAYER_OBJECTIVE_COUNT];
 }
 
 static void updateBreaking(u8 player_num, float delta) {
@@ -830,8 +1155,7 @@ static void updateBreaking(u8 player_num, float delta) {
     return;
   }
 
-  block = blocks[player->target_x * MAX_Y * MAX_Z +
-    player->target_y * MAX_Z + player->target_z];
+  block = blockGet(player->target_x, player->target_y, player->target_z);
   break_time = blockBreakTime(block, heldItem(player));
   if (break_time <= 0) {
     resetBreaking(player);
@@ -864,8 +1188,8 @@ static void openInventory(u8 player_num) {
   Player *player = &players[player_num];
 
   player->crafting_table_open = player->target_present &&
-    blocks[player->target_x * MAX_Y * MAX_Z + player->target_y * MAX_Z +
-      player->target_z] == CRAFTING_TABLE;
+    blockGet(player->target_x, player->target_y,
+      player->target_z) == CRAFTING_TABLE;
   player->inventory_area = INVENTORY_AREA_ITEMS;
   inventory_player = player_num;
   resetInventoryNavigation();
@@ -883,7 +1207,7 @@ static u8 onGround(Player *player) {
   for (x = min_block.x; x <= max_block.x; x++) {
     for (z = min_block.z; z <= max_block.z; z++) {
       if (x < 0 || y < 0 || z < 0 || x >= MAX_X || z >= MAX_Z ||
-          (y < MAX_Y && BLOCK_IS_SOLID(blocks[x * MAX_Y * MAX_Z + y * MAX_Z + z]))) {
+          (y < MAX_Y && BLOCK_IS_SOLID(blockGet(x, y, z)))) {
         return TRUE;
       }
     }
@@ -903,7 +1227,7 @@ static u8 playerInWater(Player *player) {
   /* Position is at eye height, so inspect the body volume beneath it rather
    * than only the block containing the camera. */
   for (scan_y = max(0, y - 2); scan_y <= min(MAX_Y - 1, y); scan_y++) {
-    if (blocks[x * MAX_Y * MAX_Z + scan_y * MAX_Z + z] == WATER) {
+    if (blockGet(x, scan_y, z) == WATER) {
       return TRUE;
     }
   }
@@ -920,10 +1244,16 @@ static u8 updatePlayer(u8 player_num, float delta) {
   s8 stick_x = cont->stick_x;
   s8 stick_y = cont->stick_y;
   u8 swimming = playerInWater(player);
+  u8 grounded;
+  u8 vaulted = FALSE;
 
   if (cont->trigger & U_CBUTTONS) {
     player->camera_mode = player->camera_mode == CAMERA_FIRST_PERSON ?
       CAMERA_THIRD_PERSON : CAMERA_FIRST_PERSON;
+  }
+  if (cont->trigger & D_CBUTTONS) {
+    openInventory(player_num);
+    return TRUE;
   }
 
   if (stick_x > -4 && stick_x < 4) stick_x = 0;
@@ -931,6 +1261,11 @@ static u8 updatePlayer(u8 player_num, float delta) {
 
   player->attack_time = max(0, player->attack_time - delta);
   player->hurt_time = max(0, player->hurt_time - delta);
+  player->vault_time = max(0, player->vault_time - delta);
+  player->camera_y_offset *= max(0, 1.f - delta * .24f);
+  if (player->camera_y_offset > -.25f && player->camera_y_offset < .25f) {
+    player->camera_y_offset = 0;
+  }
 
   if (cont->button & Z_TRIG) {
     player->yaw -= stick_x * delta / STICK_DAMPER;
@@ -991,16 +1326,28 @@ static u8 updatePlayer(u8 player_num, float delta) {
     }
   } else block_inc_held[player_num] = FALSE;
 
+  grounded = onGround(player);
+  if (!swimming && grounded && (cont->button & L_TRIG) &&
+      (cont->button & R_TRIG)) {
+    vaulted = tryVault(player, velocity, delta, TRUE);
+  }
+
   if (swimming) {
+    player->fall_distance = 0;
     if (cont->button & R_TRIG) {
       player->y_velocity = JUMP_SPEED * 0.45f;
     } else if (player->y_velocity > -BLOCK_SIZE / 10.f) {
       player->y_velocity -= GRAVITY * delta * 0.18f;
     }
-  } else if (onGround(player)) {
+  } else if (vaulted) {
+    /* tryVault already supplied a small upward carry. */
+  } else if (grounded) {
     player->y_velocity = (cont->button & R_TRIG) ? JUMP_SPEED : 0;
   } else if (player->y_velocity > -TERMINAL_SPEED) {
     player->y_velocity -= GRAVITY * delta;
+  }
+  if (!swimming && player->y_velocity < 0) {
+    player->fall_distance += -player->y_velocity * delta;
   }
   velocity.y += player->y_velocity;
 
@@ -1012,17 +1359,25 @@ static u8 updatePlayer(u8 player_num, float delta) {
     t_total += t;
     if (t_total < 1) {
       *at(&velocity, collision_axis) = 0;
-      if (collision_axis == 1) player->y_velocity = 0;
+      if (collision_axis == 1) {
+        if (player->y_velocity < 0) {
+          landPlayer(player);
+        }
+        player->y_velocity = 0;
+      }
     }
   }
 
   updateTargetBlock(player_num);
   if (cont->trigger & A_BUTTON) {
     if (player->target_present &&
-        blocks[player->target_x * MAX_Y * MAX_Z + player->target_y * MAX_Z +
-          player->target_z] == CRAFTING_TABLE) {
+        blockGet(player->target_x, player->target_y,
+          player->target_z) == CRAFTING_TABLE) {
       openInventory(player_num);
       return TRUE;
+    }
+    if (consumeHeldFood(player)) {
+      return FALSE;
     }
     if (player->target_present) {
       placeBlock(player_num, player->build_offset_x + player->target_x,
@@ -1031,7 +1386,7 @@ static u8 updatePlayer(u8 player_num, float delta) {
     }
   }
   if ((cont->trigger & B_BUTTON) &&
-      (swingSwordAtSheep(player_num) || swingSword(player_num))) {
+      (swingSwordAtMob(player_num) || swingSword(player_num))) {
     resetBreaking(player);
   } else {
     updateBreaking(player_num, delta);
@@ -1054,6 +1409,11 @@ void updatePlayers() {
   last_time = time;
   if (delta > MAX_FRAME_DELTA) {
     delta = MAX_FRAME_DELTA;
+  }
+  if (current_screen == GAME) {
+    for (i = 0; i < active_player_count; i++) {
+      updatePlayerObjective(&players[i], delta);
+    }
   }
 
   if (current_screen == INVENTORY) {

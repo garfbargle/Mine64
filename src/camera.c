@@ -62,7 +62,6 @@ static Line2D cull_lines[NUM_CULL_LINES];
 static u8 point_sides[CHUNKS_X + 1][CHUNKS_Z + 1];
 static Player loading_camera;
 static u32 loading_preview_frame;
-static u8 loading_preview_active;
 
 static u8 cameraPointSolid(Vector3 position) {
   int x = floor(position.x / BLOCK_SIZE);
@@ -73,7 +72,7 @@ static u8 cameraPointSolid(Vector3 position) {
     return TRUE;
   }
   return y < MAX_Y &&
-    BLOCK_IS_SOLID(blocks[x * MAX_Y * MAX_Z + y * MAX_Z + z]);
+    BLOCK_IS_SOLID(blockGet(x, y, z));
 }
 
 static u8 cameraSpaceClear(Vector3 position) {
@@ -106,21 +105,22 @@ Vector3 playerCameraPosition(u8 player_num) {
   Vector3 forward = {0, 0, -1};
   u8 sample;
 
+  camera.y += player->camera_y_offset;
   if (player->camera_mode != CAMERA_THIRD_PERSON) {
     return camera;
   }
 
   forward = rotateX(forward, player->pitch);
   forward = rotateY(forward, -player->yaw);
-  desired = add(player->position, mul(forward, -THIRD_PERSON_DISTANCE));
+  desired = add(camera, mul(forward, -THIRD_PERSON_DISTANCE));
   desired.y += THIRD_PERSON_HEIGHT;
-  offset = add(desired, mul(player->position, -1.f));
+  offset = add(desired, mul(camera, -1.f));
 
   /* Pull the camera toward the player before it can enter a wall.  Twelve
      samples are plenty across a sub-three-block arm and cost far less than a
      second collision system. */
   for (sample = 1; sample <= THIRD_PERSON_SAMPLES; sample++) {
-    Vector3 candidate = add(player->position,
+    Vector3 candidate = add(camera,
       mul(offset, sample / (float) THIRD_PERSON_SAMPLES));
     if (!cameraSpaceClear(candidate)) {
       break;
@@ -286,7 +286,6 @@ void updateCameraMatrices(u8 player_num) {
 
 void beginLoadingPreview() {
   loading_preview_frame = 0;
-  loading_preview_active = TRUE;
 }
 
 void updateLoadingCamera() {
@@ -337,11 +336,7 @@ void updateLoadingCamera() {
 }
 
 u8 loadingPreviewFinished() {
-  if (loading_preview_frame >= LOADING_PREVIEW_FRAMES) {
-    loading_preview_active = FALSE;
-    return TRUE;
-  }
-  return FALSE;
+  return loading_preview_frame >= LOADING_PREVIEW_FRAMES;
 }
 
 u8 loadingPreviewProgress() {
@@ -353,7 +348,11 @@ u8 loadingPreviewProgress() {
 
 void loadCameraMatrices(u8 player_num) {
   u8 projection = CAMERA_VIEW_SOLO;
-  if (loading_preview_active) {
+  /* The menu can launch its already-loaded preview directly into gameplay.
+     Screen state is therefore the projection authority: a sticky preview
+     flag would leave the 34-degree cinematic lens active in the game. */
+  if (current_screen == LOADING_PREVIEW || current_screen == MENU ||
+      current_screen == WORLD_NAMING) {
     projection = CAMERA_VIEW_LOADING;
   } else {
     projection = active_player_count >= 3 ? CAMERA_VIEW_FOUR_PLAYER :

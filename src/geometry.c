@@ -76,14 +76,14 @@ void appendQuad(QuadList *list, u8 bs, u8 bt, u8 width, u8 height, u8 block) {
 
 u8 blockAt(u8 r, u8 s, u8 t, u8 axes) {
   if (axes == ZXY) {
-    return blocks[s * MAX_Y * MAX_Z + t * MAX_Z + r];
+    return blockGet(s, t, r);
   } else if (axes == XZY) {
-    return blocks[r * MAX_Y * MAX_Z + t * MAX_Z + s];
+    return blockGet(r, t, s);
   } else if (axes == YXZ) {
     if (r >= MAX_Y) {
       return 0;
     }
-    return blocks[s * MAX_Y * MAX_Z + r * MAX_Z + t];
+    return blockGet(s, r, t);
   }
   return AIR;
 }

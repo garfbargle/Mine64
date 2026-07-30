@@ -23,6 +23,8 @@
 #define CAMERA_THIRD_PERSON 1
 #define PLAYER_MAX_HEALTH 20
 #define PLAYER_ATTACK_DURATION 12.f
+#define PLAYER_VAULT_DURATION 18.f
+#define PLAYER_OBJECTIVE_COUNT 8
 
 enum InventoryArea {
   INVENTORY_AREA_CRAFTING,
@@ -45,12 +47,17 @@ typedef struct {
   float walk_time;
   float walk_swing;
   float y_velocity;
+  float fall_distance;
+  float vault_time;
+  float camera_y_offset;
   /* Combat state is transient, so loading a world never resumes a player at
      one hit point or halfway through an animation. */
   Vector3 knockback_velocity;
   float attack_time;
   float hurt_time;
+  float objective_time;
   u8 health;
+  u8 objective_stage;
   u8 camera_mode;
   int held_block;
   ItemStack inventory[INVENTORY_SIZE];
@@ -92,6 +99,9 @@ void updateTargetBlock(u8 player_num);
 void resetPlayerInventory(Player *player);
 u8 addItemToInventory(Player *player, u8 item, u8 count);
 u8 getCraftResult(Player *player, ItemStack *result);
+void damagePlayer(u8 player_num, u8 damage, Vector3 source);
+const char *playerObjectiveTitle(Player *player);
+const char *playerObjectiveHint(Player *player);
 
 /* Used by the local join flow and save-game compatibility code. */
 void activatePlayer(u8 player_num);
