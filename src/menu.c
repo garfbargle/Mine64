@@ -27,6 +27,10 @@ static u8 option_lines[] = {2, 3, 4};
 static u8 selected_option = 0;
 /* The renderer uses this to swap the live world behind the selector. */
 static u8 menu_preview_requested = TRUE;
+/* The picker shows a cheap surface-only mesh.  Entering a world has to compile
+   the full cave and ore mesh first, which callbackGfx does once no graphics
+   task is in flight -- the stable preview stays on screen until then. */
+static u8 menu_game_requested = FALSE;
 static char world_name_edit[WORLD_NAME_LENGTH + 1];
 static u8 world_name_cursor;
 static u8 world_name_key_row;
@@ -522,8 +526,9 @@ void menuAct() {
     }
     game_file_num = selected_option + 1;
     if (files_present[selected_option]) {
-      /* The selected save is already loaded for its live preview. */
-      current_screen = GAME;
+      /* The selected save is already loaded for its live preview; only its
+         display lists still need the full-detail pass. */
+      menu_game_requested = TRUE;
     } else {
       beginWorldNaming();
     }
@@ -534,6 +539,15 @@ void menuAct() {
 
 u8 menuPreviewRequested() {
   return menu_preview_requested;
+}
+
+u8 menuGameRequested() {
+  return menu_game_requested;
+}
+
+void menuGameStarted() {
+  menu_game_requested = FALSE;
+  current_screen = GAME;
 }
 
 void menuPreviewLoaded() {
@@ -638,9 +652,10 @@ void confirmWorldName() {
   setWorldName(selected_option, world_name_edit);
   game_file_num = selected_option + 1;
   /* The name belongs to the terrain currently orbiting behind this dialog.
-     Saving here makes that candidate a real slot without regenerating it. */
+     Saving here makes that candidate a real slot without regenerating it --
+     only its display lists are rebuilt at full detail. */
   if (saving_available && !saveGame()) {
     save_failed_message = 120;
   }
-  current_screen = GAME;
+  menu_game_requested = TRUE;
 }

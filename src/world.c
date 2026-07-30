@@ -5,7 +5,44 @@
 #include "math.h"
 #include "trees.h"
 
-u8 block_data[NUM_BLOCK_BYTES];
+u8 window_blocks[WINDOW_SLOTS][COLUMN_BLOCK_BYTES];
+u32 window_keys[WINDOW_SLOTS];
+
+void windowReset() {
+  u32 slot;
+
+  for (slot = 0; slot < WINDOW_SLOTS; slot++) {
+    window_keys[slot] = COLUMN_KEY_EMPTY;
+  }
+}
+
+u8 windowColumnResident(int cx, int cz) {
+  return window_keys[WINDOW_SLOT(cx, cz)] == COLUMN_KEY(cx, cz);
+}
+
+void windowClaimFixedExtent() {
+  int cx, cz;
+
+  /* Whole-world generation and whole-world loading both write every column of
+     the fixed extent, so bind all of them up front.  Streaming will claim
+     columns individually as they enter the residency ring instead. */
+  windowReset();
+  for (cx = 0; cx < CHUNKS_X; cx++) {
+    for (cz = 0; cz < CHUNKS_Z; cz++) {
+      windowClaimColumn(cx, cz);
+    }
+  }
+}
+
+u8 *windowClaimColumn(int cx, int cz) {
+  u32 slot = WINDOW_SLOT(cx, cz);
+
+  /* Rebinding a slot is the eviction: whatever column occupied it is simply
+     forgotten.  Callers that need to preserve player edits must have written
+     the outgoing column's diff before claiming over it. */
+  window_keys[slot] = COLUMN_KEY(cx, cz);
+  return window_blocks[slot];
+}
 
 #define SEA_LEVEL 8
 #define MIN_SURFACE_HEIGHT 6
@@ -221,7 +258,7 @@ void trySpawnTree(int tx, int tz) {
   }
 }
 
-u8 tryPlantTree(u8 x, u8 y, u8 z) {
+u8 tryPlantTree(int x, int y, int z) {
   u8 scan_y;
 
   if (x >= MAX_X || y == 0 || y >= MAX_Y || z >= MAX_Z ||
@@ -303,6 +340,8 @@ void initWorld() {
   seed = (u32) osGetTime();
   setDayCycleWorldTicks(DAY_CYCLE_START_TICK);
   initTrees();
+
+  windowClaimFixedExtent();
 
   fillTerrainHeightRow(previous_heights, -1);
   fillTerrainHeightRow(current_heights, 0);

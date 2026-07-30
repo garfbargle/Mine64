@@ -31,6 +31,8 @@ void menuDown();
 void menuUp();
 void menuAct();
 u8 menuPreviewRequested();
+u8 menuGameRequested();
+void menuGameStarted();
 void menuPreviewLoaded();
 u8 menuSelectedWorld();
 void beginWorldNaming();

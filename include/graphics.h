@@ -23,6 +23,9 @@ void initGraphics();
 /* Returns FALSE when the mesh arena filled before every column was compiled;
    the world then renders with missing columns. */
 u8 makeWorldDisplayLists();
+/* Full-detail gameplay mesh, compiled into the other arena when a world is
+   entered.  makeWorldDisplayLists builds only the scenic surface shell. */
+u8 makeGameWorldDisplayLists();
 void makeDisplayListsAt(u8 x, u8 z);
 void drawWorld();
 void drawWireframes();

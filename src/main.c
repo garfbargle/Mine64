@@ -30,7 +30,9 @@ static u8 world_build_stage = WORLD_BUILD_IDLE;
 
 static u8 worldBuildRequested() {
   return current_screen == GENERATING || current_screen == LOADING ||
-    (current_screen == MENU && menuPreviewRequested());
+    (current_screen == MENU && menuPreviewRequested()) ||
+    ((current_screen == MENU || current_screen == WORLD_NAMING) &&
+      menuGameRequested());
 }
 
 static void runWorldBuild() {
@@ -59,6 +61,13 @@ static void runWorldBuild() {
 
     beginLoadingPreview();
     current_screen = LOADING_PREVIEW;
+  } else if ((current_screen == MENU || current_screen == WORLD_NAMING) &&
+      menuGameRequested()) {
+    /* The picked world is already generated and loaded -- only its display
+       lists are still the reduced scenic mesh, so this recompiles them at
+       full detail without touching the terrain the player just chose. */
+    world_incomplete_message = !makeGameWorldDisplayLists();
+    menuGameStarted();
   } else if (current_screen == MENU && menuPreviewRequested()) {
     /* The title menu is also a world picker.  Preparing the highlighted slot
        here gives the renderer a real world to orbit rather than a generic

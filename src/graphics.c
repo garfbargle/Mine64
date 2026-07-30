@@ -53,6 +53,13 @@ static Gfx *column_starts[NUM_COLUMN_ARENAS][NUM_TEXTURES]
   [CHUNKS_X * CHUNKS_Z];
 static Gfx *column_arena_ends[NUM_COLUMN_ARENAS];
 static u8 active_column_arena;
+/* Set while compiling the reduced scenic mesh; makeQuadDL drops everything
+   below the surface shell. */
+static u8 building_surface_mesh;
+/* Surface height of each block column in the footprint being compiled, so the
+   scenic pass resolves it once per column instead of rescanning the full
+   height for every candidate quad. */
+static u8 surface_heights[CHUNK_SIZE][CHUNK_SIZE];
 static u8 column_build_arena;
 static u8 column_display_list_full;
 static u8 dirty_columns[CHUNKS_X * CHUNKS_Z];
@@ -713,6 +720,40 @@ static void makeQuadDL(u16 chunk, u8 bx, u8 by, u8 bz, u8 width, u8 height,
     u8 face, u8 is_water) {
   u32 b = bx * CHUNK_SIZE * CHUNK_SIZE + by * CHUNK_SIZE + bz;
 
+  if (building_surface_mesh) {
+    u8 cx = chunk / (CHUNKS_Y * CHUNKS_Z);
+    u8 cy = (chunk / CHUNKS_Z) % CHUNKS_Y;
+    u8 cz = chunk % CHUNKS_Z;
+    int max_quad_y = cy * CHUNK_SIZE + by;
+    int surface_y;
+
+    /*
+     * The scenic camera looks down on the world from outside it, so every
+     * cave wall and ore face in a visible column is transformed by the RSP
+     * and then hidden behind the terrain above it.  Column culling cannot
+     * reject those -- there is no occlusion pass -- and they dominate the
+     * frame.  Keep only the two-block surface shell here; gameplay compiles
+     * the untouched full mesh into the other arena.
+     */
+    /* The world's underground outer wall is one long greedy quad spanning
+       bedrock to surface.  It is what produced the "chunks below the map"
+       silhouette on the title screen. */
+    if ((cx == 0 || cx == CHUNKS_X - 1 ||
+         cz == 0 || cz == CHUNKS_Z - 1) &&
+        face != TOP && face != BOTTOM) {
+      return;
+    }
+    if (face == TOP) {
+      max_quad_y++;
+    } else if (face != BOTTOM) {
+      max_quad_y += height + 1;
+    }
+    surface_y = surface_heights[bx][bz];
+    if (max_quad_y < surface_y - 1 || face == BOTTOM) {
+      return;
+    }
+  }
+
   /* Reserve one final command for the column's EndDisplayList.  A maximally
      fragmented player-built chunk can exceed the normal greedy-mesh budget;
      dropping only excess faces is far safer than overwriting adjacent RAM. */
@@ -815,6 +856,31 @@ static u8 makeColumnDisplayLists(u8 cx, u8 cz) {
   /* Do not publish any new pointer until every material in the replacement
      column fits. Previous RSP tasks can keep reading the old immutable lists,
      and an overflow can safely roll this unpublished append back. */
+  if (building_surface_mesh) {
+    u8 bx, bz;
+    for (bx = 0; bx < CHUNK_SIZE; bx++) {
+      for (bz = 0; bz < CHUNK_SIZE; bz++) {
+        int world_x = cx * CHUNK_SIZE + bx;
+        int world_z = cz * CHUNK_SIZE + bz;
+        int scan_y;
+
+        surface_heights[bx][bz] = 0;
+        for (scan_y = MAX_Y - 1; scan_y >= 0; scan_y--) {
+          u8 block = blockGet(world_x, scan_y, world_z);
+          /* Trees and anything the player stacked sit above the terrain, so
+             they must not be mistaken for the ground the shell follows. */
+          if (block == AIR || block == WATER || block == WOOD ||
+              block == LEAVES || block == PLANKS ||
+              block == CRAFTING_TABLE || block == COBBLESTONE ||
+              block == MOSSY_COBBLESTONE || block == BRICKS) {
+            continue;
+          }
+          surface_heights[bx][bz] = (u8) scan_y;
+          break;
+        }
+      }
+    }
+  }
   makeColumnGeometry(cx, cz);
   for (texture = 0; texture < NUM_TEXTURES; texture++) {
     if (!makeColumnDL(cx, cz, texture, &new_starts[texture])) {
@@ -830,31 +896,37 @@ static u8 makeColumnDisplayLists(u8 cx, u8 cz) {
   return TRUE;
 }
 
-u8 makeWorldDisplayLists() {
+/* The scenic menu mesh and the gameplay mesh differ only in detail, so they
+   occupy the two arenas independently: switching worlds in the picker never
+   disturbs a compiled gameplay mesh, and entering a world never has to wait
+   for the preview to be discarded. */
+#define GAME_COLUMN_ARENA 0
+#define PREVIEW_COLUMN_ARENA 1
+
+/*
+ * A complete mesh rebuild rewrites the arena the RSP executes terrain from,
+ * so it may only run while no graphics task is in flight.  callbackGfx
+ * guarantees that by calling it only when NuSystem reports pendingGfx == 0,
+ * and by submitting the next frame afterwards rather than before.
+ *
+ * Do not wait for the RSP here.  nuGfxTaskAllEndWait() busy-spins on
+ * nuGfxTaskSpool, and this runs on the NuSystem graphics thread at priority
+ * 50.  The completion that clears that counter is posted by the scheduler's
+ * own graphics thread at priority 17, which can never preempt a busy-wait at
+ * 50, so the wait deadlocks the console instead of ending.
+ */
+static u8 buildAllColumns(u8 arena, u8 surface_only) {
   u8 cx, cz;
   u16 column;
   u8 build_complete = TRUE;
 
-  /*
-   * This is a complete mesh rebuild, not an incremental block edit.  It
-   * rewrites the arena the RSP executes terrain from, so it may only run
-   * while no graphics task is in flight.  callbackGfx guarantees that by
-   * calling it only when NuSystem reports pendingGfx == 0, and by submitting
-   * the next frame afterwards rather than before.
-   *
-   * Do not wait for the RSP here.  nuGfxTaskAllEndWait() busy-spins on
-   * nuGfxTaskSpool, and this runs on the NuSystem graphics thread at priority
-   * 50.  The completion that clears that counter is posted by the scheduler's
-   * own graphics thread at priority 17, which can never preempt a spin at 50,
-   * so the wait deadlocks the console instead of ending.
-   */
-  active_column_arena = 0;
+  building_surface_mesh = surface_only;
   compacting_columns = FALSE;
   dirty_column_cursor = 0;
   for (column = 0; column < CHUNKS_X * CHUNKS_Z; column++) {
     dirty_columns[column] = FALSE;
   }
-  resetColumnArenaBuild(active_column_arena);
+  resetColumnArenaBuild(arena);
   for (cx = 0; cx < CHUNKS_X && build_complete; cx++) {
     for (cz = 0; cz < CHUNKS_Z; cz++) {
       if (!makeColumnDisplayLists(cx, cz)) {
@@ -863,11 +935,21 @@ u8 makeWorldDisplayLists() {
       }
     }
   }
-  column_arena_ends[active_column_arena] = column_dlp;
-  /* A truncated build leaves the remaining columns non-resident, so the world
-     renders with holes rather than corrupt commands.  Report it so the caller
-     can tell the player instead of silently shipping a broken world. */
+  column_arena_ends[arena] = column_dlp;
+  active_column_arena = arena;
+  building_surface_mesh = FALSE;
   return build_complete;
+}
+
+u8 makeWorldDisplayLists() {
+  /* World selection compiles only the surface shell the fixed camera can
+     actually see.  It is roughly an order of magnitude less geometry than the
+     cave-riddled gameplay mesh, which is what the orbit was choking on. */
+  return buildAllColumns(PREVIEW_COLUMN_ARENA, TRUE);
+}
+
+u8 makeGameWorldDisplayLists() {
+  return buildAllColumns(GAME_COLUMN_ARENA, FALSE);
 }
 
 static void markColumnDirty(u8 cx, u8 cz) {
@@ -2577,9 +2659,11 @@ void draw(int can_reclaim_mesh_arena) {
     /* Keep orbiting the mesh that is already resident.  A requested preview
        has not touched the arena yet -- callbackGfx rebuilds it only with no
        task in flight -- so the previous slot stays on screen right up to the
-       swap instead of blanking for the duration of the build. */
+       swap instead of blanking for the duration of the build.
+
+       The scenic mesh never changes while the picker is open, so it needs no
+       incremental rebuild or compaction pass. */
     updateLoadingCamera();
-    processColumnDisplayListUpdates(can_reclaim_mesh_arena);
     drawWorld();
   }
   drawHUD();

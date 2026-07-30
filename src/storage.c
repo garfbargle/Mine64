@@ -204,10 +204,17 @@ static u32 checksumSave(SavedPlayer *players_to_save, u32 player_count,
     u8 stored_player_slots) {
   u32 checksum = checksumPlayers(players_to_save, player_count,
     stored_player_slots);
-  u32 index;
+  int x, y, z;
 
-  for (index = 0; index < NUM_BLOCKS; index++) {
-    checksum = checksumByte(checksum, blockGetIndex(index));
+  /* Blocks are stored per column now, but the checksum has to keep visiting
+     them in the original x-major order or every world written before the
+     window would fail verification. */
+  for (x = 0; x < MAX_X; x++) {
+    for (y = 0; y < MAX_Y; y++) {
+      for (z = 0; z < MAX_Z; z++) {
+        checksum = checksumByte(checksum, blockGet(x, y, z));
+      }
+    }
   }
   return checksum;
 }
@@ -561,8 +568,7 @@ u8 saveGame() {
   u8 slot;
   u8 player_num;
   u8 had_previous_file;
-  u8 *blocks_ptr;
-  const u8 *blocks_end = block_data + NUM_BLOCK_BYTES;
+  int block_x, block_y, block_z;
   u8 *trees_ptr;
   const u8 *trees_end = (const u8 *) trees + sizeof(trees);
 
@@ -602,14 +608,21 @@ u8 saveGame() {
   }
   write_ok = writePage(&file);
 
-  /* The live world is already nibble-packed, so saving can stream it without
-     a second full-world buffer or any expansion/compression pass. */
-  for (blocks_ptr = block_data; write_ok && blocks_ptr < blocks_end;
-      blocks_ptr++) {
-    file_buffer[cursor_pos++] = *blocks_ptr;
+  /* Blocks stay nibble-packed on disk in the original x-major order, so this
+     re-packs pairs out of the column window rather than copying a flat array.
+     MAX_Z is even, so a pair never straddles a row and the byte stream is
+     identical to what earlier versions wrote. */
+  for (block_x = 0; write_ok && block_x < MAX_X; block_x++) {
+    for (block_y = 0; write_ok && block_y < MAX_Y; block_y++) {
+      for (block_z = 0; write_ok && block_z < MAX_Z; block_z += 2) {
+        file_buffer[cursor_pos++] =
+          (u8) ((blockGet(block_x, block_y, block_z) << 4) |
+            (blockGet(block_x, block_y, block_z + 1) & 0x0F));
 
-    if (cursor_pos >= BUFFER_LEN) {
-      write_ok = writePage(&file);
+        if (cursor_pos >= BUFFER_LEN) {
+          write_ok = writePage(&file);
+        }
+      }
     }
   }
 
@@ -680,12 +693,10 @@ void loadGame() {
   u8 full_inventory_saved = FALSE;
   u8 tree_records_saved = FALSE;
   u8 legacy_tree_records_saved = FALSE;
-  u8 *blocks_ptr;
   u8 *trees_ptr;
   u32 tree_byte;
-  u32 block_index;
   u8 player_num;
-  const u8 *blocks_end = block_data + NUM_BLOCK_BYTES;
+  int block_x, block_y, block_z;
 
   if (game_file_num < 1 || game_file_num > 3) {
     initWorld();
@@ -935,29 +946,32 @@ void loadGame() {
     return;
   }
 
-  block_index = 0;
-  for (blocks_ptr = block_data; blocks_ptr < blocks_end; blocks_ptr++) {
-    if (cursor_pos >= buffer_bytes_read) {
-      if (!readPage(&file)) {
-        read_ok = FALSE;
-        break;
-      }
-    }
+  /* Every column of the saved extent needs a slot before blockSet will take
+     the incoming terrain. */
+  windowClaimFixedExtent();
+  for (block_x = 0; read_ok && block_x < MAX_X; block_x++) {
+    for (block_y = 0; read_ok && block_y < MAX_Y; block_y++) {
+      for (block_z = 0; read_ok && block_z < MAX_Z; block_z += 2) {
+        if (cursor_pos >= buffer_bytes_read) {
+          if (!readPage(&file)) {
+            read_ok = FALSE;
+            break;
+          }
+        }
 
-    packed = file_buffer[cursor_pos++];
-    if (!BLOCK_IS_VALID(packed >> 4)) {
-      packed &= 0x0F;
-    }
-    if (!BLOCK_IS_VALID(packed & 0x0F)) {
-      packed &= 0xF0;
-    }
-    *blocks_ptr = packed;
-    if (full_inventory_saved) {
-      computed_checksum = checksumByte(computed_checksum,
-        blockGetIndex(block_index++));
-      if (block_index < NUM_BLOCKS) {
-        computed_checksum = checksumByte(computed_checksum,
-          blockGetIndex(block_index++));
+        packed = file_buffer[cursor_pos++];
+        if (!BLOCK_IS_VALID(packed >> 4)) {
+          packed &= 0x0F;
+        }
+        if (!BLOCK_IS_VALID(packed & 0x0F)) {
+          packed &= 0xF0;
+        }
+        blockSet(block_x, block_y, block_z, packed >> 4);
+        blockSet(block_x, block_y, block_z + 1, packed & 0x0F);
+        if (full_inventory_saved) {
+          computed_checksum = checksumByte(computed_checksum, packed >> 4);
+          computed_checksum = checksumByte(computed_checksum, packed & 0x0F);
+        }
       }
     }
   }
