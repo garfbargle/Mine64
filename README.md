@@ -29,6 +29,9 @@ files.
   files so an interrupted cartridge write can recover the previous world.
 * All terrain can now be mined. Wooden pickaxes gather stone, cobblestone, and
   bricks and break them much faster, while wooden swords cut leaves quickly.
+* New worlds combine lowlands, rolling grasslands, ridge-shaped mountain
+  regions, beaches/deserts, variable soil depths, exposed stone cliffs, and
+  underground cave networks.
 * Every gatherable block becomes a physical pickup, which pops out, settles,
   and then pulls into the nearby player. Tools are non-stackable, pickups are
   protected when the entity pool is full, and partial inventory transfers can

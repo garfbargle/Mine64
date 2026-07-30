@@ -6,6 +6,61 @@
 
 u8 blocks[NUM_BLOCKS];
 
+#define SEA_LEVEL 10
+#define MIN_SURFACE_HEIGHT 6
+#define MAX_SURFACE_HEIGHT (MAX_Y - 2)
+
+static float absolute(float value) {
+  return value < 0.0f ? -value : value;
+}
+
+static int clampHeight(int height) {
+  if (height < MIN_SURFACE_HEIGHT) {
+    return MIN_SURFACE_HEIGHT;
+  }
+  if (height > MAX_SURFACE_HEIGHT) {
+    return MAX_SURFACE_HEIGHT;
+  }
+  return height;
+}
+
+static float ridgeNoise(float x, float z, float frequency) {
+  float value = perlin2d(x, z, frequency, 3);
+  return 1.0f - absolute(value * 2.0f - 1.0f);
+}
+
+static int terrainHeight(int x, int z) {
+  float continents = perlin2d(x, z, 0.010f, 4);
+  float rolling = perlin2d(x + 213, z - 97, 0.045f, 3);
+  float mountain_mask = perlin2d(x - 401, z + 179, 0.017f, 3);
+  float ridges = ridgeNoise(x + 67, z - 311, 0.034f);
+  int height;
+
+  /* Broad continents supply the silhouette while ridges only become tall in
+   * mountain regions.  This leaves room for beaches and low grasslands. */
+  height = 5 + (int)(continents * 11.0f) + (int)((rolling - 0.5f) * 5.0f);
+  if (mountain_mask > 0.51f) {
+    height += (int)((mountain_mask - 0.51f) * ridges * 64.0f);
+  }
+
+  return clampHeight(height);
+}
+
+static int isCave(int x, int y, int z, int surface_height) {
+  float chambers;
+  float passages;
+
+  /* Preserve a solid floor and several blocks of roof so caves feel like
+   * underground networks rather than random holes in the landscape. */
+  if (y < 2 || y >= surface_height - 3) {
+    return FALSE;
+  }
+
+  chambers = perlin3d(x + 71, y, z - 191, 0.105f, 3);
+  passages = perlin3d(x - 389, y + 53, z + 127, 0.165f, 2);
+  return chambers > 0.625f && passages > 0.53f;
+}
+
 void generateLeafHeights(int *heights) {
   int i;
   for (i = 0; i < 25; i++) {
@@ -91,26 +146,34 @@ u8 tryPlantTree(u8 x, u8 y, u8 z) {
 
 void initWorld() {
   int x, y, z;
-  float base, peaks;
-  u8 height, block, do_sand;
+  int height, dirt_depth;
+  float biome, slope;
+  u8 block, do_sand, exposed_stone;
 
   seed = (u32) osGetTime();
   initTrees();
 
   for (x = 0; x < MAX_X; x++) {
     for (z = 0; z < MAX_Z; z++) {
-      base = perlin2d(x, z, 0.02, 2);
-      peaks = perlin2d(x, z, 0.1, 2);
-      height = base * 8 + perlin2d(x, z, 0.1, 2) * 4 + peaks * peaks * peaks * peaks * 10 + 3;
-      do_sand = height + base * 10 < 14;
+      height = terrainHeight(x, z);
+      biome = perlin2d(x + 883, z - 521, 0.025f, 3);
+      slope = absolute((float)(terrainHeight(x + 1, z) - terrainHeight(x - 1, z))) +
+              absolute((float)(terrainHeight(x, z + 1) - terrainHeight(x, z - 1)));
+      do_sand = height <= SEA_LEVEL + 1 || biome < 0.38f;
+      exposed_stone = height > 21 || slope >= 5;
+      dirt_depth = 3 + (int)(biome * 2.0f);
 
       for (y = 0; y < MAX_Y; y++) {
-        if (y < height - 3) {
-          block = STONE;
-        } else if (y >= height)  {
+        if (y >= height)  {
           block = AIR;
+        } else if (isCave(x, y, z, height)) {
+          block = AIR;
+        } else if (y < height - dirt_depth) {
+          block = STONE;
         } else if (do_sand) {
           block = SAND;
+        } else if (exposed_stone && y >= height - 2) {
+          block = STONE;
         } else if (y == height - 1) {
           block = GRASS;
         } else {

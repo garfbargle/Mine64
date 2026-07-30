@@ -16,10 +16,29 @@ static int hash[] = {208,34,231,213,32,248,233,56,161,78,24,140,71,48,140,254,24
                      135,176,183,191,253,115,184,21,233,58,129,233,142,39,128,211,118,137,139,255,
                      114,20,218,113,154,27,127,246,250,1,8,198,250,209,92,222,173,21,88,102,219};
 
+static int hashAt(int value)
+{
+    value %= 256;
+    if (value < 0) {
+        value += 256;
+    }
+    return hash[value];
+}
+
 int noise2(int x, int y)
 {
-    int tmp = hash[(y + seed) % 256];
-    return hash[(tmp + x) % 256];
+    int tmp = hashAt((int)((u32)y + seed));
+    return hashAt(tmp + x);
+}
+
+/* A small value-noise variant for volumetric terrain features.  Keeping the
+ * same hash table as the 2D sampler makes caves deterministic for a world
+ * seed without adding a second random-state dependency. */
+static int noise3(int x, int y, int z)
+{
+    int tmp = hashAt((int)((u32)z + seed));
+    tmp = hashAt(tmp + y);
+    return hashAt(tmp + x);
 }
 
 float lin_inter(float x, float y, float s)
@@ -66,4 +85,48 @@ float perlin2d(float x, float y, float freq, int depth)
     }
 
     return fin/div;
+}
+
+static float noise3d(float x, float y, float z)
+{
+    int x_int = x;
+    int y_int = y;
+    int z_int = z;
+    float x_frac = x - x_int;
+    float y_frac = y - y_int;
+    float z_frac = z - z_int;
+    float x00 = smooth_inter(noise3(x_int,     y_int,     z_int),
+                             noise3(x_int + 1, y_int,     z_int), x_frac);
+    float x10 = smooth_inter(noise3(x_int,     y_int + 1, z_int),
+                             noise3(x_int + 1, y_int + 1, z_int), x_frac);
+    float x01 = smooth_inter(noise3(x_int,     y_int,     z_int + 1),
+                             noise3(x_int + 1, y_int,     z_int + 1), x_frac);
+    float x11 = smooth_inter(noise3(x_int,     y_int + 1, z_int + 1),
+                             noise3(x_int + 1, y_int + 1, z_int + 1), x_frac);
+    float low = smooth_inter(x00, x10, y_frac);
+    float high = smooth_inter(x01, x11, y_frac);
+
+    return smooth_inter(low, high, z_frac);
+}
+
+float perlin3d(float x, float y, float z, float freq, int depth)
+{
+    float xa = x * freq;
+    float ya = y * freq;
+    float za = z * freq;
+    float amp = 1.0;
+    float fin = 0;
+    float div = 0.0;
+    int i;
+
+    for (i = 0; i < depth; i++) {
+        div += 256 * amp;
+        fin += noise3d(xa, ya, za) * amp;
+        amp /= 2;
+        xa *= 2;
+        ya *= 2;
+        za *= 2;
+    }
+
+    return fin / div;
 }
