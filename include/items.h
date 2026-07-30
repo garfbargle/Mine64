@@ -19,7 +19,9 @@ typedef struct {
   float rotation;
   u8 item;
   u8 count;
-  u8 pickup_delay;
+  float pickup_delay;
+  float pickup_progress;
+  u8 pickup_player;
   u8 active;
 } DroppedItem;
 

@@ -26,11 +26,12 @@ files.
 * Save v4 preserves exact hotbar, inventory, crafting, and carried-item state.
   It validates player/world data with a checksum and uses temporary plus backup
   files so an interrupted cartridge write can recover the previous world.
-* All terrain can now be mined. Wooden pickaxes break stone, cobblestone, and
-  bricks much faster, while wooden swords cut leaves quickly.
-* Planks and crafting tables are properly consumed when placed, tools are
-  non-stackable, dropped resources are protected when the entity pool is full,
-  and partial inventory transfers can no longer duplicate items.
+* All terrain can now be mined. Wooden pickaxes gather stone, cobblestone, and
+  bricks and break them much faster, while wooden swords cut leaves quickly.
+* Every gatherable block becomes a physical pickup, which pops out, settles,
+  and then pulls into the nearby player. Tools are non-stackable, pickups are
+  protected when the entity pool is full, and partial inventory transfers can
+  no longer duplicate items.
 * Long frame hitches are clamped before physics simulation, preventing world
   generation or storage delays from pushing players through terrain.
 * Co-op deliberately uses a narrower view and no more than 24 visible columns
@@ -54,13 +55,14 @@ files.
 | D-pad (either player) | Save, when cartridge storage is available |
 | Controller 2 START | Join co-op during a running world |
 
-The bottom hotbar contains all nine placeable block types. Its bright slot and
-the enlarged block at the lower right show what each player is holding; that is
-the block placed with **A**. Mining a log, planks, or a crafting table makes a
-collectible pickup pop out. Walk close to collect it into a stack of up to 64;
-placing one of these resources consumes it. Hold B to mine—releasing B or
-looking away resets the breaking progress. A wooden pickaxe is substantially
-faster on rock, and a wooden sword clears leaves quickly.
+The bottom hotbar starts empty. Its bright slot and the enlarged block at the
+lower right show what each player is holding; that is the block placed with
+**A**. Hold B to mine—releasing B or looking away resets the breaking progress.
+Every current terrain block can be broken and the gatherable ones pop out as a
+small cube before flying into the player when collected. Stone, cobblestone,
+and bricks are slow to punch and yield nothing without a wooden pickaxe; the
+pickaxe both mines them faster and gathers their cube. A wooden sword clears
+leaves quickly.
 
 Either player can press **START** to open their inventory. It has a 3-row
 storage grid, a selectable nine-slot hotbar, and a working 2x2 crafting area.

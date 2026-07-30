@@ -120,12 +120,9 @@ void resetPlayerInventory(Player *player) {
   player->carried_item.count = 0;
   for (slot = 0; slot < INVENTORY_COLUMNS; slot++) {
     player->inventory[INVENTORY_HOTBAR_START + slot].item = slot + FIRST_PLACEABLE_BLOCK;
-    /* Logs and planks are gathered/crafted materials.  The other current
-       block types retain their creative stacks until their own gathering
-       rules are added. */
-    player->inventory[INVENTORY_HOTBAR_START + slot].count =
-      (slot + FIRST_PLACEABLE_BLOCK == WOOD ||
-       slot + FIRST_PLACEABLE_BLOCK == PLANKS) ? 0 : MAX_ITEM_STACK;
+    /* New worlds start with an empty hotbar.  Every placeable block is now
+       obtained by mining or crafting it first. */
+    player->inventory[INVENTORY_HOTBAR_START + slot].count = 0;
   }
 
   player->selected_hotbar_slot = selected_slot;
@@ -514,7 +511,7 @@ static float detectCollision(Player *player, Vector3 velocity, float max_t, int 
 }
 
 static u8 blockUsesInventory(u8 block) {
-  return block == WOOD || block == PLANKS || block == CRAFTING_TABLE;
+  return block >= FIRST_PLACEABLE_BLOCK && block <= BLOCK_TYPE_COUNT;
 }
 
 static void placeBlock(u8 player_num, u8 x, u8 y, u8 z) {
@@ -556,12 +553,27 @@ static void placeBlock(u8 player_num, u8 x, u8 y, u8 z) {
   makeDisplayListsAt(x, z);
 }
 
-static u8 breakBlock(u8 x, u8 y, u8 z) {
-  u8 block = blocks[x * MAX_Y * MAX_Z + y * MAX_Z + z];
+static u8 dropForBlock(u8 block, u8 tool, u8 *item) {
+  /* Rock is deliberately breakable by hand, but only a pickaxe harvests a
+     cube.  The remaining current terrain is soft or wooden enough to gather
+     with the tools the game already offers. */
+  if ((block == STONE || block == COBBLESTONE || block == BRICKS) &&
+      tool != WOOD_PICKAXE) {
+    return FALSE;
+  }
+  *item = block;
+  return TRUE;
+}
 
-  /* The log turns into a physical pickup rather than entering inventory
-     immediately.  A full stack therefore leaves the wood on the ground. */
-  if (blockUsesInventory(block) && !spawnDroppedItem(block, 1, x, y, z)) {
+static u8 breakBlock(u8 x, u8 y, u8 z, u8 tool) {
+  u8 block = blocks[x * MAX_Y * MAX_Z + y * MAX_Z + z];
+  u8 item;
+
+  /* Every terrain block that has a valid harvest yields the same small cube
+     that can later be placed.  If the item pool is full, preserve the block
+     rather than silently destroying its resource. */
+  if (dropForBlock(block, tool, &item) &&
+      !spawnDroppedItem(item, 1, x, y, z)) {
     return FALSE;
   }
   blocks[x * MAX_Y * MAX_Z + y * MAX_Z + z] = AIR;
@@ -635,7 +647,7 @@ static void updateBreaking(u8 player_num, float delta) {
   player->break_progress += delta;
   if (player->break_progress >= player->break_time) {
     if (breakBlock(player->target_x, player->target_y,
-        player->target_z)) {
+        player->target_z, heldItem(player))) {
       resetBreaking(player);
     } else {
       player->break_progress = player->break_time;

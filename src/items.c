@@ -10,7 +10,9 @@
 #define ITEM_TERMINAL_SPEED 12.f
 #define ITEM_PICKUP_RADIUS 90.f
 #define ITEM_PICKUP_HEIGHT 160.f
-#define ITEM_PICKUP_DELAY 12
+#define ITEM_PICKUP_DELAY 12.f
+#define ITEM_PICKUP_PULL_TIME 12.f
+#define ITEM_NO_PICKUP_PLAYER MAX_PLAYERS
 
 DroppedItem dropped_items[MAX_DROPPED_ITEMS];
 u8 pickup_message[MAX_PLAYERS];
@@ -66,6 +68,8 @@ u8 spawnDroppedItem(u8 item, u8 count, u8 x, u8 y, u8 z) {
   drop->item = item;
   drop->count = count;
   drop->pickup_delay = ITEM_PICKUP_DELAY;
+  drop->pickup_progress = 0;
+  drop->pickup_player = ITEM_NO_PICKUP_PLAYER;
   drop->active = TRUE;
   return TRUE;
 }
@@ -105,11 +109,10 @@ static void updateDropPhysics(DroppedItem *drop, float delta) {
   }
 }
 
-static void tryPickup(DroppedItem *drop) {
+static void startPickup(DroppedItem *drop) {
   u8 player_num;
 
   if (drop->pickup_delay > 0) {
-    drop->pickup_delay--;
     return;
   }
 
@@ -124,17 +127,52 @@ static void tryPickup(DroppedItem *drop) {
        across the screen; the taller range covers slopes and tree canopies. */
     if (dx * dx + dz * dz <= ITEM_PICKUP_RADIUS * ITEM_PICKUP_RADIUS &&
         dy >= -ITEM_PICKUP_HEIGHT && dy <= ITEM_PICKUP_HEIGHT) {
-      u8 added = addItemToInventory(player, drop->item, drop->count);
-      drop->count -= added;
-      if (drop->count == 0) {
-        drop->active = FALSE;
-      }
-      if (added > 0) {
-        pickup_item[player_num] = drop->item;
-        pickup_message[player_num] = 60;
-        return;
-      }
+      drop->pickup_player = player_num;
+      drop->pickup_progress = 0;
+      drop->velocity.x = 0;
+      drop->velocity.y = 0;
+      drop->velocity.z = 0;
+      return;
     }
+  }
+}
+
+static void updatePickupAnimation(DroppedItem *drop, float delta) {
+  Player *player = &players[drop->pickup_player];
+  Vector3 target = player->position;
+  float pull = min(1.f, delta * 0.32f);
+  u8 added;
+
+  /* Aim below the eye so the cube visibly converges on the player rather
+     than clipping into the camera.  The exponential pull looks smooth even
+     when a frame takes longer than normal. */
+  target.y -= BLOCK_SIZE * 0.45f;
+  drop->position.x += (target.x - drop->position.x) * pull;
+  drop->position.y += (target.y - drop->position.y) * pull;
+  drop->position.z += (target.z - drop->position.z) * pull;
+  drop->rotation += delta * 30.f;
+  if (drop->rotation >= 360) {
+    drop->rotation -= 360;
+  }
+  drop->pickup_progress += delta;
+
+  if (drop->pickup_progress < ITEM_PICKUP_PULL_TIME) {
+    return;
+  }
+
+  added = addItemToInventory(player, drop->item, drop->count);
+  drop->count -= added;
+  if (added > 0) {
+    pickup_item[drop->pickup_player] = drop->item;
+    pickup_message[drop->pickup_player] = 60;
+  }
+  if (drop->count == 0) {
+    drop->active = FALSE;
+  } else {
+    /* An inventory can change while the animation plays.  Leave any
+       remainder in the world and make it eligible for another player. */
+    drop->pickup_player = ITEM_NO_PICKUP_PLAYER;
+    drop->pickup_progress = 0;
   }
 }
 
@@ -148,8 +186,15 @@ void updateDroppedItems(float delta) {
   }
   for (i = 0; i < MAX_DROPPED_ITEMS; i++) {
     if (dropped_items[i].active) {
-      updateDropPhysics(&dropped_items[i], delta);
-      tryPickup(&dropped_items[i]);
+      DroppedItem *drop = &dropped_items[i];
+
+      if (drop->pickup_player < active_player_count) {
+        updatePickupAnimation(drop, delta);
+      } else {
+        updateDropPhysics(drop, delta);
+        drop->pickup_delay = max(0, drop->pickup_delay - delta);
+        startPickup(drop);
+      }
     }
   }
 }
