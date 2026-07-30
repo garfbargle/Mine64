@@ -837,23 +837,27 @@ static void makeStevePose(u8 player_num) {
   float hurt_bob = player->hurt_time > 0 ?
     sinf((PLAYER_ATTACK_DURATION - player->hurt_time) * 180.f * M_DTOR) * 7.f : 0;
 
+  /* Gameplay yaw rotates direction vectors clockwise around Y, whereas
+     guRotateRPY's Y angle rotates model geometry counter-clockwise.  A model
+     transform therefore uses the stored yaw directly; only the camera view
+     transform negates it. */
   setStevePartTransform(player_num, STEVE_BODY, (Vector3) {hurt_bob, -30, 0},
-    0, -player->body_yaw);
+    0, player->body_yaw);
   /* Unlike the torso, this orientation uses the current camera yaw/pitch. */
   setStevePartTransform(player_num, STEVE_HEAD, (Vector3) {hurt_bob, 8, 0},
-    head_pitch, -player->yaw);
+    head_pitch, player->yaw);
   setStevePartTransform(player_num, STEVE_LEFT_ARM, (Vector3) {-25 + hurt_bob, -8, 0},
-    swing, -player->body_yaw);
+    swing, player->body_yaw);
   setStevePartTransform(player_num, STEVE_RIGHT_ARM, (Vector3) {25 + hurt_bob, -8, 0},
-    right_arm_pitch, -player->body_yaw);
+    right_arm_pitch, player->body_yaw);
   /* The sword's origin is the right hand, and it shares the arm's pitch so
      walking and attacks naturally carry it through the same arc. */
   setStevePartTransform(player_num, STEVE_SWORD, (Vector3) {25 + hurt_bob, -52, 0},
-    right_arm_pitch, -player->body_yaw);
+    right_arm_pitch, player->body_yaw);
   setStevePartTransform(player_num, STEVE_LEFT_LEG, (Vector3) {-10 + hurt_bob, -52, 0},
-    -swing, -player->body_yaw);
+    -swing, player->body_yaw);
   setStevePartTransform(player_num, STEVE_RIGHT_LEG, (Vector3) {10 + hurt_bob, -52, 0},
-    swing, -player->body_yaw);
+    swing, player->body_yaw);
 }
 
 static void drawStevePart(u8 player_num, u8 part, Vtx *verts, Gfx *part_dl) {
@@ -1687,6 +1691,10 @@ void drawHUD() {
        fall through on top of its world preview. */
   } else if (current_screen == GAME) {
     loaded_texture = NULL;
+    /* World and targeting passes leave the scissor on their final player
+       viewport.  HUD primitives use absolute framebuffer coordinates, so
+       reset it before drawing every player's overlay. */
+    gDPSetScissor(dlp++, G_SC_NON_INTERLACE, 0, 0, SCREEN_WD, SCREEN_HT);
     for (player_num = 0; player_num < active_player_count; player_num++) {
       u32 crosshair_x = playerViewportX(player_num) + playerViewportWidth() / 2;
       u32 crosshair_y = playerViewportY(player_num) + playerViewportHeight() / 2;
