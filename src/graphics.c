@@ -18,9 +18,15 @@
 #define HOTBAR_SLOT_SIZE 22
 #define HOTBAR_ICON_SIZE 16
 #define HOTBAR_MARGIN 7
-#define HELD_PREVIEW_SIZE 32
 #define INVENTORY_SLOT_SIZE 18
 #define INVENTORY_ICON_SIZE 14
+#define INVENTORY_GRID_X 18
+#define INVENTORY_GRID_Y 45
+#define INVENTORY_HOTBAR_Y 105
+#define RECIPE_LIST_X 197
+#define RECIPE_LIST_Y 39
+#define RECIPE_ROW_HEIGHT 20
+#define RECIPE_VISIBLE_ROWS 6
 #define CELESTIAL_DISTANCE_SOLO 11000.f
 #define CELESTIAL_DISTANCE_COOP 7000.f
 #define SUN_SIZE 430.f
@@ -1669,7 +1675,9 @@ static void setHudFillColor(u8 r, u8 g, u8 b) {
 static void drawHealth(u8 player_num) {
   u8 compact = usesFourPlayerLayout();
   u32 size = compact ? 4 : 6;
-  u32 x = playerViewportX(player_num) + (compact ? 5 : 7);
+  u32 total_width = (PLAYER_MAX_HEALTH / 2) * (size + 2) - 2;
+  u32 x = playerViewportX(player_num) +
+    (playerViewportWidth() - total_width) / 2;
   u32 y = playerViewportY(player_num) + playerViewportHeight() -
     (compact ? 14 + 4 + 8 : HOTBAR_SLOT_SIZE + HOTBAR_MARGIN + 10);
   u8 heart;
@@ -1743,40 +1751,62 @@ static void drawCompass() {
   gDPSetCycleType(dlp++, G_CYC_FILL);
   gDPSetRenderMode(dlp++, G_RM_NOOP, G_RM_NOOP2);
   setHudFillColor(7, 10, 13);
-  gDPFillRectangle(dlp++, 126, 6, 171, 20);
+  gDPFillRectangle(dlp++, 124, 6, 171, 20);
   setHudFillColor(111, 118, 121);
-  gDPFillRectangle(dlp++, 128, 8, 169, 18);
+  gDPFillRectangle(dlp++, 126, 8, 169, 18);
   setHudFillColor(25, 31, 35);
-  gDPFillRectangle(dlp++, 130, 9, 167, 17);
+  gDPFillRectangle(dlp++, 128, 9, 167, 17);
+  setHudFillColor(91, 98, 98);
+  gDPFillRectangle(dlp++, 134, 10, 134, 13);
+  gDPFillRectangle(dlp++, 161, 10, 161, 13);
   setHudFillColor(238, 194, 67);
-  gDPFillRectangle(dlp++, 148, 16, 149, 19);
+  gDPFillRectangle(dlp++, 147, 15, 148, 19);
   gDPPipeSync(dlp++);
 }
 
 static void drawCButtonGuide(Player *player) {
   u8 expanded = player->objective_time > 0;
-  u32 right = expanded ? 103 : 33;
 
-  /*
-   * The controller itself is the legend: a tiny persistent C cluster expands
-   * into labels alongside a newly revealed objective, then leaves only the
-   * familiar diamond once the player has read it.
-   */
+  if (!expanded) {
+    return;
+  }
   gDPPipeSync(dlp++);
   gDPSetCycleType(dlp++, G_CYC_FILL);
   gDPSetRenderMode(dlp++, G_RM_NOOP, G_RM_NOOP2);
   setHudFillColor(8, 10, 13);
-  gDPFillRectangle(dlp++, 5, 157, right, 196);
+  gDPFillRectangle(dlp++, 5, 160, 108, 198);
   setHudFillColor(131, 137, 139);
-  gDPFillRectangle(dlp++, 7, 159, right - 2, 194);
+  gDPFillRectangle(dlp++, 7, 162, 106, 196);
   setHudFillColor(24, 29, 34);
-  gDPFillRectangle(dlp++, 9, 161, right - 4, 192);
+  gDPFillRectangle(dlp++, 9, 164, 104, 194);
 
   setHudFillColor(225, 174, 42);
-  gDPFillRectangle(dlp++, 18, 163, 23, 168);
-  gDPFillRectangle(dlp++, 11, 171, 16, 176);
-  gDPFillRectangle(dlp++, 25, 171, 30, 176);
-  gDPFillRectangle(dlp++, 18, 179, 23, 184);
+  gDPFillRectangle(dlp++, 18, 165, 23, 170);
+  gDPFillRectangle(dlp++, 11, 173, 16, 178);
+  gDPFillRectangle(dlp++, 25, 173, 30, 178);
+  gDPFillRectangle(dlp++, 18, 181, 23, 186);
+  gDPPipeSync(dlp++);
+}
+
+static void drawActionGuide(Player *player) {
+  if (player->objective_time <= 0) {
+    return;
+  }
+  gDPPipeSync(dlp++);
+  gDPSetCycleType(dlp++, G_CYC_FILL);
+  gDPSetRenderMode(dlp++, G_RM_NOOP, G_RM_NOOP2);
+  setHudFillColor(8, 10, 13);
+  gDPFillRectangle(dlp++, 258, 160, 314, 198);
+  setHudFillColor(131, 137, 139);
+  gDPFillRectangle(dlp++, 260, 162, 312, 196);
+  setHudFillColor(24, 29, 34);
+  gDPFillRectangle(dlp++, 262, 164, 310, 194);
+  setHudFillColor(47, 106, 191);
+  gDPFillRectangle(dlp++, 266, 166, 277, 176);
+  setHudFillColor(48, 144, 65);
+  gDPFillRectangle(dlp++, 266, 177, 277, 187);
+  setHudFillColor(116, 121, 118);
+  gDPFillRectangle(dlp++, 266, 188, 277, 193);
   gDPPipeSync(dlp++);
 }
 
@@ -1886,13 +1916,10 @@ static void drawHotbar(u8 player_num) {
   u32 y_offset = playerViewportY(player_num);
   u32 slot_size = compact ? 14 : HOTBAR_SLOT_SIZE;
   u32 icon_size = compact ? 10 : HOTBAR_ICON_SIZE;
-  u32 preview_size = compact ? 16 : HELD_PREVIEW_SIZE;
   u32 margin = compact ? 4 : HOTBAR_MARGIN;
   u32 bar_width = HOTBAR_SLOT_COUNT * slot_size;
   u32 bar_x = x_offset + (viewport_width - bar_width) / 2;
   u32 bar_y = y_offset + viewport_height - slot_size - margin;
-  u32 held_x = x_offset + viewport_width - preview_size - margin;
-  u32 held_y = bar_y - preview_size - 3;
   u8 slot;
 
   gDPPipeSync(dlp++);
@@ -1933,21 +1960,19 @@ static void drawHotbar(u8 player_num) {
     }
   }
 
-  /* The enlarged current block is the first-person held-item cue. */
-  if (players[player_num].inventory[INVENTORY_HOTBAR_START +
-      players[player_num].selected_hotbar_slot].count > 0) {
-    drawItemIcon(players[player_num].held_block, held_x, held_y, preview_size);
-  }
 }
 
 static void drawInventorySlot(u32 x, u32 y, ItemStack *stack, u8 selected) {
   gDPPipeSync(dlp++);
   gDPSetCycleType(dlp++, G_CYC_FILL);
   gDPSetRenderMode(dlp++, G_RM_NOOP, G_RM_NOOP2);
-  setHudFillColor(76, 76, 76);
+  setHudFillColor(16, 19, 21);
   gDPFillRectangle(dlp++, x, y, x + INVENTORY_SLOT_SIZE - 1, y + INVENTORY_SLOT_SIZE - 1);
-  setHudFillColor(38, 38, 38);
-  gDPFillRectangle(dlp++, x + 2, y + 2, x + INVENTORY_SLOT_SIZE - 3, y + INVENTORY_SLOT_SIZE - 3);
+  setHudFillColor(102, 108, 104);
+  gDPFillRectangle(dlp++, x + 1, y + 1, x + INVENTORY_SLOT_SIZE - 2, y + 2);
+  gDPFillRectangle(dlp++, x + 1, y + 2, x + 2, y + INVENTORY_SLOT_SIZE - 2);
+  setHudFillColor(39, 44, 45);
+  gDPFillRectangle(dlp++, x + 3, y + 3, x + INVENTORY_SLOT_SIZE - 3, y + INVENTORY_SLOT_SIZE - 3);
 
   if (stack->item != AIR && stack->count > 0) {
     gDPPipeSync(dlp++);
@@ -1960,14 +1985,14 @@ static void drawInventorySlot(u32 x, u32 y, ItemStack *stack, u8 selected) {
     drawItemIcon(stack->item, x + 2, y + 2, INVENTORY_ICON_SIZE);
   }
 
-  /* Equipped is a small green tab, distinct from the movable cursor. */
+  /* Equipped remains a restrained green underline, separate from focus. */
   if (selected) {
     gDPPipeSync(dlp++);
     gDPSetCycleType(dlp++, G_CYC_FILL);
     gDPSetRenderMode(dlp++, G_RM_NOOP, G_RM_NOOP2);
-    setHudFillColor(90, 220, 110);
-    gDPFillRectangle(dlp++, x + 5, y + INVENTORY_SLOT_SIZE - 3,
-      x + INVENTORY_SLOT_SIZE - 6, y + INVENTORY_SLOT_SIZE - 1);
+    setHudFillColor(89, 213, 105);
+    gDPFillRectangle(dlp++, x + 4, y + INVENTORY_SLOT_SIZE - 3,
+      x + INVENTORY_SLOT_SIZE - 5, y + INVENTORY_SLOT_SIZE - 2);
   }
 }
 
@@ -1975,91 +2000,173 @@ static void drawInventoryFocus(u32 x, u32 y) {
   gDPPipeSync(dlp++);
   gDPSetCycleType(dlp++, G_CYC_FILL);
   gDPSetRenderMode(dlp++, G_RM_NOOP, G_RM_NOOP2);
-  setHudFillColor(255, 232, 72);
-  gDPFillRectangle(dlp++, x, y, x + INVENTORY_SLOT_SIZE - 1, y + 1);
+  setHudFillColor(242, 193, 54);
+  gDPFillRectangle(dlp++, x - 1, y - 1, x + INVENTORY_SLOT_SIZE, y);
   gDPFillRectangle(dlp++, x, y + INVENTORY_SLOT_SIZE - 2,
-    x + INVENTORY_SLOT_SIZE - 1, y + INVENTORY_SLOT_SIZE - 1);
-  gDPFillRectangle(dlp++, x, y + 2, x + 1, y + INVENTORY_SLOT_SIZE - 3);
+    x + INVENTORY_SLOT_SIZE - 1, y + INVENTORY_SLOT_SIZE);
+  gDPFillRectangle(dlp++, x - 1, y, x, y + INVENTORY_SLOT_SIZE - 1);
   gDPFillRectangle(dlp++, x + INVENTORY_SLOT_SIZE - 2, y + 2,
-    x + INVENTORY_SLOT_SIZE - 1, y + INVENTORY_SLOT_SIZE - 3);
+    x + INVENTORY_SLOT_SIZE, y + INVENTORY_SLOT_SIZE - 3);
 }
 
-/* While crafting, the last inventory slot remains the material source.  Its
-   cool outline distinguishes it from the active yellow cursor and the green
-   equipped hotbar slot without obscuring either icon. */
-static void drawInventorySource(u32 x, u32 y) {
+static void drawInventoryButton(u32 x, u32 y, u8 red, u8 green, u8 blue,
+    u8 wide) {
   gDPPipeSync(dlp++);
   gDPSetCycleType(dlp++, G_CYC_FILL);
   gDPSetRenderMode(dlp++, G_RM_NOOP, G_RM_NOOP2);
-  setHudFillColor(76, 172, 236);
-  gDPFillRectangle(dlp++, x + 2, y + 2, x + INVENTORY_SLOT_SIZE - 3, y + 2);
-  gDPFillRectangle(dlp++, x + 2, y + INVENTORY_SLOT_SIZE - 3,
-    x + INVENTORY_SLOT_SIZE - 3, y + INVENTORY_SLOT_SIZE - 3);
-  gDPFillRectangle(dlp++, x + 2, y + 3, x + 2, y + INVENTORY_SLOT_SIZE - 4);
-  gDPFillRectangle(dlp++, x + INVENTORY_SLOT_SIZE - 3, y + 3,
-    x + INVENTORY_SLOT_SIZE - 3, y + INVENTORY_SLOT_SIZE - 4);
+  setHudFillColor(11, 13, 15);
+  gDPFillRectangle(dlp++, x, y, x + (wide ? 21 : 13), y + 13);
+  setHudFillColor(red, green, blue);
+  gDPFillRectangle(dlp++, x + 2, y + 2, x + (wide ? 19 : 11), y + 11);
+  setHudFillColor(min(255, red + 55), min(255, green + 55),
+    min(255, blue + 55));
+  gDPFillRectangle(dlp++, x + 3, y + 3, x + (wide ? 18 : 10), y + 4);
+}
+
+static u32 inventoryItemCount(Player *player, u8 item);
+
+static u8 recipeIngredientsAvailable(Player *player, u8 recipe_index) {
+  const CraftRecipe *recipe = &craft_recipes[recipe_index];
+  u8 ingredient;
+
+  for (ingredient = 0; ingredient < 2; ingredient++) {
+    if (recipe->ingredient_count[ingredient] > 0 &&
+        inventoryItemCount(player, recipe->ingredient_item[ingredient]) <
+          recipe->ingredient_count[ingredient]) {
+      return FALSE;
+    }
+  }
+  return TRUE;
 }
 
 static void drawInventory() {
   Player *player = &players[inventory_player];
-  u8 craft_columns = player->crafting_table_open ? CRAFTING_TABLE_COLUMNS : PLAYER_CRAFTING_COLUMNS;
-  u8 craft_rows = player->crafting_table_open ? CRAFTING_TABLE_ROWS : PLAYER_CRAFTING_ROWS;
-  u32 craft_x = player->crafting_table_open ? 40 : 48;
-  u32 output_x = player->crafting_table_open ? 104 : 86;
-  u32 output_y = player->crafting_table_open ? 71 : 62;
-  u32 slot_x = player->crafting_table_open ? 145 : 115;
-  u32 slot_y = 53;
+  u8 recipe_count = playerRecipeCount(player);
+  u8 recipe_start = player->crafting_cursor > 2 ?
+    player->crafting_cursor - 2 : 0;
   u8 row, column;
-  ItemStack output = {AIR, 0};
 
+  if (recipe_count > RECIPE_VISIBLE_ROWS &&
+      recipe_start > recipe_count - RECIPE_VISIBLE_ROWS) {
+    recipe_start = recipe_count - RECIPE_VISIBLE_ROWS;
+  }
+  gDPPipeSync(dlp++);
   gDPSetCycleType(dlp++, G_CYC_FILL);
   gDPSetRenderMode(dlp++, G_RM_NOOP, G_RM_NOOP2);
-  setHudFillColor(18, 18, 18);
-  gDPFillRectangle(dlp++, 30, 18, SCREEN_WD - 31, SCREEN_HT - 19);
-  setHudFillColor(112, 112, 112);
-  gDPFillRectangle(dlp++, 33, 21, SCREEN_WD - 34, SCREEN_HT - 22);
-  setHudFillColor(54, 54, 54);
-  gDPFillRectangle(dlp++, 36, 24, SCREEN_WD - 37, SCREEN_HT - 25);
+  /* A single full-screen workbench with strong internal grouping survives
+     composite blur better than nested translucent boxes. */
+  setHudFillColor(7, 9, 12);
+  gDPFillRectangle(dlp++, 6, 6, SCREEN_WD - 7, SCREEN_HT - 7);
+  setHudFillColor(115, 121, 117);
+  gDPFillRectangle(dlp++, 8, 8, SCREEN_WD - 9, SCREEN_HT - 9);
+  setHudFillColor(26, 31, 33);
+  gDPFillRectangle(dlp++, 11, 11, SCREEN_WD - 12, SCREEN_HT - 12);
+  setHudFillColor(37, 43, 44);
+  gDPFillRectangle(dlp++, 12, 12, SCREEN_WD - 13, 31);
+  setHudFillColor(9, 11, 13);
+  gDPFillRectangle(dlp++, 190, 31, 194, 180);
+  setHudFillColor(100, 106, 102);
+  gDPFillRectangle(dlp++, 191, 32, 191, 179);
 
-  for (row = 0; row < craft_rows; row++) {
-    for (column = 0; column < craft_columns; column++) {
-      u8 index = row * CRAFTING_TABLE_COLUMNS + column;
-      drawInventorySlot(craft_x + column * INVENTORY_SLOT_SIZE, 53 + row * INVENTORY_SLOT_SIZE,
-        &player->crafting[index], FALSE);
-    }
+  /* Selected-item summary and recipe details have fixed homes, so text never
+     jumps as the cursor crosses between the two panes. */
+  setHudFillColor(17, 21, 23);
+  gDPFillRectangle(dlp++, 16, 129, 185, 178);
+  setHudFillColor(68, 75, 75);
+  gDPFillRectangle(dlp++, 17, 130, 184, 131);
+  gDPFillRectangle(dlp++, 17, 130, 18, 177);
+  setHudFillColor(17, 21, 23);
+  gDPFillRectangle(dlp++, 197, 164, 304, 203);
+  setHudFillColor(68, 75, 75);
+  gDPFillRectangle(dlp++, 198, 165, 303, 166);
+
+  /* Footer changes with focus; button shapes carry controller color even
+     when the small font is softened by a CRT. */
+  if (player->inventory_area == INVENTORY_AREA_OUTPUT) {
+    setHudFillColor(12, 15, 17);
+    gDPFillRectangle(dlp++, 12, 205, 307, 227);
+    setHudFillColor(69, 75, 74);
+    gDPFillRectangle(dlp++, 13, 206, 306, 207);
+    drawInventoryButton(18, 210, 43, 104, 190, FALSE);
+    drawInventoryButton(110, 210, 190, 146, 36, TRUE);
+    drawInventoryButton(240, 210, 51, 145, 65, FALSE);
+  } else {
+    setHudFillColor(12, 15, 17);
+    gDPFillRectangle(dlp++, 12, 184, 307, 227);
+    setHudFillColor(69, 75, 74);
+    gDPFillRectangle(dlp++, 13, 185, 306, 186);
+    drawInventoryButton(18, 191, 43, 104, 190, FALSE);
+    drawInventoryButton(115, 191, 51, 145, 65, FALSE);
+    drawInventoryButton(18, 211, 190, 146, 36, TRUE);
+    drawInventoryButton(93, 211, 190, 146, 36, TRUE);
+    drawInventoryButton(178, 211, 190, 146, 36, TRUE);
+    drawInventoryButton(248, 211, 190, 146, 36, TRUE);
   }
-  getCraftResult(player, &output);
-  drawInventorySlot(output_x, output_y, &output, FALSE);
-  drawInventorySlot(output_x, 104, &player->carried_item, FALSE);
 
   for (row = 0; row < INVENTORY_STORAGE_ROWS + INVENTORY_HOTBAR_ROWS; row++) {
     for (column = 0; column < INVENTORY_COLUMNS; column++) {
       u8 index = row * INVENTORY_COLUMNS + column;
-      drawInventorySlot(slot_x + column * INVENTORY_SLOT_SIZE, slot_y + row * INVENTORY_SLOT_SIZE,
+      u32 y = row == INVENTORY_STORAGE_ROWS ? INVENTORY_HOTBAR_Y :
+        INVENTORY_GRID_Y + row * INVENTORY_SLOT_SIZE;
+      drawInventorySlot(INVENTORY_GRID_X + column * INVENTORY_SLOT_SIZE, y,
         &player->inventory[index], row == INVENTORY_STORAGE_ROWS &&
         player->selected_hotbar_slot == column);
     }
   }
+  if (player->inventory[player->inventory_cursor].count > 0) {
+    drawItemIcon(player->inventory[player->inventory_cursor].item,
+      22, 139, 28);
+  }
+  drawInventorySlot(164, 142, &player->carried_item, FALSE);
 
-  if (player->inventory_area == INVENTORY_AREA_CRAFTING) {
-    drawInventorySource(slot_x + (player->inventory_cursor % INVENTORY_COLUMNS) *
-      INVENTORY_SLOT_SIZE, slot_y + (player->inventory_cursor / INVENTORY_COLUMNS) *
-      INVENTORY_SLOT_SIZE);
+  /* Recipe rows use icons and an availability pip instead of exposing the
+     old manual crafting matrix. */
+  for (row = 0; row < RECIPE_VISIBLE_ROWS &&
+      recipe_start + row < recipe_count; row++) {
+    u8 recipe = recipe_start + row;
+    u32 y = RECIPE_LIST_Y + row * RECIPE_ROW_HEIGHT;
+    u8 selected = player->inventory_area == INVENTORY_AREA_OUTPUT &&
+      player->crafting_cursor == recipe;
+    u8 available = recipeIngredientsAvailable(player, recipe);
+
+    gDPPipeSync(dlp++);
+    gDPSetCycleType(dlp++, G_CYC_FILL);
+    gDPSetRenderMode(dlp++, G_RM_NOOP, G_RM_NOOP2);
+    setHudFillColor(selected ? 99 : 17, selected ? 79 : 21,
+      selected ? 25 : 23);
+    gDPFillRectangle(dlp++, RECIPE_LIST_X, y,
+      SCREEN_WD - 17, y + RECIPE_ROW_HEIGHT - 2);
+    setHudFillColor(available ? 76 : 112, available ? 194 : 52,
+      available ? 94 : 48);
+    gDPFillRectangle(dlp++, RECIPE_LIST_X + 2, y + 3,
+      RECIPE_LIST_X + 3, y + RECIPE_ROW_HEIGHT - 5);
+    drawItemIcon(craft_recipes[recipe].result_item,
+      RECIPE_LIST_X + 6, y + 2, INVENTORY_ICON_SIZE);
   }
 
-  /* Draw the cursor last so every edge remains intact on the real RDP. */
-  if (player->inventory_area == INVENTORY_AREA_CRAFTING) {
-    drawInventoryFocus(craft_x +
-      (player->crafting_cursor % CRAFTING_TABLE_COLUMNS) * INVENTORY_SLOT_SIZE,
-      53 + (player->crafting_cursor / CRAFTING_TABLE_COLUMNS) *
-      INVENTORY_SLOT_SIZE);
-  } else if (player->inventory_area == INVENTORY_AREA_OUTPUT) {
-    drawInventoryFocus(output_x, output_y);
-  } else {
-    drawInventoryFocus(slot_x +
+  if (recipe_start > 0) {
+    gDPPipeSync(dlp++);
+    gDPSetCycleType(dlp++, G_CYC_FILL);
+    setHudFillColor(230, 185, 49);
+    gDPFillRectangle(dlp++, 299, 35, 302, 36);
+    gDPFillRectangle(dlp++, 300, 34, 301, 34);
+  }
+  if (recipe_start + RECIPE_VISIBLE_ROWS < recipe_count) {
+    gDPPipeSync(dlp++);
+    gDPSetCycleType(dlp++, G_CYC_FILL);
+    setHudFillColor(230, 185, 49);
+    gDPFillRectangle(dlp++, 299, 160, 302, 161);
+    gDPFillRectangle(dlp++, 300, 162, 301, 162);
+  }
+
+  if (player->inventory_area == INVENTORY_AREA_ITEMS) {
+    u32 focus_y = player->inventory_cursor / INVENTORY_COLUMNS ==
+      INVENTORY_STORAGE_ROWS ? INVENTORY_HOTBAR_Y :
+      INVENTORY_GRID_Y + (player->inventory_cursor / INVENTORY_COLUMNS) *
+      INVENTORY_SLOT_SIZE;
+    drawInventoryFocus(INVENTORY_GRID_X +
       (player->inventory_cursor % INVENTORY_COLUMNS) * INVENTORY_SLOT_SIZE,
-      slot_y + (player->inventory_cursor / INVENTORY_COLUMNS) *
-      INVENTORY_SLOT_SIZE);
+      focus_y);
   }
 }
 
@@ -2074,36 +2181,184 @@ static void drawStackCount(ItemStack *stack, u32 x, u32 y) {
 
 static void drawInventoryStackCounts() {
   Player *player = &players[inventory_player];
-  u8 craft_columns = player->crafting_table_open ? CRAFTING_TABLE_COLUMNS : PLAYER_CRAFTING_COLUMNS;
-  u8 craft_rows = player->crafting_table_open ? CRAFTING_TABLE_ROWS : PLAYER_CRAFTING_ROWS;
-  u32 craft_x = player->crafting_table_open ? 40 : 48;
-  u32 output_x = player->crafting_table_open ? 104 : 86;
-  u32 output_y = player->crafting_table_open ? 71 : 62;
-  u32 slot_x = player->crafting_table_open ? 145 : 115;
-  u32 slot_y = 53;
   u8 row, column;
-  ItemStack output = {AIR, 0};
-
-  for (row = 0; row < craft_rows; row++) {
-    for (column = 0; column < craft_columns; column++) {
-      u8 index = row * CRAFTING_TABLE_COLUMNS + column;
-      drawStackCount(&player->crafting[index], craft_x + column * INVENTORY_SLOT_SIZE,
-        53 + row * INVENTORY_SLOT_SIZE);
-    }
-  }
-  getCraftResult(player, &output);
-  drawStackCount(&output, output_x, output_y);
-  drawStackCount(&player->carried_item, output_x, 104);
 
   for (row = 0; row < INVENTORY_STORAGE_ROWS + INVENTORY_HOTBAR_ROWS; row++) {
     for (column = 0; column < INVENTORY_COLUMNS; column++) {
       ItemStack *stack = &player->inventory[row * INVENTORY_COLUMNS + column];
-      u32 x = slot_x + column * INVENTORY_SLOT_SIZE;
-      u32 y = slot_y + row * INVENTORY_SLOT_SIZE;
+      u32 x = INVENTORY_GRID_X + column * INVENTORY_SLOT_SIZE;
+      u32 y = row == INVENTORY_STORAGE_ROWS ? INVENTORY_HOTBAR_Y :
+        INVENTORY_GRID_Y + row * INVENTORY_SLOT_SIZE;
 
       drawStackCount(stack, x, y);
     }
   }
+  if (player->carried_item.count > 0) {
+    drawStackCount(&player->carried_item, 164, 142);
+  }
+}
+
+static u32 inventoryItemCount(Player *player, u8 item) {
+  u8 slot;
+  u32 count = 0;
+
+  for (slot = 0; slot < INVENTORY_SIZE; slot++) {
+    if (player->inventory[slot].item == item) {
+      count += player->inventory[slot].count;
+    }
+  }
+  return count;
+}
+
+static u32 drawUnsigned(u32 value, u32 x, u32 y) {
+  char digits[5];
+  u8 count = 0;
+  u8 i;
+
+  do {
+    digits[count++] = '0' + value % 10;
+    value /= 10;
+  } while (value > 0 && count < sizeof(digits));
+  for (i = 0; i < count; i++) {
+    char digit = digits[count - i - 1];
+    drawChar(digit, x, y);
+    x += charWidth(digit);
+  }
+  return x;
+}
+
+static void setHudTextColor(u8 red, u8 green, u8 blue) {
+  gDPSetPrimColor(dlp++, 0, 0, red, green, blue, 255);
+}
+
+static const char *shortIngredientName(u8 item) {
+  if (item == COBBLESTONE) return "Cobble";
+  if (item == IRON_CHUNK) return "Iron";
+  return itemName(item);
+}
+
+static void drawInventoryText() {
+  Player *player = &players[inventory_player];
+  ItemStack *selected = &player->inventory[player->inventory_cursor];
+  const CraftRecipe *recipe = &craft_recipes[player->crafting_cursor];
+  u8 recipe_count = playerRecipeCount(player);
+  u8 recipe_start = player->crafting_cursor > 2 ?
+    player->crafting_cursor - 2 : 0;
+  u8 row;
+
+  if (recipe_count > RECIPE_VISIBLE_ROWS &&
+      recipe_start > recipe_count - RECIPE_VISIBLE_ROWS) {
+    recipe_start = recipe_count - RECIPE_VISIBLE_ROWS;
+  }
+
+  beginText();
+  setHudTextColor(241, 195, 58);
+  drawString("PACK", 18, 18);
+  drawString(player->crafting_table_open ? "WORKBENCH" : "POCKET CRAFT",
+    200, 18);
+  setHudTextColor(185, 192, 187);
+  drawString("STORAGE", 18, 34);
+  drawString("HOTBAR", 18, 95);
+  drawChar('P', 166, 18);
+  drawChar('1' + inventory_player, 173, 18);
+
+  if (selected->count > 0) {
+    setHudTextColor(241, 241, 232);
+    drawString(itemName(selected->item), 55, 137);
+    setHudTextColor(155, 164, 160);
+    drawString("STACK", 55, 151);
+    setHudTextColor(241, 195, 58);
+    drawUnsigned(selected->count, 91, 151);
+  } else {
+    setHudTextColor(126, 135, 132);
+    drawString("EMPTY SLOT", 55, 143);
+  }
+  setHudTextColor(player->carried_item.count > 0 ?
+    241 : 126, player->carried_item.count > 0 ? 241 : 135,
+    player->carried_item.count > 0 ? 232 : 132);
+  drawString("HAND", 151, 132);
+
+  for (row = 0; row < RECIPE_VISIBLE_ROWS &&
+      recipe_start + row < recipe_count; row++) {
+    u8 recipe_index = recipe_start + row;
+    u32 y = RECIPE_LIST_Y + row * RECIPE_ROW_HEIGHT + 6;
+    u8 available = recipeIngredientsAvailable(player, recipe_index);
+
+    if (player->inventory_area == INVENTORY_AREA_OUTPUT &&
+        player->crafting_cursor == recipe_index) {
+      setHudTextColor(255, 222, 105);
+    } else if (available) {
+      setHudTextColor(226, 231, 219);
+    } else {
+      setHudTextColor(116, 122, 119);
+    }
+    drawString(itemName(craft_recipes[recipe_index].result_item),
+      RECIPE_LIST_X + 23, y);
+  }
+
+  if (player->inventory_area == INVENTORY_AREA_OUTPUT) {
+    setHudTextColor(241, 195, 58);
+    drawString("MAKES", 202, 168);
+    drawString("MAX", 264, 168);
+    drawUnsigned(recipeCraftableCount(player, player->crafting_cursor),
+      286, 168);
+    setHudTextColor(235, 237, 227);
+    drawString(itemName(recipe->result_item), 202, 178);
+    drawChar('x', 285, 178);
+    drawUnsigned(recipe->result_count, 292, 178);
+    for (row = 0; row < 2; row++) {
+      u32 have;
+      u32 x;
+      u32 y;
+
+      if (recipe->ingredient_count[row] == 0) {
+        continue;
+      }
+      have = inventoryItemCount(player, recipe->ingredient_item[row]);
+      y = 188 + row * 10;
+      setHudTextColor(have >= recipe->ingredient_count[row] ?
+        92 : 211, have >= recipe->ingredient_count[row] ? 214 : 79,
+        have >= recipe->ingredient_count[row] ? 109 : 68);
+      drawString(shortIngredientName(recipe->ingredient_item[row]), 202, y);
+      x = drawUnsigned(have, 263, y);
+      drawChar('/', x, y);
+      drawUnsigned(recipe->ingredient_count[row], x + charWidth('/'), y);
+    }
+  }
+
+  setHudTextColor(242, 242, 233);
+  if (player->inventory_area == INVENTORY_AREA_OUTPUT) {
+    drawChar('A', 21, 213);
+    drawString("CRAFT ONE", 36, 213);
+    drawString("CU", 114, 213);
+    drawString("CRAFT MAX", 137, 213);
+    drawChar('B', 243, 213);
+    drawString("BACK", 258, 213);
+  } else {
+    drawChar('A', 21, 194);
+    drawString("MOVE STACK", 36, 194);
+    drawChar('B', 118, 194);
+    drawString("BACK", 133, 194);
+    drawString("CL", 22, 214);
+    drawString("ONE", 44, 214);
+    drawString("CR", 97, 214);
+    drawString("QUICK", 120, 214);
+    drawString("CU", 182, 214);
+    drawString("ALL", 205, 214);
+    drawString("CD", 252, 214);
+    drawString("DROP", 275, 214);
+  }
+  setHudTextColor(255, 255, 255);
+}
+
+static u32 hudStringWidth(const char *text) {
+  u32 width = 0;
+
+  while (*text) {
+    width += charWidth(*text);
+    text++;
+  }
+  return width;
 }
 
 static void drawGameText() {
@@ -2128,33 +2383,50 @@ static void drawGameText() {
       drawChar('P', x_offset + 5, y_offset + 5);
       drawChar('1' + player_num, x_offset + 12, y_offset + 5);
     } else {
+      const char *held_name = itemName(held_stack->count > 0 ?
+        held_stack->item : AIR);
+
       bar_x = (SCREEN_WD - bar_width) / 2;
       bar_y = y_offset + viewport_height - HOTBAR_SLOT_SIZE - HOTBAR_MARGIN;
-      drawChar('P', 6, y_offset + 6);
-      drawChar('1' + player_num, 13, y_offset + 6);
-      if (players[player_num].camera_mode == CAMERA_THIRD_PERSON) {
-        drawString("3P", 25, y_offset + 6);
-        drawString(itemName(held_stack->count > 0 ? held_stack->item : AIR),
-          43, y_offset + 6);
-      } else {
-        drawString(itemName(held_stack->count > 0 ? held_stack->item : AIR),
-          25, y_offset + 6);
+      if (active_player_count > 1) {
+        drawChar('P', 6, y_offset + 6);
+        drawChar('1' + player_num, 13, y_offset + 6);
+      } else if (players[player_num].camera_mode == CAMERA_THIRD_PERSON) {
+        setHudTextColor(241, 195, 58);
+        drawString("3P", 7, 8);
       }
       if (pickup_message[player_num] > 0) {
-        drawChar('+', 6, y_offset + 16);
-        drawString(itemName(pickup_item[player_num]), 13, y_offset + 16);
+        setHudTextColor(105, 225, 125);
+        drawChar('+', 7, y_offset + (active_player_count > 1 ? 16 : 9));
+        drawString(itemName(pickup_item[player_num]), 15,
+          y_offset + (active_player_count > 1 ? 16 : 9));
       }
       if (active_player_count == 1) {
-        drawString(playerHeading(&players[player_num]), 145, 10);
+        u32 name_width;
+        const char *heading = playerHeading(&players[player_num]);
+
+        setHudTextColor(241, 241, 232);
+        drawString(heading, 148 - hudStringWidth(heading) / 2, 10);
+        setHudTextColor(241, 195, 58);
         drawString(playerObjectiveTitle(&players[player_num]),
           players[player_num].objective_time > 0 ? 181 : 197, 12);
         if (players[player_num].objective_time > 0) {
+          setHudTextColor(224, 228, 219);
           drawString(playerObjectiveHint(&players[player_num]), 181, 23);
-          drawString("UP VIEW", 39, 163);
-          drawString("LR ITEMS", 39, 173);
-          drawString("DN PACK", 39, 183);
-        } else {
-          drawChar('C', 18, 171);
+          drawString("UP CAMERA", 38, 164);
+          drawString("LR ITEMS", 38, 174);
+          drawString("DN PACK", 38, 184);
+          drawChar('A', 269, 168);
+          drawString("USE", 282, 168);
+          drawChar('B', 269, 179);
+          drawString("MINE", 282, 179);
+          drawChar('R', 269, 188);
+          drawString("JUMP", 282, 188);
+        }
+        if (held_stack->count > 0) {
+          name_width = hudStringWidth(held_name);
+          setHudTextColor(239, 239, 230);
+          drawString(held_name, (SCREEN_WD - name_width) / 2, 190);
         }
       }
     }
@@ -2171,6 +2443,7 @@ static void drawGameText() {
       }
     }
   }
+  setHudTextColor(255, 255, 255);
 }
 
 void drawHUD() {
@@ -2203,6 +2476,7 @@ void drawHUD() {
         drawCompass();
         drawObjectivePanel(&players[player_num]);
         drawCButtonGuide(&players[player_num]);
+        drawActionGuide(&players[player_num]);
       }
     }
     if (active_player_count > 1) {
@@ -2229,6 +2503,7 @@ void drawHUD() {
     drawGameText();
   } else if (current_screen == INVENTORY) {
     drawInventoryStackCounts();
+    drawInventoryText();
   }
 
 }

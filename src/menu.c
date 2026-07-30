@@ -36,17 +36,17 @@ static const char *world_name_keyboard[] = {
 };
 
 static char *info_text[] = {
-  "Mine64 v0.3",
+  "Mine64 v0.4",
   "",
   "Walk: Analog stick",
   "Sprint: Left shoulder",
   "Look around: Analog stick + Z trigger",
-  "Place block: A button (items are limited)",
+  "Use / place / eat: A button",
   "Mine block: Hold B button",
   "Pickaxe gathers rock / mines faster",
-  "Select block: C buttons left/right",
-  "Camera: C button up",
-  "Inventory: START button",
+  "Items: C left / right",
+  "Camera: C up",
+  "Pack: START or C down",
   "Jump: Right shoulder",
   "Save game: D-Pad",
   "Co-op: Controllers 2-4 press START"
@@ -70,20 +70,6 @@ static char *save_failed_text[] = {
 
 static char player_joined_text[] = "Player 1 joined";
 static char *player_joined_lines[] = {player_joined_text};
-
-static char *inventory_text[] = {
-  "Inventory",
-  "Craft",
-  "Output",
-  "Hand",
-  "Items",
-  "A: Place 1 / Craft",
-  "B: Remove 1 / Split",
-  "D Pad C Stick: Move",
-  "Hold a direction: Repeat",
-  "Blue Source Green Equipped",
-  "Start: Close / Return Mats"
-};
 
 static Gfx menu_setup_display_list[] = {
   gsDPSetCycleType(G_CYC_1CYCLE),
@@ -151,7 +137,7 @@ static void drawLargeString(const char *text, u32 x, u32 y, u8 scale) {
 
 static void drawMenuTitle() {
   const char *title = "MINE64";
-  const char *version = "v0.3";
+  const char *version = "v0.4";
   u32 width = 0;
   u32 i = 0;
 
@@ -232,16 +218,16 @@ static void drawMenuButton(u32 x, u32 y, u8 red, u8 green, u8 blue,
   gDPFillRectangle(dlp++, x - 5, y - 3, x - 3, y - 2);
 }
 
-static void drawMenuDPad(u32 x, u32 y) {
+static void drawMenuStick(u32 x, u32 y) {
   setMenuFillColor(20, 22, 18);
-  gDPFillRectangle(dlp++, x - 4, y - 10, x + 4, y + 10);
-  gDPFillRectangle(dlp++, x - 10, y - 4, x + 10, y + 4);
+  gDPFillRectangle(dlp++, x - 7, y - 8, x + 7, y + 3);
+  gDPFillRectangle(dlp++, x - 4, y - 11, x + 4, y + 6);
   setMenuFillColor(101, 105, 97);
-  gDPFillRectangle(dlp++, x - 3, y - 8, x + 3, y + 8);
-  gDPFillRectangle(dlp++, x - 8, y - 3, x + 8, y + 3);
+  gDPFillRectangle(dlp++, x - 5, y - 7, x + 5, y + 1);
+  gDPFillRectangle(dlp++, x - 3, y - 9, x + 3, y + 4);
   setMenuFillColor(160, 165, 150);
-  gDPFillRectangle(dlp++, x - 2, y - 7, x + 2, y - 5);
-  gDPFillRectangle(dlp++, x - 7, y - 2, x - 5, y + 2);
+  gDPFillRectangle(dlp++, x - 3, y - 7, x + 3, y - 5);
+  gDPFillRectangle(dlp++, x - 1, y + 5, x + 1, y + 9);
 }
 
 static void drawStartButton(u32 x, u32 y) {
@@ -331,7 +317,7 @@ static void drawWorldNaming() {
   }
   drawMenuButton(63, 188, 54, 145, 66, 105, 203, 95);
   drawMenuButton(167, 188, 175, 48, 41, 232, 87, 71);
-  drawMenuDPad(48, 204);
+  drawMenuStick(48, 204);
   drawMenuButton(120, 204, 183, 142, 43, 235, 196, 79);
   drawMenuButton(140, 204, 183, 142, 43, 235, 196, 79);
   drawStartButton(244, 204);
@@ -356,7 +342,7 @@ static void drawWorldNaming() {
   drawString("DELETE", 77, 184);
   drawChar('A', 164, 184);
   drawString("ADD", 181, 184);
-  drawString("PICK", 65, 200);
+  drawString("KEY", 65, 200);
   drawChar('C', 117, 200);
   drawChar('C', 137, 200);
   drawString("CURSOR", 151, 200);
@@ -422,10 +408,8 @@ void drawMenu() {
       y_start = SCREEN_HT / 3;
       break;
     case INVENTORY:
-      text = inventory_text;
-      n_lines = sizeof(inventory_text) / sizeof(char *);
-      y_start = 26;
-      break;
+      /* Inventory owns its complete visual hierarchy in graphics.c. */
+      return;
     default:
       return;
   }
@@ -452,11 +436,7 @@ void drawMenu() {
       drawMenuTitle();
       continue;
     }
-    if (current_screen == INVENTORY && i == 0) {
-      static char inventory_title[] = "P1 Inventory";
-      inventory_title[1] = '1' + inventory_player;
-      text_line = inventory_title;
-    } else if (current_screen == WORLD_NAMING && !saving_available && i == 5) {
+    if (current_screen == WORLD_NAMING && !saving_available && i == 5) {
       text_line = "No cart save device";
     } else if (current_screen == MENU && i >= option_lines[0]) {
       u8 world = i - option_lines[0];
@@ -489,19 +469,7 @@ void drawMenu() {
     while (text_line[j]) {
       chr = text_line[j];
       if (chr != ' ') {
-        if (current_screen == INVENTORY && i == 1) {
-          drawChar(chr, x + (players[inventory_player].crafting_table_open ? 40 : 48), 43);
-        } else if (current_screen == INVENTORY && i == 2) {
-          drawChar(chr, x + (players[inventory_player].crafting_table_open ? 104 : 86), 43);
-        } else if (current_screen == INVENTORY && i == 3) {
-          drawChar(chr, x + (players[inventory_player].crafting_table_open ? 104 : 86), 94);
-        } else if (current_screen == INVENTORY && i == 4) {
-          drawChar(chr, x + (players[inventory_player].crafting_table_open ? 145 : 115), 43);
-        } else if (current_screen == INVENTORY && i > 4) {
-          drawChar(chr, x + 42, (i - 5) * 10 + 142);
-        } else {
-          drawChar(chr, x + SCREEN_WD / 2 - center, i * 12 + y_start);
-        }
+        drawChar(chr, x + SCREEN_WD / 2 - center, i * 12 + y_start);
       }
 
       x += charWidth(chr);

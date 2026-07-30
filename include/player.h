@@ -25,6 +25,8 @@
 #define PLAYER_ATTACK_DURATION 12.f
 #define PLAYER_VAULT_DURATION 18.f
 #define PLAYER_OBJECTIVE_COUNT 8
+#define CRAFT_RECIPE_COUNT 12
+#define POCKET_RECIPE_COUNT 3
 
 enum InventoryArea {
   INVENTORY_AREA_CRAFTING,
@@ -37,6 +39,15 @@ typedef struct {
   u8 item;
   u8 count;
 } ItemStack;
+
+/* The menu presents recipes, not the implementation-facing 2x2/3x3 matrix.
+   Every current recipe has at most two ingredient types. */
+typedef struct {
+  u8 result_item;
+  u8 result_count;
+  u8 ingredient_item[2];
+  u8 ingredient_count[2];
+} CraftRecipe;
 
 typedef struct {
   Vector3 position;
@@ -92,13 +103,16 @@ typedef struct {
 extern Player players[MAX_PLAYERS];
 extern u8 active_player_count;
 extern u8 inventory_player;
+extern const CraftRecipe craft_recipes[CRAFT_RECIPE_COUNT];
 
 void initPlayers();
 void updatePlayers();
 void updateTargetBlock(u8 player_num);
 void resetPlayerInventory(Player *player);
 u8 addItemToInventory(Player *player, u8 item, u8 count);
-u8 getCraftResult(Player *player, ItemStack *result);
+u8 playerRecipeCount(Player *player);
+u8 recipeCraftableCount(Player *player, u8 recipe);
+u8 craftSelectedRecipe(Player *player, u8 craft_all);
 void damagePlayer(u8 player_num, u8 damage, Vector3 source);
 const char *playerObjectiveTitle(Player *player);
 const char *playerObjectiveHint(Player *player);

@@ -68,7 +68,7 @@ retaining the stable 112×32×112 renderer and loading-screen presentation.
 | Hold L + analog stick | Sprint |
 | Hold Z + analog stick | Look around |
 | C-up | Toggle first-person / third-person camera |
-| C-down | Open inventory or the targeted crafting table |
+| C-down | Open the pack or the targeted crafting table |
 | C-left / C-right | Cycle the selected hotbar block |
 | A | Use a crafting table, place a block, or eat held food |
 | Hold B / tap B | Mine / punch a nearby mob; swords deal more damage |
@@ -88,19 +88,20 @@ In co-op, face a nearby player and tap **B** to swing. A player who loses all
 ten hearts respawns at full health with their inventory intact. Sheep and pigs
 flee attacks; hostile slimes pursue players at night.
 
-Either player can press **START** to open their inventory. It has a 3-row
-storage grid, a selectable nine-slot hotbar, and a working 2x2 crafting area.
-Navigate with the analog stick, D-pad, or C-buttons. For crafting, select a
-material stack, move left into the craft grid, and press **A** to place one
-directly from the blue-outlined source slot; **B** returns one to that slot.
-Press **A** on the output to craft directly into storage—there is no need to
-pick up and re-place the result. The labelled Hand slot remains available for
-moving whole stacks around the inventory: press **A** on an item slot to pick
-up or place a stack, or **B** to split one item. One log makes four planks; two
-vertical planks make four sticks; and four planks make a crafting table.
-Place a crafting table, look at it, then press **A**, **C-down**, or **START**
-to open its 3×3 grid. Planks make wooden tools, cobblestone makes stone tools,
-and iron chunks make iron tools.
+Either player can press **START** or **C-down** to open their pack. The analog
+stick alone moves the cursor: the left pane contains three storage rows plus
+the nine-slot hotbar, and moving right from the last column enters the recipe
+browser. Press **A** to move a stack or craft one recipe and **B** to return to
+the game. In the pack, **C-left** takes or places one item, **C-right**
+quick-moves a stack between storage and the hotbar, **C-down** drops one, and
+**C-up** drops the full selected stack. In the recipe browser, **C-up** crafts
+the maximum amount that both ingredients and free space allow.
+
+Pocket crafting offers planks, sticks, and a crafting table. Place a crafting
+table, look at it, then press **A**, **C-down**, or **START** to open the full
+workbench recipe list. Planks make wooden tools, cobblestone makes stone tools,
+and iron chunks make iron tools. Ingredients are consumed directly from the
+pack, so crafting never requires manually arranging a hidden 2×2 or 3×3 grid.
 
 ## SummerCart64
 

@@ -60,6 +60,21 @@ static u8 block_inc_held[MAX_PLAYERS];
 static u8 inventory_nav_previous;
 static u8 inventory_nav_repeat;
 
+const CraftRecipe craft_recipes[CRAFT_RECIPE_COUNT] = {
+  {PLANKS, 4, {WOOD, AIR}, {1, 0}},
+  {STICK, 4, {PLANKS, AIR}, {2, 0}},
+  {CRAFTING_TABLE, 1, {PLANKS, AIR}, {4, 0}},
+  {WOOD_SWORD, 1, {PLANKS, STICK}, {2, 1}},
+  {WOOD_PICKAXE, 1, {PLANKS, STICK}, {3, 2}},
+  {WOOD_AXE, 1, {PLANKS, STICK}, {3, 2}},
+  {STONE_SWORD, 1, {COBBLESTONE, STICK}, {2, 1}},
+  {STONE_PICKAXE, 1, {COBBLESTONE, STICK}, {3, 2}},
+  {STONE_AXE, 1, {COBBLESTONE, STICK}, {3, 2}},
+  {IRON_SWORD, 1, {IRON_CHUNK, STICK}, {2, 1}},
+  {IRON_PICKAXE, 1, {IRON_CHUNK, STICK}, {3, 2}},
+  {IRON_AXE, 1, {IRON_CHUNK, STICK}, {3, 2}}
+};
+
 static void resetInventoryNavigation(void) {
   inventory_nav_previous = 0;
   inventory_nav_repeat = 0;
@@ -69,20 +84,19 @@ static u8 inventoryNavigation(NUContData *cont) {
   u8 held = 0;
   u8 pressed;
 
-  if ((cont->button & (L_CBUTTONS | L_JPAD)) ||
-      cont->stick_x < -INVENTORY_STICK_THRESHOLD) {
+  /* The analog stick exclusively owns menu navigation.  C buttons are
+     reserved for contextual inventory actions and the D-pad remains a
+     gameplay save control. */
+  if (cont->stick_x < -INVENTORY_STICK_THRESHOLD) {
     held |= NAV_LEFT;
   }
-  if ((cont->button & (R_CBUTTONS | R_JPAD)) ||
-      cont->stick_x > INVENTORY_STICK_THRESHOLD) {
+  if (cont->stick_x > INVENTORY_STICK_THRESHOLD) {
     held |= NAV_RIGHT;
   }
-  if ((cont->button & (U_CBUTTONS | U_JPAD)) ||
-      cont->stick_y > INVENTORY_STICK_THRESHOLD) {
+  if (cont->stick_y > INVENTORY_STICK_THRESHOLD) {
     held |= NAV_UP;
   }
-  if ((cont->button & (D_CBUTTONS | D_JPAD)) ||
-      cont->stick_y < -INVENTORY_STICK_THRESHOLD) {
+  if (cont->stick_y < -INVENTORY_STICK_THRESHOLD) {
     held |= NAV_DOWN;
   }
 
@@ -144,11 +158,8 @@ static void selectHotbarSlot(Player *player, u8 slot) {
 }
 
 static void refreshHeldItem(Player *player) {
-  if (player->inventory_cursor >= INVENTORY_HOTBAR_START &&
-      player->inventory_cursor - INVENTORY_HOTBAR_START ==
-        player->selected_hotbar_slot) {
-    player->held_block = player->inventory[player->inventory_cursor].item;
-  }
+  player->held_block = player->inventory[INVENTORY_HOTBAR_START +
+    player->selected_hotbar_slot].item;
 }
 
 u8 addItemToInventory(Player *player, u8 item, u8 count) {
@@ -180,174 +191,6 @@ u8 addItemToInventory(Player *player, u8 item, u8 count) {
   return count - remaining;
 }
 
-static u8 recipeSlotIs(Player *player, u8 slot, u8 item) {
-  return player->crafting[slot].item == item && player->crafting[slot].count > 0;
-}
-
-static u8 craftingColumns(Player *player) {
-  return player->crafting_table_open ? CRAFTING_TABLE_COLUMNS : PLAYER_CRAFTING_COLUMNS;
-}
-
-static u8 craftingRows(Player *player) {
-  return player->crafting_table_open ? CRAFTING_TABLE_ROWS : PLAYER_CRAFTING_ROWS;
-}
-
-static u8 craftingSlotVisible(Player *player, u8 slot) {
-  u8 row = slot / CRAFTING_TABLE_COLUMNS;
-  u8 column = slot % CRAFTING_TABLE_COLUMNS;
-  return row < craftingRows(player) && column < craftingColumns(player);
-}
-
-static u8 recipeHasOnly(Player *player, u16 used_slots) {
-  u8 slot;
-  for (slot = 0; slot < CRAFTING_SIZE; slot++) {
-    if (player->crafting[slot].count > 0 && !(used_slots & (1 << slot))) {
-      return FALSE;
-    }
-  }
-  return TRUE;
-}
-
-/* A shaped recipe may be placed in any matching column of the 3x3 table.
-   Keeping this in one helper prevents the wood, stone, and iron swords from
-   drifting into subtly different layouts. */
-static u8 getSwordRecipe(Player *player, u8 material, u8 sword,
-                         ItemStack *result, u16 *used_slots) {
-  u8 column;
-
-  if (!player->crafting_table_open) {
-    return FALSE;
-  }
-  for (column = 0; column < CRAFTING_TABLE_COLUMNS; column++) {
-    u16 used = (1 << column) | (1 << (column + CRAFTING_TABLE_COLUMNS)) |
-      (1 << (column + CRAFTING_TABLE_COLUMNS * 2));
-    if (recipeSlotIs(player, column, material) &&
-        recipeSlotIs(player, column + CRAFTING_TABLE_COLUMNS, material) &&
-        recipeSlotIs(player, column + CRAFTING_TABLE_COLUMNS * 2, STICK) &&
-        recipeHasOnly(player, used)) {
-      result->item = sword;
-      result->count = 1;
-      *used_slots = used;
-      return TRUE;
-    }
-  }
-  return FALSE;
-}
-
-/* Returns both the visible result and the ingredient slots used by one craft.
-   Recipes follow their familiar 3x3 layouts, including the vertical sword
-   and the three-wide pickaxe head. */
-static u8 getCraftRecipe(Player *player, ItemStack *result, u16 *used_slots) {
-  u8 slot, column;
-
-  for (slot = 0; slot < CRAFTING_SIZE; slot++) {
-    if (craftingSlotVisible(player, slot) && recipeSlotIs(player, slot, WOOD) &&
-        recipeHasOnly(player, 1 << slot)) {
-      result->item = PLANKS;
-      result->count = 4;
-      *used_slots = 1 << slot;
-      return TRUE;
-    }
-  }
-  for (column = 0; column < craftingColumns(player); column++) {
-    u16 used = (1 << column) | (1 << (column + CRAFTING_TABLE_COLUMNS));
-    if (recipeSlotIs(player, column, PLANKS) &&
-        recipeSlotIs(player, column + CRAFTING_TABLE_COLUMNS, PLANKS) &&
-        recipeHasOnly(player, used)) {
-      result->item = STICK;
-      result->count = 4;
-      *used_slots = used;
-      return TRUE;
-    }
-  }
-  if (!player->crafting_table_open && recipeSlotIs(player, 0, PLANKS) &&
-      recipeSlotIs(player, 1, PLANKS) && recipeSlotIs(player, 3, PLANKS) &&
-      recipeSlotIs(player, 4, PLANKS) && recipeHasOnly(player,
-        (1 << 0) | (1 << 1) | (1 << 3) | (1 << 4))) {
-    result->item = CRAFTING_TABLE;
-    result->count = 1;
-    *used_slots = (1 << 0) | (1 << 1) | (1 << 3) | (1 << 4);
-    return TRUE;
-  }
-  if (getSwordRecipe(player, PLANKS, WOOD_SWORD, result, used_slots)) {
-    return TRUE;
-  }
-  if (player->crafting_table_open && recipeSlotIs(player, 0, PLANKS) &&
-      recipeSlotIs(player, 1, PLANKS) && recipeSlotIs(player, 2, PLANKS) &&
-      recipeSlotIs(player, 4, STICK) && recipeSlotIs(player, 7, STICK) && recipeHasOnly(player,
-        (1 << 0) | (1 << 1) | (1 << 2) | (1 << 4) | (1 << 7))) {
-    result->item = WOOD_PICKAXE;
-    result->count = 1;
-    *used_slots = (1 << 0) | (1 << 1) | (1 << 2) | (1 << 4) | (1 << 7);
-    return TRUE;
-  }
-  if (player->crafting_table_open && recipeSlotIs(player, 0, PLANKS) &&
-      recipeSlotIs(player, 1, PLANKS) && recipeSlotIs(player, 3, PLANKS) &&
-      recipeSlotIs(player, 4, STICK) && recipeSlotIs(player, 7, STICK) &&
-      recipeHasOnly(player,
-        (1 << 0) | (1 << 1) | (1 << 3) | (1 << 4) | (1 << 7))) {
-    result->item = WOOD_AXE;
-    result->count = 1;
-    *used_slots = (1 << 0) | (1 << 1) | (1 << 3) | (1 << 4) | (1 << 7);
-    return TRUE;
-  }
-  if (getSwordRecipe(player, COBBLESTONE, STONE_SWORD, result, used_slots)) {
-    return TRUE;
-  }
-  if (player->crafting_table_open && recipeSlotIs(player, 0, COBBLESTONE) &&
-      recipeSlotIs(player, 1, COBBLESTONE) &&
-      recipeSlotIs(player, 2, COBBLESTONE) && recipeSlotIs(player, 4, STICK) &&
-      recipeSlotIs(player, 7, STICK) && recipeHasOnly(player,
-        (1 << 0) | (1 << 1) | (1 << 2) | (1 << 4) | (1 << 7))) {
-    result->item = STONE_PICKAXE;
-    result->count = 1;
-    *used_slots = (1 << 0) | (1 << 1) | (1 << 2) | (1 << 4) | (1 << 7);
-    return TRUE;
-  }
-  if (player->crafting_table_open && recipeSlotIs(player, 0, COBBLESTONE) &&
-      recipeSlotIs(player, 1, COBBLESTONE) &&
-      recipeSlotIs(player, 3, COBBLESTONE) && recipeSlotIs(player, 4, STICK) &&
-      recipeSlotIs(player, 7, STICK) && recipeHasOnly(player,
-        (1 << 0) | (1 << 1) | (1 << 3) | (1 << 4) | (1 << 7))) {
-    result->item = STONE_AXE;
-    result->count = 1;
-    *used_slots = (1 << 0) | (1 << 1) | (1 << 3) | (1 << 4) | (1 << 7);
-    return TRUE;
-  }
-  if (getSwordRecipe(player, IRON_CHUNK, IRON_SWORD, result, used_slots)) {
-    return TRUE;
-  }
-  if (player->crafting_table_open && recipeSlotIs(player, 0, IRON_CHUNK) &&
-      recipeSlotIs(player, 1, IRON_CHUNK) &&
-      recipeSlotIs(player, 2, IRON_CHUNK) && recipeSlotIs(player, 4, STICK) &&
-      recipeSlotIs(player, 7, STICK) && recipeHasOnly(player,
-        (1 << 0) | (1 << 1) | (1 << 2) | (1 << 4) | (1 << 7))) {
-    result->item = IRON_PICKAXE;
-    result->count = 1;
-    *used_slots = (1 << 0) | (1 << 1) | (1 << 2) | (1 << 4) | (1 << 7);
-    return TRUE;
-  }
-  if (player->crafting_table_open && recipeSlotIs(player, 0, IRON_CHUNK) &&
-      recipeSlotIs(player, 1, IRON_CHUNK) &&
-      recipeSlotIs(player, 3, IRON_CHUNK) && recipeSlotIs(player, 4, STICK) &&
-      recipeSlotIs(player, 7, STICK) && recipeHasOnly(player,
-        (1 << 0) | (1 << 1) | (1 << 3) | (1 << 4) | (1 << 7))) {
-    result->item = IRON_AXE;
-    result->count = 1;
-    *used_slots = (1 << 0) | (1 << 1) | (1 << 3) | (1 << 4) | (1 << 7);
-    return TRUE;
-  }
-  result->item = AIR;
-  result->count = 0;
-  *used_slots = 0;
-  return FALSE;
-}
-
-u8 getCraftResult(Player *player, ItemStack *result) {
-  u16 used_slots;
-  return getCraftRecipe(player, result, &used_slots);
-}
-
 static void swapItemStacks(ItemStack *one, ItemStack *two) {
   ItemStack temporary = *one;
   *one = *two;
@@ -355,8 +198,7 @@ static void swapItemStacks(ItemStack *one, ItemStack *two) {
 }
 
 /* The Hand slot keeps conventional inventory rearranging available: A swaps
-   full stacks and B splits a single item.  Crafting itself uses the direct
-   source-to-grid transfer below. */
+   full stacks and C-left transfers a single item. */
 static void moveOneItem(ItemStack *target, ItemStack *carried) {
   if (carried->count > 0) {
     if (target->count == 0) {
@@ -381,85 +223,130 @@ static void moveOneItem(ItemStack *target, ItemStack *carried) {
   }
 }
 
-static u8 inventoryCanAccept(Player *player, u8 item, u8 count) {
+u8 playerRecipeCount(Player *player) {
+  return player->crafting_table_open ? CRAFT_RECIPE_COUNT :
+    POCKET_RECIPE_COUNT;
+}
+
+static u8 removeItemFromStacks(ItemStack *stacks, u8 item, u8 count) {
   u8 slot;
   u8 remaining = count;
-  u8 max_stack = itemMaxStack(item);
 
   for (slot = 0; slot < INVENTORY_SIZE && remaining > 0; slot++) {
-    ItemStack *stack = &player->inventory[slot];
-    if (stack->item == item && stack->count < max_stack) {
-      u8 room = max_stack - stack->count;
-      remaining -= remaining < room ? remaining : room;
+    ItemStack *stack = &stacks[slot];
+    u8 removed;
+
+    if (stack->item != item || stack->count == 0) {
+      continue;
     }
-  }
-  for (slot = 0; slot < INVENTORY_SIZE && remaining > 0; slot++) {
-    if (player->inventory[slot].count == 0) {
-      remaining -= remaining < max_stack ? remaining : max_stack;
+    removed = remaining < stack->count ? remaining : stack->count;
+    stack->count -= removed;
+    remaining -= removed;
+    if (stack->count == 0) {
+      stack->item = AIR;
     }
   }
   return remaining == 0;
 }
 
-/* Crafting results go straight into storage.  The old carried-item detour
-   made every craft require a second placement action and was especially
-   awkward on a controller. */
-static void craftOutput(Player *player) {
-  ItemStack result;
-  u16 used_slots;
+static u8 addItemToStacks(ItemStack *stacks, u8 item, u8 count) {
   u8 slot;
+  u8 remaining = count;
+  u8 max_stack = itemMaxStack(item);
 
-  if (!getCraftRecipe(player, &result, &used_slots) ||
-      !inventoryCanAccept(player, result.item, result.count)) {
-    return;
-  }
-  for (slot = 0; slot < CRAFTING_SIZE; slot++) {
-    if (used_slots & (1 << slot)) {
-      player->crafting[slot].count--;
-      if (player->crafting[slot].count == 0) {
-        player->crafting[slot].item = AIR;
-      }
+  for (slot = 0; slot < INVENTORY_SIZE && remaining > 0; slot++) {
+    ItemStack *stack = &stacks[slot];
+    u8 added;
+
+    if (stack->item != item || stack->count >= max_stack) {
+      continue;
     }
+    added = min(remaining, max_stack - stack->count);
+    stack->count += added;
+    remaining -= added;
   }
-  addItemToInventory(player, result.item, result.count);
+  for (slot = 0; slot < INVENTORY_SIZE && remaining > 0; slot++) {
+    ItemStack *stack = &stacks[slot];
+    u8 added;
+
+    if (stack->count != 0) {
+      continue;
+    }
+    added = min(remaining, max_stack);
+    stack->item = item;
+    stack->count = added;
+    remaining -= added;
+  }
+  return remaining == 0;
 }
 
-static u8 moveOneDirect(ItemStack *source, ItemStack *target) {
-  if (source->count == 0 ||
-      (target->count > 0 && (target->item != source->item ||
-        target->count >= itemMaxStack(target->item)))) {
+/* Applying a recipe to a temporary stack array makes both the availability
+   label and the actual craft account for slots freed by consumed materials.
+   A full pack can therefore still turn its last log into planks safely. */
+static u8 applyRecipeToStacks(ItemStack *stacks,
+    const CraftRecipe *recipe) {
+  u8 ingredient;
+  ItemStack before[INVENTORY_SIZE];
+
+  for (ingredient = 0; ingredient < INVENTORY_SIZE; ingredient++) {
+    before[ingredient] = stacks[ingredient];
+  }
+  for (ingredient = 0; ingredient < 2; ingredient++) {
+    if (recipe->ingredient_count[ingredient] > 0 &&
+        !removeItemFromStacks(stacks, recipe->ingredient_item[ingredient],
+          recipe->ingredient_count[ingredient])) {
+      u8 slot;
+      for (slot = 0; slot < INVENTORY_SIZE; slot++) {
+        stacks[slot] = before[slot];
+      }
+      return FALSE;
+    }
+  }
+  if (!addItemToStacks(stacks, recipe->result_item,
+      recipe->result_count)) {
+    u8 slot;
+    for (slot = 0; slot < INVENTORY_SIZE; slot++) {
+      stacks[slot] = before[slot];
+    }
     return FALSE;
-  }
-  if (target->count == 0) {
-    target->item = source->item;
-  }
-  target->count++;
-  source->count--;
-  if (source->count == 0) {
-    source->item = AIR;
   }
   return TRUE;
 }
 
-/* The selected inventory slot remains the material source while the cursor
-   is in the crafting grid.  This keeps normal recipe entry to two direct
-   actions—select material, then place—rather than loading and emptying an
-   invisible hand slot for every ingredient. */
-static void moveCraftingItem(Player *player, u8 remove) {
-  ItemStack *crafting = &player->crafting[player->crafting_cursor];
-  ItemStack *inventory = &player->inventory[player->inventory_cursor];
+u8 recipeCraftableCount(Player *player, u8 recipe) {
+  ItemStack simulated[INVENTORY_SIZE];
+  u8 slot;
+  u8 count = 0;
 
-  if (player->carried_item.count > 0) {
-    if (remove) {
-      moveOneItem(crafting, &player->carried_item);
-    } else {
-      swapItemStacks(crafting, &player->carried_item);
-    }
-  } else if (remove) {
-    moveOneDirect(crafting, inventory);
-  } else {
-    moveOneDirect(inventory, crafting);
+  if (recipe >= playerRecipeCount(player)) {
+    return 0;
   }
+  for (slot = 0; slot < INVENTORY_SIZE; slot++) {
+    simulated[slot] = player->inventory[slot];
+  }
+  while (count < 99 &&
+      applyRecipeToStacks(simulated, &craft_recipes[recipe])) {
+    count++;
+  }
+  return count;
+}
+
+u8 craftSelectedRecipe(Player *player, u8 craft_all) {
+  u8 recipe_count = playerRecipeCount(player);
+  u8 made = 0;
+
+  if (player->crafting_cursor >= recipe_count) {
+    player->crafting_cursor = recipe_count - 1;
+  }
+  do {
+    if (!applyRecipeToStacks(player->inventory,
+        &craft_recipes[player->crafting_cursor])) {
+      break;
+    }
+    made++;
+  } while (craft_all && made < 99);
+  refreshHeldItem(player);
+  return made;
 }
 
 static void returnCraftingItems(Player *player) {
@@ -482,6 +369,71 @@ static void returnCraftingItems(Player *player) {
       player->carried_item.item = AIR;
     }
   }
+}
+
+static void quickMoveInventoryStack(Player *player) {
+  u8 source_index = player->inventory_cursor;
+  ItemStack *source = &player->inventory[source_index];
+  u8 first = source_index < INVENTORY_HOTBAR_START ?
+    INVENTORY_HOTBAR_START : 0;
+  u8 end = source_index < INVENTORY_HOTBAR_START ?
+    INVENTORY_SIZE : INVENTORY_HOTBAR_START;
+  u8 slot;
+
+  if (source->count == 0) {
+    return;
+  }
+  for (slot = first; slot < end && source->count > 0; slot++) {
+    ItemStack *target = &player->inventory[slot];
+    u8 moved;
+
+    if (target->item != source->item ||
+        target->count >= itemMaxStack(target->item)) {
+      continue;
+    }
+    moved = min(source->count, itemMaxStack(target->item) - target->count);
+    target->count += moved;
+    source->count -= moved;
+  }
+  for (slot = first; slot < end && source->count > 0; slot++) {
+    ItemStack *target = &player->inventory[slot];
+
+    if (target->count == 0) {
+      *target = *source;
+      source->item = AIR;
+      source->count = 0;
+    }
+  }
+  if (source->count == 0) {
+    source->item = AIR;
+  }
+  refreshHeldItem(player);
+}
+
+static void dropInventorySelection(Player *player, u8 drop_stack) {
+  ItemStack *source = player->carried_item.count > 0 ?
+    &player->carried_item : &player->inventory[player->inventory_cursor];
+  u8 count;
+  u8 x;
+  u8 y;
+  u8 z;
+
+  if (source->count == 0) {
+    return;
+  }
+  count = drop_stack ? source->count : 1;
+  x = max(0, min(MAX_X - 1, floor(player->position.x / BLOCK_SIZE)));
+  y = max(0, min(MAX_Y - 1,
+    floor((player->position.y - EYE_HEIGHT * BLOCK_SIZE) / BLOCK_SIZE)));
+  z = max(0, min(MAX_Z - 1, floor(player->position.z / BLOCK_SIZE)));
+  if (!spawnDroppedItem(source->item, count, x, y, z)) {
+    return;
+  }
+  source->count -= count;
+  if (source->count == 0) {
+    source->item = AIR;
+  }
+  refreshHeldItem(player);
 }
 
 static void spawnPlayer(Player *player, int x, int z) {
@@ -1198,10 +1150,16 @@ static void updateBreaking(u8 player_num, float delta) {
 static void openInventory(u8 player_num) {
   Player *player = &players[player_num];
 
+  /* Older saves may contain materials in the former manual crafting matrix.
+     Recover them before showing the recipe-driven interface. */
+  returnCraftingItems(player);
   player->crafting_table_open = player->target_present &&
     blockGet(player->target_x, player->target_y,
       player->target_z) == CRAFTING_TABLE;
   player->inventory_area = INVENTORY_AREA_ITEMS;
+  if (player->crafting_cursor >= playerRecipeCount(player)) {
+    player->crafting_cursor = playerRecipeCount(player) - 1;
+  }
   inventory_player = player_num;
   resetInventoryNavigation();
   current_screen = INVENTORY;
@@ -1440,81 +1398,71 @@ void updatePlayers() {
     u8 row = player->inventory_cursor / INVENTORY_COLUMNS;
     u8 column = player->inventory_cursor % INVENTORY_COLUMNS;
 
-    if (inventory_cont->trigger & START_BUTTON) {
+    if (inventory_cont->trigger & (START_BUTTON | B_BUTTON)) {
       returnCraftingItems(player);
       resetInventoryNavigation();
       current_screen = GAME;
       return;
     }
     if (inventory_cont->trigger & A_BUTTON) {
-      if (player->inventory_area == INVENTORY_AREA_CRAFTING) {
-        moveCraftingItem(player, FALSE);
-        refreshHeldItem(player);
-      } else if (player->inventory_area == INVENTORY_AREA_OUTPUT) {
-        craftOutput(player);
+      if (player->inventory_area == INVENTORY_AREA_OUTPUT) {
+        craftSelectedRecipe(player, FALSE);
       } else {
         swapItemStacks(&player->inventory[player->inventory_cursor], &player->carried_item);
         refreshHeldItem(player);
       }
       return;
     }
-    if (inventory_cont->trigger & B_BUTTON) {
-      if (player->inventory_area == INVENTORY_AREA_CRAFTING) {
-        moveCraftingItem(player, TRUE);
-        refreshHeldItem(player);
-      } else if (player->inventory_area == INVENTORY_AREA_ITEMS) {
-        moveOneItem(&player->inventory[player->inventory_cursor], &player->carried_item);
-        refreshHeldItem(player);
-      }
-      return;
-    }
-
-    if (player->inventory_area == INVENTORY_AREA_CRAFTING) {
-      u8 craft_columns = craftingColumns(player);
-      u8 craft_rows = craftingRows(player);
-      row = player->crafting_cursor / CRAFTING_TABLE_COLUMNS;
-      column = player->crafting_cursor % CRAFTING_TABLE_COLUMNS;
-      if (navigation & NAV_LEFT) {
-        column = column == 0 ? craft_columns - 1 : column - 1;
-      } else if (navigation & NAV_RIGHT) {
-        if (column == craft_columns - 1) {
-          player->inventory_area = INVENTORY_AREA_OUTPUT;
-          return;
-        }
-        column++;
-      } else if (navigation & NAV_UP) {
-        row = row == 0 ? craft_rows - 1 : row - 1;
-      } else if (navigation & NAV_DOWN) {
-        row = (row + 1) % craft_rows;
-      } else {
+    if (player->inventory_area == INVENTORY_AREA_OUTPUT) {
+      if (inventory_cont->trigger & U_CBUTTONS) {
+        craftSelectedRecipe(player, TRUE);
         return;
       }
-      player->crafting_cursor = row * CRAFTING_TABLE_COLUMNS + column;
-      return;
+    } else {
+      if (inventory_cont->trigger & L_CBUTTONS) {
+        moveOneItem(&player->inventory[player->inventory_cursor],
+          &player->carried_item);
+        refreshHeldItem(player);
+        return;
+      }
+      if (inventory_cont->trigger & R_CBUTTONS) {
+        quickMoveInventoryStack(player);
+        return;
+      }
+      if (inventory_cont->trigger & U_CBUTTONS) {
+        dropInventorySelection(player, TRUE);
+        return;
+      }
+      if (inventory_cont->trigger & D_CBUTTONS) {
+        dropInventorySelection(player, FALSE);
+        refreshHeldItem(player);
+        return;
+      }
     }
 
     if (player->inventory_area == INVENTORY_AREA_OUTPUT) {
       if (navigation & NAV_LEFT) {
-        player->inventory_area = INVENTORY_AREA_CRAFTING;
-        player->crafting_cursor = (craftingRows(player) / 2) *
-          CRAFTING_TABLE_COLUMNS + craftingColumns(player) - 1;
-      } else if (navigation & NAV_RIGHT) {
         player->inventory_area = INVENTORY_AREA_ITEMS;
-        player->inventory_cursor = INVENTORY_COLUMNS;
+      } else if (navigation & NAV_UP) {
+        player->crafting_cursor = player->crafting_cursor == 0 ?
+          playerRecipeCount(player) - 1 : player->crafting_cursor - 1;
+      } else if (navigation & NAV_DOWN) {
+        player->crafting_cursor =
+          (player->crafting_cursor + 1) % playerRecipeCount(player);
       }
       return;
     }
 
     if (navigation & NAV_LEFT) {
-      if (column == 0) {
-        player->inventory_area = INVENTORY_AREA_CRAFTING;
-        player->crafting_cursor = (row < craftingRows(player) ? row : craftingRows(player) - 1) *
-          CRAFTING_TABLE_COLUMNS + (craftingColumns(player) - 1);
+      if (column > 0) {
+        column--;
+      }
+    } else if (navigation & NAV_RIGHT) {
+      if (column == INVENTORY_COLUMNS - 1) {
+        player->inventory_area = INVENTORY_AREA_OUTPUT;
         return;
       }
-      column--;
-    } else if (navigation & NAV_RIGHT) {
-      column = (column + 1) % INVENTORY_COLUMNS;
+      column++;
     } else if (navigation & NAV_UP) {
       row = row == 0 ? INVENTORY_STORAGE_ROWS : row - 1;
     } else if (navigation & NAV_DOWN) {
@@ -1531,18 +1479,23 @@ void updatePlayers() {
   }
 
   if (current_screen == WORLD_NAMING) {
-    /* The name editor is an on-screen keyboard.  D-pad picks a key, C-left
-       and C-right reposition the insertion point, and every action is
-       edge-triggered so the player never overshoots a character. */
+    u8 name_navigation = inventoryNavigation(&cont_data[0]);
+
+    /* The stick picks a key while C-left/right retain the useful editing
+       function of moving the insertion point. */
     if (cont_data[0].trigger & START_BUTTON) {
       confirmWorldName();
-    } else if (cont_data[0].trigger & L_JPAD) {
+    } else if ((name_navigation & NAV_LEFT) ||
+        (cont_data[0].trigger & L_JPAD)) {
       worldNameKeyboardLeft();
-    } else if (cont_data[0].trigger & R_JPAD) {
+    } else if ((name_navigation & NAV_RIGHT) ||
+        (cont_data[0].trigger & R_JPAD)) {
       worldNameKeyboardRight();
-    } else if (cont_data[0].trigger & U_JPAD) {
+    } else if ((name_navigation & NAV_UP) ||
+        (cont_data[0].trigger & U_JPAD)) {
       worldNameKeyboardUp();
-    } else if (cont_data[0].trigger & D_JPAD) {
+    } else if ((name_navigation & NAV_DOWN) ||
+        (cont_data[0].trigger & D_JPAD)) {
       worldNameKeyboardDown();
     } else if (cont_data[0].trigger & L_CBUTTONS) {
       worldNameCursorLeft();
@@ -1563,8 +1516,8 @@ void updatePlayers() {
   }
 
   if (current_screen != GAME) {
-    down_pressed = (cont_data[0].button & D_CBUTTONS) || cont_data[0].stick_y < -50;
-    up_pressed = (cont_data[0].button & U_CBUTTONS) || cont_data[0].stick_y > 50;
+    down_pressed = cont_data[0].stick_y < -50;
+    up_pressed = cont_data[0].stick_y > 50;
     act_pressed = cont_data[0].button & (START_BUTTON | A_BUTTON | B_BUTTON);
     if (down_pressed && !down_held) menuDown();
     if (up_pressed && !up_held) menuUp();
