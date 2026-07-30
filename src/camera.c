@@ -9,7 +9,7 @@
 
 #define FOV_Y 60
 #define FOV_Y_COOP 40
-#define FOV_Y_LOADING 52
+#define FOV_Y_LOADING 34
 #define FOV_RATIO ((float) SCREEN_WD / (float) SCREEN_HT)
 #define COOP_FOV_RATIO ((float) SCREEN_WD / (float) (SCREEN_HT / 2))
 #define FOUR_PLAYER_FOV_RATIO ((float) (SCREEN_WD / 2) / (float) (SCREEN_HT / 2))
@@ -26,7 +26,7 @@
 #define LOADING_PREVIEW_FRAMES 180
 #define LOADING_ORBIT_DEGREES_PER_FRAME .62f
 #define MENU_ORBIT_DEGREES_PER_FRAME .28f
-#define LOADING_ORBIT_RADIUS 3900.f
+#define LOADING_ORBIT_RADIUS 2240.f
 #define LOADING_CAMERA_HEIGHT 2450.f
 #define LOADING_CAMERA_BOB 120.f
 #define LOADING_WORLD_CENTER (MAX_X * BLOCK_SIZE / 2.f)
@@ -306,9 +306,9 @@ void updateLoadingCamera() {
   }
   low_orbit = sinf(angle * .5f * M_DTOR);
 
-  /* This is a terrain showcase rather than a map view. Keeping the camera
-     close enough for the block textures to resolve avoids the moire grid
-     that the old high, distant orbit produced on a CRT. */
+  /* Keep the orbit over the terrain and use a narrower lens below. Together
+     they fit the complete view inside the 96-column cinematic budget, so the
+     horizon never relies on distance-based column removal. */
   loading_camera.position.x = LOADING_WORLD_CENTER +
     sinf(angle * M_DTOR) * LOADING_ORBIT_RADIUS;
   loading_camera.position.z = LOADING_WORLD_CENTER +
@@ -316,14 +316,14 @@ void updateLoadingCamera() {
   loading_camera.position.y = LOADING_CAMERA_HEIGHT +
     low_orbit * LOADING_CAMERA_BOB;
   loading_camera.yaw = angle;
-  /* Aim into the near/middle terrain rather than across the whole map. This
-     crops the square world boundary out of the composition and gives ridges
-     a stronger silhouette above the status deck. */
+  /* Aim into the near/middle terrain rather than across the whole map. The
+     48-degree downward view keeps the far edge above the frame while the
+     closer orbit preserves roughly the previous terrain scale. */
   /* Player pitch is normalized to 0..360, and the column culler relies on
-     that convention when choosing the conservative world-height edge.  -36
+     that convention when choosing the conservative world-height edge.  -48
      renders the same view, but makes culling treat this downward camera as an
      upward one and clips columns before they leave the screen. */
-  loading_camera.pitch = 324.f;
+  loading_camera.pitch = 312.f;
   loading_camera.camera_mode = CAMERA_FIRST_PERSON;
   camera_position = loading_camera.position;
 
