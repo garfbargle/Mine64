@@ -34,31 +34,39 @@ Gfx *dlp;
 u32 dl_no = 0;
 Gfx frame_display_lists[NUM_DISPLAY_LISTS][FRAME_DISPLAY_LIST_SIZE];
 
-/* Keep one bounded, immutable resident mesh on screen while the next camera
- * neighbourhood is compiled incrementally into the other arena. The packed
- * world remains complete; only nearby render geometry consumes RSP commands. */
+/* Keep a bounded resident mesh around the players. Normal travel appends only
+ * newly entered columns and keeps departed detail cached until reclamation.
+ * The second arena is used for occasional garbage collection after append-only
+ * updates have genuinely exhausted the active arena. */
 #define NUM_COLUMN_ARENAS 2
 #define TOTAL_COLUMNS (CHUNKS_X * CHUNKS_Z)
-#define MESH_REBUILD_BUDGET 2
-#define MESH_COMPACTION_RESERVE (DISPLAY_LIST_SIZE / 10)
+#define MESH_UPDATE_BUDGET 1
+#define MESH_COMPACTION_COPY_BUDGET 4
+#define MESH_COMPACTION_REBUILD_BUDGET 1
 #define SOLO_RESIDENT_RADIUS 6
 #define COOP_RESIDENT_RADIUS 2
 static Gfx column_display_lists[NUM_COLUMN_ARENAS][DISPLAY_LIST_SIZE];
 Gfx *column_dlp;
 static Gfx *column_starts[NUM_COLUMN_ARENAS][NUM_TEXTURES]
   [TOTAL_COLUMNS];
+static u16 column_command_counts[NUM_COLUMN_ARENAS][NUM_TEXTURES]
+  [TOTAL_COLUMNS];
 static Gfx *column_arena_ends[NUM_COLUMN_ARENAS];
 static u8 resident_columns[NUM_COLUMN_ARENAS][TOTAL_COLUMNS];
 static u8 desired_columns[TOTAL_COLUMNS];
 static u8 compaction_target_columns[TOTAL_COLUMNS];
+static u8 compaction_rebuild_columns[TOTAL_COLUMNS];
 static u8 active_column_arena;
 static u8 column_build_arena;
 static u8 column_display_list_full;
 static u8 dirty_columns[TOTAL_COLUMNS];
 static u16 dirty_column_cursor;
 static u8 compacting_columns;
+static u8 column_compaction_requested;
 static u16 compaction_column_cursor;
 static u8 solo_resident_radius = SOLO_RESIDENT_RADIUS;
+static u32 mesh_submission_serial;
+static u32 arena_last_submission[NUM_COLUMN_ARENAS];
 
 static Gfx empty_column_display_list[] = {
   gsSPEndDisplayList()
@@ -77,6 +85,21 @@ static Mtx b_models[CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE];
   (water_top_verts + (((width) * CHUNK_SIZE + (height)) * 4))
 static Vtx water_top_verts[CHUNK_SIZE * CHUNK_SIZE * 4]
   __attribute__((aligned(8)));
+
+/* A five-quad, chunk-scale terrain shell covers columns whose detailed greedy
+   mesh is not resident yet. It is deliberately coarse and cheap: its job is
+   to preserve a continuous landscape and horizon, never to replace the
+   nearby block geometry. */
+#define FAR_TOP_VERTEX 0
+#define FAR_SIDE_VERTEX(side) (4 + (side) * 4)
+#define FAR_FACE_COUNT 5
+static Vtx far_terrain_verts[TOTAL_COLUMNS][FAR_FACE_COUNT * 4]
+  __attribute__((aligned(8)));
+static u8 far_terrain_height[TOTAL_COLUMNS];
+static u8 far_terrain_corner_height[(CHUNKS_X + 1) * (CHUNKS_Z + 1)];
+static u8 far_terrain_top_texture[TOTAL_COLUMNS];
+static u8 far_terrain_side_texture[TOTAL_COLUMNS];
+static u8 far_terrain_side_mask[TOTAL_COLUMNS];
 
 /* Lighting and sky geometry are both frame-buffered just like the camera:
    the RSP can still be drawing the previous frame when the CPU prepares the
@@ -683,6 +706,271 @@ void loadTexture(Texture *texture) {
   }
 }
 
+static u8 farTextureForBlock(u8 block, u8 top) {
+  u8 texture;
+
+  for (texture = 0; texture < NUM_TEXTURES; texture++) {
+    u8 face;
+    for (face = 0; face < textures[texture]->n_faces; face++) {
+      FaceSpec *spec = &textures[texture]->faces[face];
+      if (spec->block == block && (top ? spec->top : spec->sides)) {
+        return texture;
+      }
+    }
+  }
+  return 0;
+}
+
+static u8 farTerrainSurfaceBlock(u8 x, u8 z, u8 *height) {
+  s8 y;
+
+  for (y = MAX_Y - 1; y >= 0; y--) {
+    u8 block = blockGet(x, y, z);
+    /* Trees and player structures remain detailed foreground features. The
+       coarse shell follows the land beneath them so a canopy cannot turn an
+       entire eight-block cell into a tall green platform. */
+    if (block == AIR || block == WOOD || block == LEAVES ||
+        block == PLANKS || block == BRICKS || block == CRAFTING_TABLE) {
+      continue;
+    }
+    *height = y + 1;
+    return block;
+  }
+  *height = 1;
+  return BEDROCK;
+}
+
+static void sampleFarTerrainColumn(u8 cx, u8 cz) {
+  u16 height_sum = 0;
+  u8 block_counts[MAX_BLOCK_ID + 1];
+  u8 bx, bz, block;
+  u8 dominant_block = GRASS;
+  u8 dominant_count = 0;
+  u16 column = cx * CHUNKS_Z + cz;
+
+  for (block = 0; block <= MAX_BLOCK_ID; block++) {
+    block_counts[block] = 0;
+  }
+  for (bx = 0; bx < CHUNK_SIZE; bx++) {
+    for (bz = 0; bz < CHUNK_SIZE; bz++) {
+      u8 height;
+      block = farTerrainSurfaceBlock(cx * CHUNK_SIZE + bx,
+        cz * CHUNK_SIZE + bz, &height);
+      height_sum += height;
+      block_counts[block]++;
+    }
+  }
+  for (block = 1; block <= MAX_BLOCK_ID; block++) {
+    if (block_counts[block] > dominant_count) {
+      dominant_count = block_counts[block];
+      dominant_block = block;
+    }
+  }
+  far_terrain_height[column] =
+    (height_sum + CHUNK_SIZE * CHUNK_SIZE / 2) /
+    (CHUNK_SIZE * CHUNK_SIZE);
+  far_terrain_top_texture[column] =
+    farTextureForBlock(dominant_block, TRUE);
+  far_terrain_side_texture[column] =
+    farTextureForBlock(dominant_block, FALSE);
+}
+
+static void sampleFarTerrainCorner(u8 gx, u8 gz) {
+  u16 height_sum = 0;
+  u8 samples = 0;
+  s8 dx, dz;
+
+  /* A small shared sample makes neighbouring coarse quads meet exactly while
+     smoothing single-block noise into an intentional low-poly horizon. */
+  for (dx = -1; dx <= 1; dx++) {
+    for (dz = -1; dz <= 1; dz++) {
+      int x = gx * CHUNK_SIZE + dx;
+      int z = gz * CHUNK_SIZE + dz;
+      u8 height;
+      if (x < 0) x = 0;
+      if (z < 0) z = 0;
+      if (x >= MAX_X) x = MAX_X - 1;
+      if (z >= MAX_Z) z = MAX_Z - 1;
+      farTerrainSurfaceBlock(x, z, &height);
+      height_sum += height;
+      samples++;
+    }
+  }
+  far_terrain_corner_height[gx * (CHUNKS_Z + 1) + gz] =
+    (height_sum + samples / 2) / samples;
+}
+
+static void setFarTerrainVertex(Vtx *vertex, s16 x, s16 y, s16 z,
+    s16 s, s16 t, s8 nx, s8 ny, s8 nz, u8 unlit) {
+  vertex->v.ob[0] = x;
+  vertex->v.ob[1] = y;
+  vertex->v.ob[2] = z;
+  vertex->v.flag = 0;
+  vertex->v.tc[0] = s;
+  vertex->v.tc[1] = t;
+  vertex->v.cn[0] = unlit ? 255 : nx;
+  vertex->v.cn[1] = unlit ? 255 : ny;
+  vertex->v.cn[2] = unlit ? 255 : nz;
+  vertex->v.cn[3] = 255;
+}
+
+static s16 farTerrainSurfaceY(u16 column, u8 texture) {
+  s16 y = far_terrain_height[column] * BLOCK_SIZE;
+  return textures[texture] == &water_spec ? y - BLOCK_SIZE / 8 : y;
+}
+
+static s16 farTerrainCornerY(u8 cx, u8 cz, u8 corner) {
+  static const u8 corner_x[4] = {0, 1, 1, 0};
+  static const u8 corner_z[4] = {0, 0, 1, 1};
+  u16 column = cx * CHUNKS_Z + cz;
+
+  if (textures[far_terrain_top_texture[column]] == &water_spec) {
+    return farTerrainSurfaceY(column, far_terrain_top_texture[column]);
+  }
+  return far_terrain_corner_height[
+    (cx + corner_x[corner]) * (CHUNKS_Z + 1) +
+    cz + corner_z[corner]] * BLOCK_SIZE;
+}
+
+static void buildFarTerrainColumnVertices(u8 cx, u8 cz) {
+  static const s8 neighbor_x[4] = {0, 1, 0, -1};
+  static const s8 neighbor_z[4] = {-1, 0, 1, 0};
+  static const u8 neighbor_first_corner[4] = {3, 0, 1, 2};
+  static const u8 neighbor_second_corner[4] = {2, 3, 0, 1};
+  static const s8 normal_x[4] = {0, 127, 0, -127};
+  static const s8 normal_z[4] = {-127, 0, 127, 0};
+  u16 column = cx * CHUNKS_Z + cz;
+  Vtx *vertices = far_terrain_verts[column];
+  s16 x0 = cx * CHUNK_SIZE * BLOCK_SIZE;
+  s16 x1 = x0 + CHUNK_SIZE * BLOCK_SIZE;
+  s16 z0 = cz * CHUNK_SIZE * BLOCK_SIZE;
+  s16 z1 = z0 + CHUNK_SIZE * BLOCK_SIZE;
+  s16 top_y[4];
+  u8 top_unlit = textures[far_terrain_top_texture[column]] == &water_spec;
+  u8 side_unlit = textures[far_terrain_side_texture[column]] == &water_spec;
+  u8 side;
+
+  for (side = 0; side < 4; side++) {
+    top_y[side] = farTerrainCornerY(cx, cz, side);
+  }
+
+  setFarTerrainVertex(&vertices[0], x0, top_y[0], z0, 0, 0,
+    0, 127, 0, top_unlit);
+  setFarTerrainVertex(&vertices[1], x1, top_y[1], z0, 8192, 0,
+    0, 127, 0, top_unlit);
+  setFarTerrainVertex(&vertices[2], x1, top_y[2], z1, 8192, 8192,
+    0, 127, 0, top_unlit);
+  setFarTerrainVertex(&vertices[3], x0, top_y[3], z1, 0, 8192,
+    0, 127, 0, top_unlit);
+
+  far_terrain_side_mask[column] = 0;
+  for (side = 0; side < 4; side++) {
+    u8 first_corner = side;
+    u8 second_corner = (side + 1) & 3;
+    s16 first_y = top_y[first_corner];
+    s16 second_y = top_y[second_corner];
+    s16 first_bottom_y = 0;
+    s16 second_bottom_y = 0;
+    Vtx *face = &vertices[FAR_SIDE_VERTEX(side)];
+
+    if (cx + neighbor_x[side] >= 0 &&
+        cx + neighbor_x[side] < CHUNKS_X &&
+        cz + neighbor_z[side] >= 0 &&
+        cz + neighbor_z[side] < CHUNKS_Z) {
+      u8 neighbor_cx = cx + neighbor_x[side];
+      u8 neighbor_cz = cz + neighbor_z[side];
+      first_bottom_y = farTerrainCornerY(neighbor_cx, neighbor_cz,
+        neighbor_first_corner[side]);
+      second_bottom_y = farTerrainCornerY(neighbor_cx, neighbor_cz,
+        neighbor_second_corner[side]);
+    }
+    if (first_bottom_y < first_y || second_bottom_y < second_y) {
+      far_terrain_side_mask[column] |= 1 << side;
+    }
+    if (first_bottom_y > first_y) first_bottom_y = first_y;
+    if (second_bottom_y > second_y) second_bottom_y = second_y;
+
+    if (side == 0) {
+      setFarTerrainVertex(&face[0], x0, first_y, z0, 0, 0,
+        normal_x[side], 0, normal_z[side], side_unlit);
+      setFarTerrainVertex(&face[1], x1, second_y, z0, 8192, 0,
+        normal_x[side], 0, normal_z[side], side_unlit);
+      setFarTerrainVertex(&face[2], x1, second_bottom_y, z0, 8192, 8192,
+        normal_x[side], 0, normal_z[side], side_unlit);
+      setFarTerrainVertex(&face[3], x0, first_bottom_y, z0, 0, 8192,
+        normal_x[side], 0, normal_z[side], side_unlit);
+    } else if (side == 1) {
+      setFarTerrainVertex(&face[0], x1, first_y, z0, 0, 0,
+        normal_x[side], 0, normal_z[side], side_unlit);
+      setFarTerrainVertex(&face[1], x1, second_y, z1, 8192, 0,
+        normal_x[side], 0, normal_z[side], side_unlit);
+      setFarTerrainVertex(&face[2], x1, second_bottom_y, z1, 8192, 8192,
+        normal_x[side], 0, normal_z[side], side_unlit);
+      setFarTerrainVertex(&face[3], x1, first_bottom_y, z0, 0, 8192,
+        normal_x[side], 0, normal_z[side], side_unlit);
+    } else if (side == 2) {
+      setFarTerrainVertex(&face[0], x1, first_y, z1, 0, 0,
+        normal_x[side], 0, normal_z[side], side_unlit);
+      setFarTerrainVertex(&face[1], x0, second_y, z1, 8192, 0,
+        normal_x[side], 0, normal_z[side], side_unlit);
+      setFarTerrainVertex(&face[2], x0, second_bottom_y, z1, 8192, 8192,
+        normal_x[side], 0, normal_z[side], side_unlit);
+      setFarTerrainVertex(&face[3], x1, first_bottom_y, z1, 0, 8192,
+        normal_x[side], 0, normal_z[side], side_unlit);
+    } else {
+      setFarTerrainVertex(&face[0], x0, first_y, z1, 0, 0,
+        normal_x[side], 0, normal_z[side], side_unlit);
+      setFarTerrainVertex(&face[1], x0, second_y, z0, 8192, 0,
+        normal_x[side], 0, normal_z[side], side_unlit);
+      setFarTerrainVertex(&face[2], x0, second_bottom_y, z0, 8192, 8192,
+        normal_x[side], 0, normal_z[side], side_unlit);
+      setFarTerrainVertex(&face[3], x0, first_bottom_y, z1, 0, 8192,
+        normal_x[side], 0, normal_z[side], side_unlit);
+    }
+  }
+}
+
+static void initFarTerrain(void) {
+  u8 cx, cz;
+
+  for (cx = 0; cx < CHUNKS_X; cx++) {
+    for (cz = 0; cz < CHUNKS_Z; cz++) {
+      sampleFarTerrainColumn(cx, cz);
+    }
+  }
+  for (cx = 0; cx <= CHUNKS_X; cx++) {
+    for (cz = 0; cz <= CHUNKS_Z; cz++) {
+      sampleFarTerrainCorner(cx, cz);
+    }
+  }
+  for (cx = 0; cx < CHUNKS_X; cx++) {
+    for (cz = 0; cz < CHUNKS_Z; cz++) {
+      buildFarTerrainColumnVertices(cx, cz);
+    }
+  }
+}
+
+static void updateFarTerrainAround(u8 cx, u8 cz) {
+  s8 dx, dz;
+  u8 gx, gz;
+
+  sampleFarTerrainColumn(cx, cz);
+  for (gx = cx; gx <= cx + 1; gx++) {
+    for (gz = cz; gz <= cz + 1; gz++) {
+      sampleFarTerrainCorner(gx, gz);
+    }
+  }
+  for (dx = -1; dx <= 1; dx++) {
+    for (dz = -1; dz <= 1; dz++) {
+      int nx = cx + dx;
+      int nz = cz + dz;
+      if (nx >= 0 && nx < CHUNKS_X && nz >= 0 && nz < CHUNKS_Z) {
+        buildFarTerrainColumnVertices(nx, nz);
+      }
+    }
+  }
+}
+
 static Gfx *columnArenaStart(void) {
   return column_display_lists[column_build_arena];
 }
@@ -706,6 +994,7 @@ static void resetColumnArenaBuild(u8 arena) {
     resident_columns[arena][column] = FALSE;
     for (texture = 0; texture < NUM_TEXTURES; texture++) {
       column_starts[arena][texture][column] = empty_column_display_list;
+      column_command_counts[arena][texture][column] = 0;
     }
   }
 }
@@ -806,30 +1095,50 @@ void makeColumnDL(u8 cx, u8 cz, u8 texture) {
        of consuming thousands of commands in a large sparse world. */
     column_starts[column_build_arena][texture][cx * CHUNKS_Z + cz] =
       empty_column_display_list;
+    column_command_counts[column_build_arena][texture]
+      [cx * CHUNKS_Z + cz] = 0;
   } else {
     gSPEndDisplayList(column_dlp++);
+    column_command_counts[column_build_arena][texture]
+      [cx * CHUNKS_Z + cz] = column_dlp - column_start;
   }
 }
 
 static u8 makeColumnDisplayLists(u8 cx, u8 cz) {
   u8 texture;
   u16 column = cx * CHUNKS_Z + cz;
+  u8 was_resident = resident_columns[column_build_arena][column];
+  Gfx *previous_starts[NUM_TEXTURES];
+  u16 previous_counts[NUM_TEXTURES];
+
+  /* Updating the active append-only arena is transactional. A submitted frame
+     may still reference the old lists, and a nearly full arena may reject the
+     replacement. Keep every old pointer until the whole column succeeds. */
+  for (texture = 0; texture < NUM_TEXTURES; texture++) {
+    previous_starts[texture] =
+      column_starts[column_build_arena][texture][column];
+    previous_counts[texture] =
+      column_command_counts[column_build_arena][texture][column];
+  }
 
   makeColumnGeometry(cx, cz);
   for (texture = 0; texture < NUM_TEXTURES; texture++) {
     makeColumnDL(cx, cz, texture);
   }
   if (column_display_list_full) {
-    /* A partially written column is never made resident. Its commands remain
-       unreachable until this inactive arena is reset. */
-    resident_columns[column_build_arena][column] = FALSE;
+    /* A partial replacement is never exposed. Restore an old resident column
+       if there was one; the abandoned commands are reclaimed at compaction. */
+    resident_columns[column_build_arena][column] = was_resident;
     for (texture = 0; texture < NUM_TEXTURES; texture++) {
       column_starts[column_build_arena][texture][column] =
-        empty_column_display_list;
+        previous_starts[texture];
+      column_command_counts[column_build_arena][texture][column] =
+        previous_counts[texture];
     }
     return FALSE;
   }
   resident_columns[column_build_arena][column] = TRUE;
+  dirty_columns[column] = FALSE;
   return TRUE;
 }
 
@@ -861,11 +1170,16 @@ void makeWorldDisplayLists() {
   nuGfxTaskAllEndWait();
   active_column_arena = 0;
   compacting_columns = FALSE;
+  column_compaction_requested = FALSE;
+  mesh_submission_serial = NUM_DISPLAY_LISTS + 1;
+  arena_last_submission[0] = 0;
+  arena_last_submission[1] = 0;
   dirty_column_cursor = 0;
   for (column = 0; column < TOTAL_COLUMNS; column++) {
     dirty_columns[column] = FALSE;
     desired_columns[column] = FALSE;
   }
+  initFarTerrain();
   /* Procedural caves can make one seed denser than another. Fall back by one
      ring at a time if a worst-case neighbourhood cannot fit, never exposing a
      partial arena or writing beyond its hard command limit. */
@@ -902,6 +1216,7 @@ void makeDisplayListsAt(u8 x, u8 z) {
      bounded amount of geometry, so mining and tree felling cannot monopolize
      a gameplay frame. */
   markColumnDirty(cx, cz);
+  updateFarTerrainAround(cx, cz);
   if (x % CHUNK_SIZE == 0 && cx > 0) {
     markColumnDirty(cx - 1, cz);
   } else if (x % CHUNK_SIZE == CHUNK_SIZE - 1 && cx + 1 < CHUNKS_X) {
@@ -963,29 +1278,133 @@ static void updateDesiredColumns() {
   }
 }
 
-static u8 desiredColumnsDiffer() {
-  u16 column;
-  for (column = 0; column < TOTAL_COLUMNS; column++) {
-    if (desired_columns[column] !=
-        resident_columns[active_column_arena][column]) {
+static u8 columnVisibleToAnyViewer(u16 column) {
+  u8 viewer;
+  u8 viewer_count = current_screen == GAME ? active_player_count : 1;
+
+  for (viewer = 0; viewer < viewer_count; viewer++) {
+    if (visible_columns[viewer][column]) {
       return TRUE;
     }
   }
   return FALSE;
 }
 
+static int columnDistanceFromViewers(u16 column) {
+  int cx = column / CHUNKS_Z;
+  int cz = column % CHUNKS_Z;
+  int best_distance = 0x7fffffff;
+  u8 viewer;
+  u8 viewer_count =
+    current_screen == GAME ? active_player_count : 1;
+
+  for (viewer = 0; viewer < viewer_count; viewer++) {
+    int center_x = players[viewer].position.x /
+      (BLOCK_SIZE * CHUNK_SIZE);
+    int center_z = players[viewer].position.z /
+      (BLOCK_SIZE * CHUNK_SIZE);
+    int dx = cx - center_x;
+    int dz = cz - center_z;
+    int distance = dx * dx + dz * dz;
+    if (distance < best_distance) {
+      best_distance = distance;
+    }
+  }
+  return best_distance;
+}
+
+static u8 takeMissingDesiredColumn(u8 *cx, u8 *cz) {
+  u8 visible_pass;
+
+  /* Fill holes that the current camera can see first, then the safety ring.
+     Within either group, nearest-first keeps terrain solid around the player
+     even when several chunk boundaries are crossed quickly. */
+  for (visible_pass = 0; visible_pass < 2; visible_pass++) {
+    u16 column;
+    u16 best_column = TOTAL_COLUMNS;
+    int best_distance = 0x7fffffff;
+
+    for (column = 0; column < TOTAL_COLUMNS; column++) {
+      int distance;
+      if (!desired_columns[column] ||
+          resident_columns[active_column_arena][column] ||
+          (!visible_pass && !columnVisibleToAnyViewer(column))) {
+        continue;
+      }
+      distance = columnDistanceFromViewers(column);
+      if (distance < best_distance) {
+        best_distance = distance;
+        best_column = column;
+      }
+    }
+    if (best_column < TOTAL_COLUMNS) {
+      *cx = best_column / CHUNKS_Z;
+      *cz = best_column % CHUNKS_Z;
+      return TRUE;
+    }
+  }
+  return FALSE;
+}
+
+static u8 inactiveColumnArenaSafe(void) {
+  u8 inactive = active_column_arena ^ 1;
+
+  /* At most two graphics tasks may be pending. If two newer terrain frames
+     have been submitted since this arena was last referenced, NuSystem could
+     only have accepted them after every older reference had completed. */
+  return mesh_submission_serial - arena_last_submission[inactive] >
+    NUM_DISPLAY_LISTS;
+}
+
+static u8 copyResidentColumn(u16 column) {
+  u8 source_arena = active_column_arena;
+  u8 texture;
+  u32 required = 0;
+
+  for (texture = 0; texture < NUM_TEXTURES; texture++) {
+    required += column_command_counts[source_arena][texture][column];
+  }
+  if (columnArenaFree() < required) {
+    column_display_list_full = TRUE;
+    return FALSE;
+  }
+  for (texture = 0; texture < NUM_TEXTURES; texture++) {
+    u16 count = column_command_counts[source_arena][texture][column];
+    u16 command;
+
+    column_command_counts[column_build_arena][texture][column] = count;
+    if (count == 0) {
+      column_starts[column_build_arena][texture][column] =
+        empty_column_display_list;
+      continue;
+    }
+    column_starts[column_build_arena][texture][column] = column_dlp;
+    for (command = 0; command < count; command++) {
+      *column_dlp++ =
+        column_starts[source_arena][texture][column][command];
+    }
+  }
+  resident_columns[column_build_arena][column] = TRUE;
+  return TRUE;
+}
+
 static void startColumnCompaction(void) {
   u16 index;
 
-  /* Snapshot the desired neighbourhood. Edits arriving after this point stay
-     dirty and are appended once the complete inactive arena becomes active. */
+  /* Snapshot the desired neighbourhood. Most columns are copied as immutable
+     Gfx commands; only missing or edited columns pay for greedy remeshing.
+     Edits after this snapshot stay dirty for the new active arena. */
   for (index = 0; index < TOTAL_COLUMNS; index++) {
     compaction_target_columns[index] = desired_columns[index];
+    compaction_rebuild_columns[index] = desired_columns[index] &&
+      (!resident_columns[active_column_arena][index] ||
+      dirty_columns[index]);
     dirty_columns[index] = FALSE;
   }
   dirty_column_cursor = 0;
   compaction_column_cursor = 0;
   compacting_columns = TRUE;
+  column_compaction_requested = FALSE;
   resetColumnArenaBuild(active_column_arena ^ 1);
 }
 
@@ -994,16 +1413,32 @@ static void processColumnDisplayListUpdates(int can_reclaim_mesh_arena) {
 
   updateDesiredColumns();
   if (compacting_columns) {
-    budget = 0;
-    while (budget < MESH_REBUILD_BUDGET &&
-        compaction_column_cursor < TOTAL_COLUMNS) {
+    u8 copy_budget = 0;
+    u8 rebuild_budget = 0;
+
+    while (compaction_column_cursor < TOTAL_COLUMNS) {
       u16 column = compaction_column_cursor;
-      compaction_column_cursor++;
       if (!compaction_target_columns[column]) {
+        compaction_column_cursor++;
         continue;
       }
-      if (!makeColumnDisplayLists(column / CHUNKS_Z,
-          column % CHUNKS_Z)) {
+      if (compaction_rebuild_columns[column]) {
+        if (rebuild_budget >= MESH_COMPACTION_REBUILD_BUDGET) {
+          break;
+        }
+        rebuild_budget++;
+        if (!makeColumnDisplayLists(column / CHUNKS_Z,
+            column % CHUNKS_Z)) {
+          column_display_list_full = TRUE;
+        }
+      } else {
+        if (copy_budget >= MESH_COMPACTION_COPY_BUDGET) {
+          break;
+        }
+        copy_budget++;
+        copyResidentColumn(column);
+      }
+      if (column_display_list_full) {
         /* The current resident arena remains valid. Discard an inactive build
            that cannot fit instead of exposing partial terrain. */
         if ((current_screen != GAME || active_player_count == 1) &&
@@ -1011,9 +1446,10 @@ static void processColumnDisplayListUpdates(int can_reclaim_mesh_arena) {
           solo_resident_radius--;
         }
         compacting_columns = FALSE;
+        column_compaction_requested = FALSE;
         return;
       }
-      budget++;
+      compaction_column_cursor++;
     }
     if (compaction_column_cursor == TOTAL_COLUMNS) {
       column_arena_ends[column_build_arena] = column_dlp;
@@ -1023,29 +1459,42 @@ static void processColumnDisplayListUpdates(int can_reclaim_mesh_arena) {
     return;
   }
 
-  column_build_arena = active_column_arena;
-  column_dlp = column_arena_ends[active_column_arena];
-  column_display_list_full = FALSE;
-  if (desiredColumnsDiffer() ||
-      columnArenaFree() < MESH_COMPACTION_RESERVE) {
-    /* The old arena can become the inactive build target only after every
-     * submitted RSP task has finished reading it. */
-    if (can_reclaim_mesh_arena) {
+  /* Never repeat a failed append. The inactive arena is recycled once its last
+     possible RSP reader has aged out, without halting frame submission. */
+  if (column_compaction_requested) {
+    if (can_reclaim_mesh_arena || inactiveColumnArenaSafe()) {
       startColumnCompaction();
     }
     return;
   }
 
-  for (budget = 0; budget < MESH_REBUILD_BUDGET; budget++) {
+  column_build_arena = active_column_arena;
+  column_dlp = column_arena_ends[active_column_arena];
+  column_display_list_full = FALSE;
+
+  for (budget = 0; budget < MESH_UPDATE_BUDGET; budget++) {
     u8 cx, cz;
-    if (!takeDirtyColumn(&cx, &cz)) {
+    u8 dirty_update = FALSE;
+
+    if (!takeMissingDesiredColumn(&cx, &cz)) {
+      if (!takeDirtyColumn(&cx, &cz)) {
+        break;
+      }
+      dirty_update = TRUE;
+    }
+    if (!makeColumnDisplayLists(cx, cz)) {
+      if (dirty_update) {
+        markColumnDirty(cx, cz);
+      }
+      /* Appends never overwrite old commands, so a failed column is harmless.
+         Recycle the safely aged inactive arena without blocking the display. */
+      column_compaction_requested = TRUE;
+      if (can_reclaim_mesh_arena || inactiveColumnArenaSafe()) {
+        startColumnCompaction();
+      }
       break;
     }
-    makeColumnDisplayLists(cx, cz);
     column_arena_ends[active_column_arena] = column_dlp;
-    if (column_display_list_full || columnArenaFree() < MESH_COMPACTION_RESERVE) {
-      break;
-    }
   }
 }
 
@@ -1058,6 +1507,32 @@ void drawTextured(u8 texture, u8 player_num) {
           resident_columns[active_column_arena][column]) {
         gSPDisplayList(dlp++, column_starts[active_column_arena][texture]
           [column]);
+      }
+    }
+  }
+}
+
+static void drawFarTextured(u8 texture, u8 player_num) {
+  u16 column;
+
+  for (column = 0; column < TOTAL_COLUMNS; column++) {
+    u8 side;
+    if (!visible_columns[player_num][column] ||
+        resident_columns[active_column_arena][column]) {
+      continue;
+    }
+    if (far_terrain_top_texture[column] == texture) {
+      gSPVertex(dlp++, &far_terrain_verts[column][FAR_TOP_VERTEX], 4, 0);
+      gSP1Quadrangle(dlp++, 3, 2, 1, 0, 0);
+    }
+    if (far_terrain_side_texture[column] != texture) {
+      continue;
+    }
+    for (side = 0; side < 4; side++) {
+      if (far_terrain_side_mask[column] & (1 << side)) {
+        gSPVertex(dlp++,
+          &far_terrain_verts[column][FAR_SIDE_VERTEX(side)], 4, 0);
+        gSP1Quadrangle(dlp++, 3, 2, 1, 0, 0);
       }
     }
   }
@@ -1577,6 +2052,12 @@ void drawWorld() {
         gSPClearGeometryMode(dlp++, G_LIGHTING);
       }
       loadTexture(textures[i]->texture);
+      /* Coarse missing-column shells may be viewed from either side while the
+         orbit or player crosses them. Their tiny count is cheaper and safer
+         without winding-dependent rejection. */
+      gSPClearGeometryMode(dlp++, G_CULL_BACK);
+      drawFarTextured(i, player_num);
+      gSPSetGeometryMode(dlp++, G_CULL_BACK);
       drawTextured(i, player_num);
       if (textures[i] == &water_spec) {
         gSPSetGeometryMode(dlp++, G_LIGHTING);
@@ -2305,6 +2786,7 @@ void draw(int can_reclaim_mesh_arena) {
   nuGfxTaskStart(frame_display_lists[dl_no],
     (s32)(dlp - frame_display_lists[dl_no]) * sizeof (Gfx),
     NU_GFX_UCODE_F3DEX, NU_SC_SWAPBUFFER);
+  arena_last_submission[active_column_arena] = mesh_submission_serial++;
 
   /* Switch display list buffers */
   dl_no ^= 1;
@@ -2350,6 +2832,10 @@ void initGraphics() {
 
   active_column_arena = 0;
   compacting_columns = FALSE;
+  column_compaction_requested = FALSE;
+  mesh_submission_serial = NUM_DISPLAY_LISTS + 1;
+  arena_last_submission[0] = 0;
+  arena_last_submission[1] = 0;
   beginColumnArenaBuild(active_column_arena);
   column_arena_ends[active_column_arena] = column_dlp;
 }

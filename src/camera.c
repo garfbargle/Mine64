@@ -15,10 +15,10 @@
 #define FOUR_PLAYER_FOV_RATIO ((float) (SCREEN_WD / 2) / (float) (SCREEN_HT / 2))
 #define NUM_CULL_LINES 4
 #define ALL_ACCEPT ((1 << NUM_CULL_LINES) - 1)
-#define SOLO_MAX_VISIBLE_COLUMNS 96
+#define SOLO_MAX_VISIBLE_COLUMNS 128
 #define COOP_MAX_VISIBLE_COLUMNS 24
 #define FOUR_PLAYER_MAX_VISIBLE_COLUMNS 8
-#define LOADING_MAX_VISIBLE_COLUMNS 24
+#define LOADING_MAX_VISIBLE_COLUMNS 96
 #define THIRD_PERSON_DISTANCE 176.f
 #define THIRD_PERSON_HEIGHT 24.f
 #define THIRD_PERSON_SAMPLES 12
@@ -232,10 +232,9 @@ static void updateVisibleColumnsFor(u8 player_num, Player *player,
     }
   }
 
-  /* The loading orbit is an attract-mode transition, not a gameplay camera.
-     On hardware it must leave enough RSP/RDP time for the loading card and
-     the next task; use the same 24-column ceiling as split-screen instead of
-     risking a large scenic view starving the video pipeline. */
+  /* Keep enough terrain for a full-width landmark horizon. Detailed nearby
+     columns are backed by a cheap coarse surface while they stream, so this
+     wider cinematic view no longer exposes the resident-mesh boundary. */
   while (visible_count > max_visible_columns) {
     farthest_distance = -1;
     for (cx = 0; cx < CHUNKS_X; cx++) {

@@ -317,12 +317,17 @@ For the complete art-to-cartridge walkthrough, see
 ## Hardware notes
 
 Mine64 keeps the complete packed world in RAM but meshes only a bounded
-neighbourhood around the player. Two resident display-list arenas let the CPU
-compile the next neighbourhood incrementally while the RSP continues reading
-the complete current one; the arenas swap only when the replacement is ready.
-Split-screen combines its small per-player visible sets instead of duplicating
-the world mesh. All per-frame display lists and referenced matrices are
-double-buffered so their memory stays immutable until the RSP finishes.
+neighbourhood around the player. Normal travel retains its overlapping
+columns, keeps departed detail cached for backtracking, and compiles one newly
+entered column per rendered frame. A tiny chunk-scale terrain shell covers
+every visible column whose detailed mesh is still streaming, keeping the
+landscape and horizon continuous. The second display-list arena is used only
+for rare, incremental garbage collection after append space is actually
+exhausted. Unchanged display-list commands are copied directly; only missing
+or edited columns run the greedy mesher. Split-screen combines its small
+per-player visible sets instead of duplicating the world mesh. All per-frame
+display lists and referenced matrices are double-buffered so their memory
+stays immutable until the RSP finishes.
 
 The linked release program remains below the stock console's 4 MiB RDRAM
 ceiling, including its packed world, geometry cache, NuSystem task buffers,
@@ -347,8 +352,12 @@ authoritative outside it.
 These quads are translated into place for rendering.
 * Resident column display lists are recomputed after local block changes.
   Distant edits require no mesh work until their column streams back in.
+  Replacements are transactional: a complete old column remains visible if an
+  append runs out of arena space.
 * Columns outside the camera view are culled from the frame list, while columns
-  outside the resident neighbourhood consume no terrain display-list commands.
+  outside the resident neighbourhood consume no persistent detailed-mesh
+  commands. Visible nonresident columns use a five-quad distant shell rather
+  than revealing the sky clear behind the detailed-mesh cache.
 
 ## Acknowledgements
 

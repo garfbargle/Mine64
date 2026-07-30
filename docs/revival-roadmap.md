@@ -27,16 +27,20 @@ This pass establishes the systems that later content can share:
 * Three-row terrain-height sampling, incremental mesh repair, render-distance
   caps, and fixed entity visibility budgets.
 * Camera-following resident geometry: the whole packed world remains live,
-  while dual display-list arenas contain only the nearby column neighbourhood.
+  while normal travel streams only the changing edge and keeps departed detail
+  cached until reclamation. A coarse five-quad shell keeps nonresident visible
+  terrain continuous during transitions.
 
 ## Hardware contract
 
 The engine is deliberately built around predictable ceilings:
 
 * No gameplay heap and no unbounded entity or pickup creation.
-* Two fixed terrain display-list arenas permit safe incremental rebuilding
-  while the RSP may still be reading the previous arena. Only a bounded
-  camera-following column set is resident; no arena scales with world area.
+* Two fixed terrain display-list arenas permit transactional edge updates and
+  rare incremental compaction while the RSP may still be reading the previous
+  arena. Compaction copies unchanged commands and remeshes only dirty or
+  missing columns. Only a bounded camera-following column set is resident; no
+  arena scales with world area.
 * World access stays packed; there is no expanded byte-per-block mirror.
 * Solo can spend more on atmosphere and guidance. Split-screen reduces view
   and visible-entity budgets before duplicating expensive render work.
