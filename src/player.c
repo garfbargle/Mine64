@@ -4,6 +4,7 @@
 #include "menu.h"
 #include "blocks.h"
 #include "graphics.h"
+#include "camera.h"
 #include "geometry.h"
 #include "items.h"
 #include "storage.h"
@@ -21,6 +22,14 @@
 #define BOX_RADIUS 0.35
 #define BOX_HEIGHT 1.8
 #define EYE_HEIGHT 1.5
+#define INVENTORY_STICK_THRESHOLD 38
+#define INVENTORY_REPEAT_DELAY 12
+#define INVENTORY_REPEAT_RATE 4
+
+#define NAV_LEFT  0x01
+#define NAV_RIGHT 0x02
+#define NAV_UP    0x04
+#define NAV_DOWN  0x08
 
 Player players[MAX_PLAYERS];
 u8 active_player_count = 1;
@@ -44,6 +53,52 @@ static u16 up_held = FALSE;
 static u16 act_held = FALSE;
 static u8 block_dec_held[MAX_PLAYERS];
 static u8 block_inc_held[MAX_PLAYERS];
+static u8 inventory_nav_previous;
+static u8 inventory_nav_repeat;
+
+static void resetInventoryNavigation(void) {
+  inventory_nav_previous = 0;
+  inventory_nav_repeat = 0;
+}
+
+static u8 inventoryNavigation(NUContData *cont) {
+  u8 held = 0;
+  u8 pressed;
+
+  if ((cont->button & (L_CBUTTONS | L_JPAD)) ||
+      cont->stick_x < -INVENTORY_STICK_THRESHOLD) {
+    held |= NAV_LEFT;
+  }
+  if ((cont->button & (R_CBUTTONS | R_JPAD)) ||
+      cont->stick_x > INVENTORY_STICK_THRESHOLD) {
+    held |= NAV_RIGHT;
+  }
+  if ((cont->button & (U_CBUTTONS | U_JPAD)) ||
+      cont->stick_y > INVENTORY_STICK_THRESHOLD) {
+    held |= NAV_UP;
+  }
+  if ((cont->button & (D_CBUTTONS | D_JPAD)) ||
+      cont->stick_y < -INVENTORY_STICK_THRESHOLD) {
+    held |= NAV_DOWN;
+  }
+
+  pressed = held & ~inventory_nav_previous;
+  if (pressed) {
+    inventory_nav_repeat = INVENTORY_REPEAT_DELAY;
+  } else if (held) {
+    if (inventory_nav_repeat > 0) {
+      inventory_nav_repeat--;
+    }
+    if (inventory_nav_repeat == 0) {
+      pressed = held;
+      inventory_nav_repeat = INVENTORY_REPEAT_RATE;
+    }
+  } else {
+    inventory_nav_repeat = 0;
+  }
+  inventory_nav_previous = held;
+  return pressed;
+}
 
 void resetPlayerInventory(Player *player) {
   u8 slot;
@@ -292,6 +347,7 @@ static void spawnPlayer(Player *player, int x, int z) {
   player->walk_time = 0;
   player->walk_swing = 0;
   player->y_velocity = 0;
+  player->camera_mode = CAMERA_FIRST_PERSON;
   player->held_block = COBBLESTONE;
   resetPlayerInventory(player);
   player->active = TRUE;
@@ -334,24 +390,27 @@ void updateTargetBlock(u8 player_num) {
   float t;
   Vector3i step = {0, 0, 0};
   Vector3 direction = {0, 0, -1};
+  Vector3 origin = playerCameraPosition(player_num);
+  float ray_limit = BLOCK_SIZE *
+    (player->camera_mode == CAMERA_THIRD_PERSON ? 9.f : 6.f);
 
   direction = rotateX(direction, player->pitch);
   direction = rotateY(direction, -player->yaw);
 
-  player->target_x = player->position.x / BLOCK_SIZE;
-  player->target_y = player->position.y / BLOCK_SIZE;
-  player->target_z = player->position.z / BLOCK_SIZE;
+  player->target_x = origin.x / BLOCK_SIZE;
+  player->target_y = origin.y / BLOCK_SIZE;
+  player->target_z = origin.z / BLOCK_SIZE;
 
   player->target_present = TRUE;
   while (player->target_x >= MAX_X || player->target_y >= MAX_Y || player->target_z >= MAX_Z ||
     !blocks[player->target_x * MAX_Y * MAX_Z + player->target_y * MAX_Z + player->target_z]) {
     t = 9999;
 
-    rayStepAxis(player->position.x, direction.x, player->target_x, &t, &step, 0);
-    rayStepAxis(player->position.y, direction.y, player->target_y, &t, &step, 1);
-    rayStepAxis(player->position.z, direction.z, player->target_z, &t, &step, 2);
+    rayStepAxis(origin.x, direction.x, player->target_x, &t, &step, 0);
+    rayStepAxis(origin.y, direction.y, player->target_y, &t, &step, 1);
+    rayStepAxis(origin.z, direction.z, player->target_z, &t, &step, 2);
 
-    if (t > BLOCK_SIZE * 6 || (player->target_x == 0 && step.x < 0) ||
+    if (t > ray_limit || (player->target_x == 0 && step.x < 0) ||
         (player->target_y == 0 && step.y < 0) || (player->target_z == 0 && step.z < 0)) {
       player->target_present = FALSE;
       break;
@@ -363,6 +422,17 @@ void updateTargetBlock(u8 player_num) {
   }
 
   if (player->target_present) {
+    float dx = (player->target_x + 0.5f) * BLOCK_SIZE -
+      player->position.x;
+    float dy = (player->target_y + 0.5f) * BLOCK_SIZE -
+      player->position.y;
+    float dz = (player->target_z + 0.5f) * BLOCK_SIZE -
+      player->position.z;
+    if (dx * dx + dy * dy + dz * dz >
+        (BLOCK_SIZE * 6.5f) * (BLOCK_SIZE * 6.5f)) {
+      player->target_present = FALSE;
+      return;
+    }
     player->build_offset_x = -step.x;
     player->build_offset_y = -step.y;
     player->build_offset_z = -step.z;
@@ -602,6 +672,11 @@ static void updatePlayer(u8 player_num, float delta) {
   s8 stick_x = cont->stick_x;
   s8 stick_y = cont->stick_y;
 
+  if (cont->trigger & U_CBUTTONS) {
+    player->camera_mode = player->camera_mode == CAMERA_FIRST_PERSON ?
+      CAMERA_THIRD_PERSON : CAMERA_FIRST_PERSON;
+  }
+
   if (stick_x > -4 && stick_x < 4) stick_x = 0;
   if (stick_y > -4 && stick_y < 4) stick_y = 0;
 
@@ -702,11 +777,13 @@ void updatePlayers() {
   if (current_screen == INVENTORY) {
     Player *player = &players[inventory_player];
     NUContData *inventory_cont = &cont_data[inventory_player];
+    u8 navigation = inventoryNavigation(inventory_cont);
     u8 row = player->inventory_cursor / INVENTORY_COLUMNS;
     u8 column = player->inventory_cursor % INVENTORY_COLUMNS;
 
     if (inventory_cont->trigger & START_BUTTON) {
       returnCraftingItems(player);
+      resetInventoryNavigation();
       current_screen = GAME;
       return;
     }
@@ -742,17 +819,17 @@ void updatePlayers() {
       u8 craft_rows = craftingRows(player);
       row = player->crafting_cursor / CRAFTING_TABLE_COLUMNS;
       column = player->crafting_cursor % CRAFTING_TABLE_COLUMNS;
-      if (inventory_cont->trigger & L_CBUTTONS) {
+      if (navigation & NAV_LEFT) {
         column = column == 0 ? craft_columns - 1 : column - 1;
-      } else if (inventory_cont->trigger & R_CBUTTONS) {
+      } else if (navigation & NAV_RIGHT) {
         if (column == craft_columns - 1) {
           player->inventory_area = INVENTORY_AREA_OUTPUT;
           return;
         }
         column++;
-      } else if (inventory_cont->trigger & U_JPAD) {
+      } else if (navigation & NAV_UP) {
         row = row == 0 ? craft_rows - 1 : row - 1;
-      } else if (inventory_cont->trigger & D_JPAD) {
+      } else if (navigation & NAV_DOWN) {
         row = (row + 1) % craft_rows;
       } else {
         return;
@@ -762,17 +839,18 @@ void updatePlayers() {
     }
 
     if (player->inventory_area == INVENTORY_AREA_OUTPUT) {
-      if (inventory_cont->trigger & L_CBUTTONS) {
+      if (navigation & NAV_LEFT) {
         player->inventory_area = INVENTORY_AREA_CRAFTING;
-        player->crafting_cursor = 1 + CRAFTING_TABLE_COLUMNS;
-      } else if (inventory_cont->trigger & R_CBUTTONS) {
+        player->crafting_cursor = (craftingRows(player) / 2) *
+          CRAFTING_TABLE_COLUMNS + craftingColumns(player) - 1;
+      } else if (navigation & NAV_RIGHT) {
         player->inventory_area = INVENTORY_AREA_ITEMS;
         player->inventory_cursor = INVENTORY_COLUMNS;
       }
       return;
     }
 
-    if (inventory_cont->trigger & L_CBUTTONS) {
+    if (navigation & NAV_LEFT) {
       if (column == 0) {
         player->inventory_area = INVENTORY_AREA_CRAFTING;
         player->crafting_cursor = (row < craftingRows(player) ? row : craftingRows(player) - 1) *
@@ -780,11 +858,11 @@ void updatePlayers() {
         return;
       }
       column--;
-    } else if (inventory_cont->trigger & R_CBUTTONS) {
+    } else if (navigation & NAV_RIGHT) {
       column = (column + 1) % INVENTORY_COLUMNS;
-    } else if (inventory_cont->trigger & U_JPAD) {
+    } else if (navigation & NAV_UP) {
       row = row == 0 ? INVENTORY_STORAGE_ROWS : row - 1;
-    } else if (inventory_cont->trigger & D_JPAD) {
+    } else if (navigation & NAV_DOWN) {
       row = row == INVENTORY_STORAGE_ROWS ? 0 : row + 1;
     } else {
       return;
@@ -821,6 +899,7 @@ void updatePlayers() {
           players[i].target_z] == CRAFTING_TABLE;
       players[i].inventory_area = INVENTORY_AREA_ITEMS;
       inventory_player = i;
+      resetInventoryNavigation();
       current_screen = INVENTORY;
       return;
     }

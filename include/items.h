@@ -3,6 +3,7 @@
 
 #include <nusys.h>
 #include "math.h"
+#include "player.h"
 
 #define MAX_DROPPED_ITEMS 16
 
@@ -23,6 +24,8 @@ typedef struct {
 } DroppedItem;
 
 extern DroppedItem dropped_items[MAX_DROPPED_ITEMS];
+extern u8 pickup_message[MAX_PLAYERS];
+extern u8 pickup_item[MAX_PLAYERS];
 
 u8 itemMaxStack(u8 item);
 const char *itemName(u8 item);

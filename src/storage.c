@@ -273,6 +273,7 @@ static void restorePlayerState(Player *player, Vector3 position, float pitch,
   player->body_yaw = yaw;
   player->walk_time = 0;
   player->walk_swing = 0;
+  player->camera_mode = CAMERA_FIRST_PERSON;
   player->held_block = held_block;
   player->y_velocity = 0;
   player->active = TRUE;
@@ -503,6 +504,7 @@ void loadGame() {
   players[0].body_yaw = players[0].yaw;
   players[0].walk_time = 0;
   players[0].walk_swing = 0;
+  players[0].camera_mode = CAMERA_FIRST_PERSON;
   players[0].held_block = legacy_header->held_block;
   players[0].y_velocity = 0;
   players[0].active = TRUE;
@@ -510,6 +512,7 @@ void loadGame() {
   players[0].breaking = FALSE;
   players[0].break_progress = 0;
   players[1].active = FALSE;
+  players[1].camera_mode = CAMERA_FIRST_PERSON;
   players[1].target_present = FALSE;
   players[1].breaking = FALSE;
   players[1].break_progress = 0;

@@ -9,7 +9,6 @@ beginseg
 
 	include "build/codesegment.o"
 	include "$(ROOT)/usr/lib/PR/rspboot.o"
-	include "$(ROOT)/usr/lib/PR/aspMain.o"
 	include "$(ROOT)/usr/lib/PR/gspF3DEX2.fifo.o"
 	include "$(ROOT)/usr/lib/PR/gspL3DEX2.fifo.o"
 	include "$(ROOT)/usr/lib/PR/gspF3DEX2.Rej.fifo.o"
@@ -18,21 +17,7 @@ beginseg
 	include "$(ROOT)/usr/lib/PR/gspS2DEX2.fifo.o"
 endseg
 
-beginseg
-	name "musicTitle"
-	flags RAW
-	include "build/audio/music-title.vadpcm.bin"
-endseg
-
-beginseg
-	name "musicGame"
-	flags RAW
-	include "build/audio/music-game.vadpcm.bin"
-endseg
-
 beginwave
 	name	"mine64"
 	include	"program"
-	include	"musicTitle"
-	include	"musicGame"
 endwave

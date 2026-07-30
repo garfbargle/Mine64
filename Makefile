@@ -40,7 +40,7 @@ OPTIMIZER := -O2 -g
 endif
 
 LDFLAGS := $(MKDEPOPT) -L$(LIB) -L$(NUSYSLIBDIR) -lnusys$(SDK_VARIANT) \
-	-lnualsgi$(SDK_VARIANT) -lultra$(SDK_VARIANT) -lcart
+	-lultra$(SDK_VARIANT) -lcart
 
 OBJECT_DIR := $(OBJDIR)/$(BUILD_VARIANT)
 APP := $(OBJDIR)/$(TARGET).out
@@ -63,14 +63,9 @@ MUSIC_TITLE_PCM := $(AUDIO_BUILD_DIR)/music-title-$(MUSIC_RATE)-mono.wav
 MUSIC_GAME_PCM := $(AUDIO_BUILD_DIR)/music-game-$(MUSIC_RATE)-mono.wav
 MUSIC_TITLE_AIFC := $(AUDIO_BUILD_DIR)/music-title.vadpcm.aifc
 MUSIC_GAME_AIFC := $(AUDIO_BUILD_DIR)/music-game.vadpcm.aifc
-MUSIC_TITLE_BIN := $(AUDIO_BUILD_DIR)/music-title.vadpcm.bin
-MUSIC_GAME_BIN := $(AUDIO_BUILD_DIR)/music-game.vadpcm.bin
-MUSIC_TITLE_HEADER := $(ASSDIR)/music_title_vadpcm.h
-MUSIC_GAME_HEADER := $(ASSDIR)/music_game_vadpcm.h
 MUSIC_TITLE_INFO := $(AUDIO_BUILD_DIR)/music-title.json
 MUSIC_GAME_INFO := $(AUDIO_BUILD_DIR)/music-game.json
-MUSIC_ASSETS := $(MUSIC_TITLE_BIN) $(MUSIC_GAME_BIN) $(MUSIC_TITLE_HEADER) $(MUSIC_GAME_HEADER)
-ASSETS := $(BASE_ASSETS) $(MUSIC_TITLE_HEADER) $(MUSIC_GAME_HEADER)
+ASSETS := $(BASE_ASSETS)
 SOX ?= sox
 VADPCM ?= vadpcm
 
@@ -81,7 +76,7 @@ default: $(ROM)
 
 # Run this inside the project Docker image. The encoder accepts mono 16-bit
 # PCM only, so SoX supplies the deterministic resample/downmix stage first.
-music: $(MUSIC_ASSETS) $(MUSIC_TITLE_INFO) $(MUSIC_GAME_INFO)
+music: $(MUSIC_TITLE_AIFC) $(MUSIC_GAME_AIFC) $(MUSIC_TITLE_INFO) $(MUSIC_GAME_INFO)
 
 music-info: $(MUSIC_TITLE_INFO) $(MUSIC_GAME_INFO)
 
@@ -99,18 +94,6 @@ $(MUSIC_TITLE_AIFC): $(MUSIC_TITLE_PCM)
 $(MUSIC_GAME_AIFC): $(MUSIC_GAME_PCM)
 	$(VADPCM) encode --predictors 4 $< $@
 
-$(MUSIC_TITLE_HEADER): $(MUSIC_TITLE_AIFC) tools/audio_codegen.py
-	python3 tools/audio_codegen.py $< $(MUSIC_TITLE_BIN) $@ MUSIC_TITLE
-
-$(MUSIC_GAME_HEADER): $(MUSIC_GAME_AIFC) tools/audio_codegen.py
-	python3 tools/audio_codegen.py $< $(MUSIC_GAME_BIN) $@ MUSIC_GAME
-
-$(MUSIC_TITLE_BIN): $(MUSIC_TITLE_HEADER)
-	@test -f $@
-
-$(MUSIC_GAME_BIN): $(MUSIC_GAME_HEADER)
-	@test -f $@
-
 $(MUSIC_TITLE_INFO): $(MUSIC_TITLE_AIFC) tools/audio_manifest.py
 	python3 tools/audio_manifest.py $< $@
 
@@ -120,8 +103,6 @@ $(MUSIC_GAME_INFO): $(MUSIC_GAME_AIFC) tools/audio_manifest.py
 $(BASE_ASSETS): generate_assets.py tools/import_textures.py $(CUSTOM_TEXTURE_SOURCE)
 	python3 generate_assets.py
 	@if [ -n "$(CUSTOM_TEXTURE_SOURCE)" ]; then python3 tools/import_textures.py $(CUSTOM_TEXTURE_SOURCE); fi
-
-$(ROM): $(MUSIC_ASSETS)
 
 $(OBJECT_DIR)/%.o: $(SRCDIR)/%.c $(ASSETS)
 	@mkdir -p $(dir $@)

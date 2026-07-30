@@ -46,6 +46,7 @@ files.
 | Analog stick | Walk |
 | Hold L + analog stick | Sprint |
 | Hold Z + analog stick | Look around |
+| C-up | Toggle first-person / third-person camera |
 | A / hold B | Place / mine the targeted block |
 | C-left / C-right | Cycle the selected hotbar block |
 | START | Open / close that player's inventory |
@@ -61,10 +62,11 @@ placing one of these resources consumes it. Hold B to mine—releasing B or
 looking away resets the breaking progress. A wooden pickaxe is substantially
 faster on rock, and a wooden sword clears leaves quickly.
 
-Either player can press **START** to open their inventory. It has a 3-row storage grid, a
-selectable nine-slot hotbar, and a working 2x2 crafting area. Use **A** to
-pick up/place a stack or take the output, and **B** to move one item at a
-time. One log makes four planks; two
+Either player can press **START** to open their inventory. It has a 3-row
+storage grid, a selectable nine-slot hotbar, and a working 2x2 crafting area.
+Navigate with the analog stick, D-pad, or C-buttons. Use **A** to pick up/place
+a stack or take the output, and **B** to move one item at a time. One log makes
+four planks; two
 vertical planks make four sticks; and four planks make a crafting table.
 Place a crafting table, look at it, then press **START** to open its 3x3 grid
 for wooden swords and wooden pickaxes.
@@ -173,10 +175,10 @@ each tile to its own N64 palette.
 
 ### Music asset pipeline
 
-Mine64 uses `Softstone Sunset.wav` for the title screen and `Still Exploring.wav`
-in-game. Keep the original WAVs in one private local directory (the default is
-`/Users/codi/Downloads`) and create N64-ready assets inside the same Docker
-environment used for ROM builds:
+The repository can prepare `Softstone Sunset.wav` and `Still Exploring.wav`
+for a future hardware-tested music implementation. Keep the original WAVs in
+one private local directory (the default is `/Users/codi/Downloads`) and create
+N64-ready assets inside the same Docker environment used for ROM builds:
 
 ```sh
 docker run --rm --platform linux/amd64 \
@@ -188,9 +190,8 @@ The pipeline downmixes each track to mono, resamples to 22,050 Hz, removes inaud
 sub-bass/ultrasonic content, normalizes peaks to -3 dBFS, and encodes the
 result as N64 VADPCM. Outputs are written to `build/audio/`:
 `music-*-22050-mono.wav` files are review copies, `music-*.vadpcm.aifc` files
-are the compact runtime assets, and `music-*.json` files record exact size,
-rate, duration, codebook, and an infinite whole-track loop. The audio payloads
-are ROM-streamed and never occupy the full track size in RDRAM.
+are the compact encoded assets, and `music-*.json` files record exact size,
+rate, duration, and codebook information.
 
 VADPCM uses roughly 28% of the space of 16-bit PCM.  The default 22,050 Hz
 mono asset is a strong quality/ROM-size balance for background music. To
@@ -199,8 +200,10 @@ prefer a smaller or clearer asset, set `MUSIC_RATE`, for example
 different private source folder, set `MUSIC_SOURCE_DIR=/path/to/music`. To
 keep the input's level and EQ unchanged, set `MUSIC_EFFECTS=`.
 
-Make the WAV itself loop cleanly from its end back to its beginning; the
-runtime uses the full file as an infinite loop.
+Music playback is intentionally not linked into the default ROM. The first
+runtime integration could stall the shared RSP scheduler on real hardware, so
+it remains disabled until its task scheduling and ROM streaming are validated
+independently.
 
 For the complete art-to-cartridge walkthrough, see
 [Custom texture workflow](docs/custom-textures.md).
@@ -210,9 +213,10 @@ For the complete art-to-cartridge walkthrough, see
 Mine64 renders the same world mesh for both cameras rather than duplicating the
 world. In co-op it also submits one small, untextured Steve-style model per
 viewport. The split-screen viewport shares the original framebuffer, and the
-explicit co-op visibility cap keeps the main per-frame display list below its
-1,024-command budget. All per-frame display lists and referenced matrices are
-double-buffered so their memory stays immutable until the RSP finishes.
+explicit co-op visibility cap keeps the main per-frame display list inside its
+fixed hardware budget, including third-person avatars and pickups. All
+per-frame display lists and referenced matrices are double-buffered so their
+memory stays immutable until the RSP finishes.
 
 The linked release program currently occupies about 2.1 MiB including its world,
 geometry cache, NuSystem task buffers, and doubled render state. It remains

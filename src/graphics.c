@@ -45,10 +45,10 @@ static Mtx dropped_item_rotate[NUM_DISPLAY_LISTS][MAX_DROPPED_ITEMS];
 #define ITEM_VERTEX(x, y, z, s, t) {x, y, z, 0, s, t, 255, 255, 255, 255}
 
 static Vtx dropped_item_verts[] = {
-  ITEM_VERTEX(-10, 10, 10, 0, 0), ITEM_VERTEX(10, 10, 10, 16 << 5, 0),
-  ITEM_VERTEX(10, -10, 10, 16 << 5, 16 << 5), ITEM_VERTEX(-10, -10, 10, 0, 16 << 5),
-  ITEM_VERTEX(10, 10, -10, 0, 0), ITEM_VERTEX(-10, 10, -10, 16 << 5, 0),
-  ITEM_VERTEX(-10, -10, -10, 16 << 5, 16 << 5), ITEM_VERTEX(10, -10, -10, 0, 16 << 5)
+  ITEM_VERTEX(-14, 14, 14, 0, 0), ITEM_VERTEX(14, 14, 14, 16 << 5, 0),
+  ITEM_VERTEX(14, -14, 14, 16 << 5, 16 << 5), ITEM_VERTEX(-14, -14, 14, 0, 16 << 5),
+  ITEM_VERTEX(14, 14, -14, 0, 0), ITEM_VERTEX(-14, 14, -14, 16 << 5, 0),
+  ITEM_VERTEX(-14, -14, -14, 16 << 5, 16 << 5), ITEM_VERTEX(14, -14, -14, 0, 16 << 5)
 };
 
 static Gfx dropped_item_display_list[] = {
@@ -469,7 +469,10 @@ static void drawOtherPlayers(u8 viewer_num) {
      keeps its face and eye quads reliable from every camera angle. */
   gSPClearGeometryMode(dlp++, G_CULL_BACK);
   for (player_num = 0; player_num < active_player_count; player_num++) {
-    if (player_num != viewer_num && players[player_num].active) {
+    if (players[player_num].active &&
+        (player_num != viewer_num ||
+         (players[viewer_num].camera_mode == CAMERA_THIRD_PERSON &&
+          third_person_avatar_visible[viewer_num]))) {
       drawSteve(player_num);
     }
   }
@@ -479,13 +482,17 @@ static void drawOtherPlayers(u8 viewer_num) {
 static void drawDroppedItems() {
   u8 i;
 
+  /* Small cubes are particularly sensitive to winding/culling mistakes on
+     hardware.  Rendering both sides makes pickups visible from every angle. */
+  gSPClearGeometryMode(dlp++, G_CULL_BACK);
   for (i = 0; i < MAX_DROPPED_ITEMS; i++) {
     DroppedItem *drop = &dropped_items[i];
     if (!drop->active) {
       continue;
     }
 
-    guTranslate(&dropped_item_translate[dl_no][i], drop->position.x, drop->position.y,
+    guTranslate(&dropped_item_translate[dl_no][i], drop->position.x,
+      drop->position.y + sinf(drop->rotation * M_DTOR) * 3.f,
       drop->position.z);
     guRotateRPY(&dropped_item_rotate[dl_no][i], 0, drop->rotation, 0);
     loadTexture(preview_textures[drop->item]);
@@ -496,6 +503,7 @@ static void drawDroppedItems() {
     gSPVertex(dlp++, dropped_item_verts, 8, 0);
     gSPDisplayList(dlp++, dropped_item_display_list);
   }
+  gSPSetGeometryMode(dlp++, G_CULL_BACK);
 }
 
 void drawWorld() {
@@ -522,7 +530,8 @@ void drawWorld() {
       drawTextured(i, player_num);
     }
     drawDroppedItems();
-    if (active_player_count == 2) {
+    if (active_player_count == 2 ||
+        players[player_num].camera_mode == CAMERA_THIRD_PERSON) {
       drawOtherPlayers(player_num);
     }
   }
@@ -582,7 +591,21 @@ void drawWireframes() {
   );
 }
 
-static void drawCrosshair(u32 x, u32 y) {
+static void setHudFillColor(u8 r, u8 g, u8 b);
+
+static void drawCrosshair(u32 x, u32 y, Player *player) {
+  u8 red = 255;
+  u8 green = 255;
+  u8 blue = 255;
+
+  if (player->breaking) {
+    green = 180;
+    blue = 48;
+  } else if (player->target_present) {
+    red = 150;
+    blue = 150;
+  }
+  gDPPipeSync(dlp++);
   gDPSetCycleType(dlp++, G_CYC_FILL);
   gDPSetRenderMode(dlp++, G_RM_NOOP, G_RM_NOOP2);
   gDPSetFillColor(dlp++, (GPACK_RGBA5551(0, 0, 0, 1) << 16 |
@@ -591,7 +614,8 @@ static void drawCrosshair(u32 x, u32 y) {
     x + CROSSHAIR_SIZE / 2, y + 1);
   gDPFillRectangle(dlp++, x - 2, y - CROSSHAIR_SIZE / 2 - 1,
     x + 1, y + CROSSHAIR_SIZE / 2);
-  gDPSetFillColor(dlp++, (GPACK_RGBA5551(255, 255, 255, 1) << 16 | GPACK_RGBA5551(255, 255, 255, 1)));
+  gDPSetFillColor(dlp++, (GPACK_RGBA5551(red, green, blue, 1) << 16 |
+    GPACK_RGBA5551(red, green, blue, 1)));
   gDPFillRectangle(dlp++, x - CROSSHAIR_SIZE / 2, y - 1, x + CROSSHAIR_SIZE / 2 - 1, y);
   gDPFillRectangle(dlp++, x - 1, y - CROSSHAIR_SIZE / 2, x, y + CROSSHAIR_SIZE / 2 - 1);
   gDPPipeSync(dlp++);
@@ -601,6 +625,27 @@ static void drawCrosshair(u32 x, u32 y) {
   gDPSetPrimColor(dlp++, 0, 0, 255, 255, 255, 255);
   gDPSetTexturePersp(dlp++, G_TP_NONE);
   gDPSetTextureLUT(dlp++, G_TT_RGBA16);
+}
+
+static void drawBreakProgress(u32 x, u32 y, Player *player) {
+  u32 width;
+
+  if (!player->breaking || player->break_time <= 0) {
+    return;
+  }
+  width = player->break_progress * 30 / player->break_time;
+  if (width > 30) {
+    width = 30;
+  }
+  gDPPipeSync(dlp++);
+  gDPSetCycleType(dlp++, G_CYC_FILL);
+  gDPSetRenderMode(dlp++, G_RM_NOOP, G_RM_NOOP2);
+  setHudFillColor(15, 15, 15);
+  gDPFillRectangle(dlp++, x - 17, y + 10, x + 16, y + 14);
+  if (width > 0) {
+    setHudFillColor(255, 190, 48);
+    gDPFillRectangle(dlp++, x - 15, y + 12, x - 16 + width, y + 12);
+  }
 }
 
 static void setHudFillColor(u8 r, u8 g, u8 b) {
@@ -656,6 +701,7 @@ static void drawHotbar(u8 player_num, u32 y_offset) {
   u32 held_y = bar_y - HELD_PREVIEW_SIZE - 4;
   u8 slot;
 
+  gDPPipeSync(dlp++);
   gDPSetCycleType(dlp++, G_CYC_FILL);
   gDPSetRenderMode(dlp++, G_RM_NOOP, G_RM_NOOP2);
 
@@ -700,11 +746,11 @@ static void drawHotbar(u8 player_num, u32 y_offset) {
   }
 }
 
-static void drawInventorySlot(u32 x, u32 y, ItemStack *stack, u8 selected, u8 focused) {
+static void drawInventorySlot(u32 x, u32 y, ItemStack *stack, u8 selected) {
+  gDPPipeSync(dlp++);
   gDPSetCycleType(dlp++, G_CYC_FILL);
   gDPSetRenderMode(dlp++, G_RM_NOOP, G_RM_NOOP2);
-  setHudFillColor(focused ? 255 : (selected ? 234 : 76), focused ? 255 : (selected ? 210 : 76),
-    focused ? 255 : (selected ? 82 : 76));
+  setHudFillColor(76, 76, 76);
   gDPFillRectangle(dlp++, x, y, x + INVENTORY_SLOT_SIZE - 1, y + INVENTORY_SLOT_SIZE - 1);
   setHudFillColor(38, 38, 38);
   gDPFillRectangle(dlp++, x + 2, y + 2, x + INVENTORY_SLOT_SIZE - 3, y + INVENTORY_SLOT_SIZE - 3);
@@ -719,6 +765,29 @@ static void drawInventorySlot(u32 x, u32 y, ItemStack *stack, u8 selected, u8 fo
     gDPSetTextureLUT(dlp++, G_TT_RGBA16);
     drawItemIcon(stack->item, x + 2, y + 2, INVENTORY_ICON_SIZE);
   }
+
+  /* Equipped is a small green tab, distinct from the movable cursor. */
+  if (selected) {
+    gDPPipeSync(dlp++);
+    gDPSetCycleType(dlp++, G_CYC_FILL);
+    gDPSetRenderMode(dlp++, G_RM_NOOP, G_RM_NOOP2);
+    setHudFillColor(90, 220, 110);
+    gDPFillRectangle(dlp++, x + 5, y + INVENTORY_SLOT_SIZE - 3,
+      x + INVENTORY_SLOT_SIZE - 6, y + INVENTORY_SLOT_SIZE - 1);
+  }
+}
+
+static void drawInventoryFocus(u32 x, u32 y) {
+  gDPPipeSync(dlp++);
+  gDPSetCycleType(dlp++, G_CYC_FILL);
+  gDPSetRenderMode(dlp++, G_RM_NOOP, G_RM_NOOP2);
+  setHudFillColor(255, 232, 72);
+  gDPFillRectangle(dlp++, x, y, x + INVENTORY_SLOT_SIZE - 1, y + 1);
+  gDPFillRectangle(dlp++, x, y + INVENTORY_SLOT_SIZE - 2,
+    x + INVENTORY_SLOT_SIZE - 1, y + INVENTORY_SLOT_SIZE - 1);
+  gDPFillRectangle(dlp++, x, y + 2, x + 1, y + INVENTORY_SLOT_SIZE - 3);
+  gDPFillRectangle(dlp++, x + INVENTORY_SLOT_SIZE - 2, y + 2,
+    x + INVENTORY_SLOT_SIZE - 1, y + INVENTORY_SLOT_SIZE - 3);
 }
 
 static void drawInventory() {
@@ -746,23 +815,36 @@ static void drawInventory() {
     for (column = 0; column < craft_columns; column++) {
       u8 index = row * CRAFTING_TABLE_COLUMNS + column;
       drawInventorySlot(craft_x + column * INVENTORY_SLOT_SIZE, 53 + row * INVENTORY_SLOT_SIZE,
-        &player->crafting[index], FALSE, player->inventory_area == INVENTORY_AREA_CRAFTING &&
-          player->crafting_cursor == index);
+        &player->crafting[index], FALSE);
     }
   }
   getCraftResult(player, &output);
-  drawInventorySlot(output_x, output_y, &output, FALSE,
-    player->inventory_area == INVENTORY_AREA_OUTPUT);
-  drawInventorySlot(output_x, 104, &player->carried_item, FALSE, FALSE);
+  drawInventorySlot(output_x, output_y, &output, FALSE);
+  drawInventorySlot(output_x, 104, &player->carried_item, FALSE);
 
   for (row = 0; row < INVENTORY_STORAGE_ROWS + INVENTORY_HOTBAR_ROWS; row++) {
     for (column = 0; column < INVENTORY_COLUMNS; column++) {
       u8 index = row * INVENTORY_COLUMNS + column;
       drawInventorySlot(slot_x + column * INVENTORY_SLOT_SIZE, slot_y + row * INVENTORY_SLOT_SIZE,
-        &player->inventory[index], row == INVENTORY_STORAGE_ROWS && player->selected_hotbar_slot == column,
-        player->inventory_area == INVENTORY_AREA_ITEMS && player->inventory_cursor == index);
+        &player->inventory[index], row == INVENTORY_STORAGE_ROWS &&
+        player->selected_hotbar_slot == column);
   }
 }
+
+  /* Draw the cursor last so every edge remains intact on the real RDP. */
+  if (player->inventory_area == INVENTORY_AREA_CRAFTING) {
+    drawInventoryFocus(craft_x +
+      (player->crafting_cursor % CRAFTING_TABLE_COLUMNS) * INVENTORY_SLOT_SIZE,
+      53 + (player->crafting_cursor / CRAFTING_TABLE_COLUMNS) *
+      INVENTORY_SLOT_SIZE);
+  } else if (player->inventory_area == INVENTORY_AREA_OUTPUT) {
+    drawInventoryFocus(output_x, output_y);
+  } else {
+    drawInventoryFocus(slot_x +
+      (player->inventory_cursor % INVENTORY_COLUMNS) * INVENTORY_SLOT_SIZE,
+      slot_y + (player->inventory_cursor / INVENTORY_COLUMNS) *
+      INVENTORY_SLOT_SIZE);
+  }
 }
 
 static void drawStackCount(ItemStack *stack, u32 x, u32 y) {
@@ -827,8 +909,18 @@ static void drawGameText() {
 
     drawChar('P', 6, y_offset + 6);
     drawChar('1' + player_num, 13, y_offset + 6);
+    if (players[player_num].camera_mode == CAMERA_THIRD_PERSON) {
+      drawString("3P", 25, y_offset + 6);
+      drawString(itemName(held_stack->count > 0 ? held_stack->item : AIR),
+        43, y_offset + 6);
+    } else {
     drawString(itemName(held_stack->count > 0 ? held_stack->item : AIR),
       25, y_offset + 6);
+    }
+    if (pickup_message[player_num] > 0) {
+      drawChar('+', 6, y_offset + 16);
+      drawString(itemName(pickup_item[player_num]), 13, y_offset + 16);
+    }
     for (slot = 0; slot < HOTBAR_SLOT_COUNT; slot++) {
       ItemStack *stack = &players[player_num].inventory[
         INVENTORY_HOTBAR_START + slot];
@@ -851,7 +943,10 @@ void drawHUD() {
     loaded_texture = NULL;
     for (player_num = 0; player_num < active_player_count; player_num++) {
       u32 y_offset = active_player_count == 2 ? player_num * (SCREEN_HT / 2) : 0;
-      drawCrosshair(SCREEN_WD / 2, y_offset + (active_player_count == 2 ? SCREEN_HT / 4 : SCREEN_HT / 2));
+      u32 crosshair_y = y_offset +
+        (active_player_count == 2 ? SCREEN_HT / 4 : SCREEN_HT / 2);
+      drawCrosshair(SCREEN_WD / 2, crosshair_y, &players[player_num]);
+      drawBreakProgress(SCREEN_WD / 2, crosshair_y, &players[player_num]);
       drawHotbar(player_num, y_offset);
     }
     if (active_player_count == 2) {

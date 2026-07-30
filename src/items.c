@@ -5,13 +5,16 @@
 #include "player.h"
 #include "world.h"
 
-#define ITEM_RADIUS 10.f
+#define ITEM_RADIUS 14.f
 #define ITEM_GRAVITY 0.45f
-#define ITEM_PICKUP_RADIUS 48.f
-#define ITEM_PICKUP_HEIGHT 96.f
-#define ITEM_PICKUP_DELAY 18
+#define ITEM_TERMINAL_SPEED 12.f
+#define ITEM_PICKUP_RADIUS 90.f
+#define ITEM_PICKUP_HEIGHT 160.f
+#define ITEM_PICKUP_DELAY 12
 
 DroppedItem dropped_items[MAX_DROPPED_ITEMS];
+u8 pickup_message[MAX_PLAYERS];
+u8 pickup_item[MAX_PLAYERS];
 
 u8 itemMaxStack(u8 item) {
   return (item == WOOD_SWORD || item == WOOD_PICKAXE) ? 1 : MAX_ITEM_STACK;
@@ -32,6 +35,10 @@ void initDroppedItems() {
 
   for (i = 0; i < MAX_DROPPED_ITEMS; i++) {
     dropped_items[i].active = FALSE;
+  }
+  for (i = 0; i < MAX_PLAYERS; i++) {
+    pickup_message[i] = 0;
+    pickup_item[i] = AIR;
   }
 }
 
@@ -80,6 +87,9 @@ static u8 solidBlockAt(float x, float y, float z) {
 static void updateDropPhysics(DroppedItem *drop, float delta) {
   drop->position = add(drop->position, mul(drop->velocity, delta));
   drop->velocity.y -= ITEM_GRAVITY * delta;
+  if (drop->velocity.y < -ITEM_TERMINAL_SPEED) {
+    drop->velocity.y = -ITEM_TERMINAL_SPEED;
+  }
   drop->rotation += delta * 6;
   if (drop->rotation >= 360) {
     drop->rotation -= 360;
@@ -109,8 +119,9 @@ static void tryPickup(DroppedItem *drop) {
     float dy = player->position.y - drop->position.y;
     float dz = player->position.z - drop->position.z;
 
-    /* Player positions are at eye height, so use a short horizontal radius
-       and a taller vertical range that reaches the ground below their feet. */
+    /* Player positions are at eye height.  A little more than one block of
+       horizontal reach makes collection forgiving without vacuuming items
+       across the screen; the taller range covers slopes and tree canopies. */
     if (dx * dx + dz * dz <= ITEM_PICKUP_RADIUS * ITEM_PICKUP_RADIUS &&
         dy >= -ITEM_PICKUP_HEIGHT && dy <= ITEM_PICKUP_HEIGHT) {
       u8 added = addItemToInventory(player, drop->item, drop->count);
@@ -119,6 +130,8 @@ static void tryPickup(DroppedItem *drop) {
         drop->active = FALSE;
       }
       if (added > 0) {
+        pickup_item[player_num] = drop->item;
+        pickup_message[player_num] = 60;
         return;
       }
     }
@@ -128,6 +141,11 @@ static void tryPickup(DroppedItem *drop) {
 void updateDroppedItems(float delta) {
   u8 i;
 
+  for (i = 0; i < active_player_count; i++) {
+    if (pickup_message[i] > 0) {
+      pickup_message[i]--;
+    }
+  }
   for (i = 0; i < MAX_DROPPED_ITEMS; i++) {
     if (dropped_items[i].active) {
       updateDropPhysics(&dropped_items[i], delta);

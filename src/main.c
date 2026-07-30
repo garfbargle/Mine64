@@ -2,7 +2,6 @@
 #include "main.h"
 #include "menu.h"
 #include "camera.h"
-#include "audio.h"
 #include "player.h"
 #include "geometry.h"
 #include "graphics.h"
@@ -36,7 +35,6 @@ void callbackGfx(int pendingGfx) {
   }
 
   updatePlayers();
-  updateAudio(current_screen);
 }
 
 void callbackPreNMI() {
@@ -65,7 +63,6 @@ void mainproc(void) {
   initVideo();
   initCamera();
   initGraphics();
-  initAudio();
   initStorage();
   
   nuContInit();

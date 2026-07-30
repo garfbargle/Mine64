@@ -56,6 +56,7 @@ static char *info_text[] = {
   "Mine block: Hold B button",
   "Pickaxe mines rock faster",
   "Select block: C buttons left/right",
+  "Camera: C button up",
   "Inventory: START button",
   "Jump: Right shoulder",
   "Save game: D-Pad",
@@ -89,8 +90,9 @@ static char *inventory_text[] = {
   "Items",
   "A: Move Stack",
   "B: Move One",
-  "C Left Right: Move",
-  "D Pad: Move Rows",
+  "D Pad C Stick: Move",
+  "Hold a direction: Repeat",
+  "Yellow Cursor Green Equipped",
   "Start: Close"
 };
 

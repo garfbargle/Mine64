@@ -17,6 +17,8 @@
 #define CRAFTING_SIZE (CRAFTING_TABLE_COLUMNS * CRAFTING_TABLE_ROWS)
 #define PLAYER_CRAFTING_COLUMNS 2
 #define PLAYER_CRAFTING_ROWS 2
+#define CAMERA_FIRST_PERSON 0
+#define CAMERA_THIRD_PERSON 1
 
 enum InventoryArea {
   INVENTORY_AREA_CRAFTING,
@@ -39,6 +41,7 @@ typedef struct {
   float walk_time;
   float walk_swing;
   float y_velocity;
+  u8 camera_mode;
   int held_block;
   ItemStack inventory[INVENTORY_SIZE];
   ItemStack crafting[CRAFTING_SIZE];
