@@ -7,6 +7,10 @@
 enum Screen current_screen = MENU;
 u32 save_message_cooldown = 0;
 u8 save_failed_message = 0;
+/* Set when a mesh rebuild ran out of arena space, so the world on screen is
+   missing columns.  Latched rather than timed: it stays true until a later
+   build fits, because the terrain stays wrong for exactly that long. */
+u8 world_incomplete_message = 0;
 u8 player_joined_message = 0;
 u8 player_joined_number = 0;
 
@@ -481,6 +485,9 @@ void drawMenu() {
     option_y = option_lines[selected_option] * 12 + y_start;
     drawChar('>', SCREEN_WD / 2 - 40 - charWidth('>'), option_y);
     drawChar('<', SCREEN_WD / 2 + 40, option_y);
+    if (world_incomplete_message) {
+      drawCenteredString("TERRAIN TOO DETAILED TO DRAW", 148);
+    }
   }
 }
 

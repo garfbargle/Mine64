@@ -42,12 +42,16 @@ endif
 
 SPEC := spec
 AUDIO_LIB :=
+# NuSystem pins its framebuffers -- and, in audio builds, its audio heap -- at
+# fixed addresses at the top of RDRAM, below which the linked image must fit.
+RAM_CHECK_FLAGS :=
 ifeq ($(AUDIO),1)
 TARGET := mine64-audio
 BUILD_VARIANT := $(BUILD_VARIANT)-audio
 LCDEFS += -DENABLE_AUDIO
 AUDIO_LIB := -lnualsgi$(SDK_VARIANT)
 SPEC := spec.audio
+RAM_CHECK_FLAGS := --audio
 endif
 
 LDFLAGS := $(MKDEPOPT) -L$(LIB) -L$(NUSYSLIBDIR) -lnusys$(SDK_VARIANT) \
@@ -169,6 +173,7 @@ $(CODESEGMENT): FORCE_CODESEGMENT $(CODEOBJECTS) Makefile
 $(ROM): FORCE_ROM $(CODESEGMENT) $(SPEC)
 	$(MAKEROM) $(SPEC) -I$(NUSYSINCDIR) -r $@ -e $(APP)
 	$(MAKEMASK) $@
+	python3 tools/check_ram.py $(TARGET).out $(RAM_CHECK_FLAGS)
 
 FORCE_ROM:
 

@@ -830,15 +830,24 @@ static u8 makeColumnDisplayLists(u8 cx, u8 cz) {
   return TRUE;
 }
 
-void makeWorldDisplayLists() {
+u8 makeWorldDisplayLists() {
   u8 cx, cz;
   u16 column;
   u8 build_complete = TRUE;
 
-  /* This is a complete mesh rebuild, not an incremental block edit.  World
-     previews can rebuild several slots back-to-back, so start from the
-     beginning of the fixed command arena after the RSP is done with it. */
-  nuGfxTaskAllEndWait();
+  /*
+   * This is a complete mesh rebuild, not an incremental block edit.  It
+   * rewrites the arena the RSP executes terrain from, so it may only run
+   * while no graphics task is in flight.  callbackGfx guarantees that by
+   * calling it only when NuSystem reports pendingGfx == 0, and by submitting
+   * the next frame afterwards rather than before.
+   *
+   * Do not wait for the RSP here.  nuGfxTaskAllEndWait() busy-spins on
+   * nuGfxTaskSpool, and this runs on the NuSystem graphics thread at priority
+   * 50.  The completion that clears that counter is posted by the scheduler's
+   * own graphics thread at priority 17, which can never preempt a spin at 50,
+   * so the wait deadlocks the console instead of ending.
+   */
   active_column_arena = 0;
   compacting_columns = FALSE;
   dirty_column_cursor = 0;
@@ -855,6 +864,10 @@ void makeWorldDisplayLists() {
     }
   }
   column_arena_ends[active_column_arena] = column_dlp;
+  /* A truncated build leaves the remaining columns non-resident, so the world
+     renders with holes rather than corrupt commands.  Report it so the caller
+     can tell the player instead of silently shipping a broken world. */
+  return build_complete;
 }
 
 static void markColumnDirty(u8 cx, u8 cz) {
@@ -2482,9 +2495,8 @@ void drawHUD() {
   u8 player_num;
 
   if (current_screen != GAME && current_screen != INVENTORY &&
-      current_screen != LOADING_PREVIEW &&
-      !((current_screen == MENU || current_screen == WORLD_NAMING) &&
-        !menuPreviewRequested())) {
+      current_screen != LOADING_PREVIEW && current_screen != MENU &&
+      current_screen != WORLD_NAMING) {
     clearBuffers(GPACK_RGBA5551(0, 0, 0, 1));
   } else if (current_screen == LOADING_PREVIEW) {
     drawLoadingOverlay();
@@ -2561,8 +2573,11 @@ void draw(int can_reclaim_mesh_arena) {
     updateLoadingCamera();
     processColumnDisplayListUpdates(can_reclaim_mesh_arena);
     drawWorld();
-  } else if ((current_screen == MENU || current_screen == WORLD_NAMING) &&
-      !menuPreviewRequested()) {
+  } else if (current_screen == MENU || current_screen == WORLD_NAMING) {
+    /* Keep orbiting the mesh that is already resident.  A requested preview
+       has not touched the arena yet -- callbackGfx rebuilds it only with no
+       task in flight -- so the previous slot stays on screen right up to the
+       swap instead of blanking for the duration of the build. */
     updateLoadingCamera();
     processColumnDisplayListUpdates(can_reclaim_mesh_arena);
     drawWorld();
@@ -2620,6 +2635,10 @@ void initGraphics() {
 
   active_column_arena = 0;
   compacting_columns = FALSE;
-  beginColumnArenaBuild(active_column_arena);
+  /* Point every column at the shared empty list before the first world is
+     compiled.  drawTextured branches to these pointers unconditionally, and
+     until the arena is reset they are still NULL from BSS -- any terrain draw
+     before the first build would send the RSP to address zero. */
+  resetColumnArenaBuild(active_column_arena);
   column_arena_ends[active_column_arena] = column_dlp;
 }

@@ -20,7 +20,9 @@ extern Gfx frame_display_lists[NUM_DISPLAY_LISTS][FRAME_DISPLAY_LIST_SIZE];
 extern u32 dl_no;
 
 void initGraphics();
-void makeWorldDisplayLists();
+/* Returns FALSE when the mesh arena filled before every column was compiled;
+   the world then renders with missing columns. */
+u8 makeWorldDisplayLists();
 void makeDisplayListsAt(u8 x, u8 z);
 void drawWorld();
 void drawWireframes();
