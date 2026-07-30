@@ -2,6 +2,7 @@
 #include "main.h"
 #include "menu.h"
 #include "camera.h"
+#include "audio.h"
 #include "player.h"
 #include "geometry.h"
 #include "graphics.h"
@@ -35,6 +36,9 @@ void callbackGfx(int pendingGfx) {
   }
 
   updatePlayers();
+#ifdef ENABLE_AUDIO
+  updateAudio(current_screen);
+#endif
 }
 
 void callbackPreNMI() {
@@ -64,8 +68,14 @@ void mainproc(void) {
   initCamera();
   initGraphics();
   initStorage();
-  
   nuContInit();
+#ifdef ENABLE_AUDIO
+  /*
+   * Storage owns the flashcart/PI during startup. Start audio only after cart
+   * probing and filesystem recovery have completely finished.
+   */
+  initAudio();
+#endif
   nuGfxFuncSet((NUGfxFunc) callbackGfx);
 
   while(1)

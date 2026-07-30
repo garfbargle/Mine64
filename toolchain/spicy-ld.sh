@@ -20,11 +20,11 @@ for ((i = 0; i < ${#args[@]}; i++)); do
     patched_script="$temp_dir/linker-script"
     while IFS= read -r line; do
       printf '%s\n' "$line" >> "$patched_script"
-      if [[ "$line" == *'build/codesegment.o (.text .text.*)'* ]]; then
+      if [[ "$line" == *'codesegment.o (.text .text.*)'* ]]; then
         for object in _udivdi3.o _umoddi3.o _divdi3.o _floatundisf.o; do
           printf '      %s/%s (.text .text.*)\n' "$temp_dir" "$object" >> "$patched_script"
         done
-      elif [[ "$line" == *'build/codesegment.o (.rodata .rodata.*)'* ]]; then
+      elif [[ "$line" == *'codesegment.o (.rodata .rodata.*)'* ]]; then
         printf '      %s/_clz.o (.rodata .rodata.*)\n' "$temp_dir" >> "$patched_script"
         printf '      %s/_floatundisf.o (.rodata .rodata.*)\n' "$temp_dir" >> "$patched_script"
       fi

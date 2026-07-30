@@ -153,6 +153,19 @@ The default is an optimized release ROM using the non-debug NuSystem and
 libultra libraries. For an unoptimized SDK debug build, run `make DEBUG=1`.
 Release and debug objects are cached separately, so switching variants is safe.
 
+The stable ROM deliberately keeps runtime audio disabled. To build the isolated
+real-hardware audio variant without replacing it, run:
+
+```sh
+make AUDIO=1
+```
+
+That writes `build/mine64-audio.n64`. The audio ROM uses full-size NuSystem
+command buffers, explicitly aligned VADPCM books, and starts the audio manager
+only after flashcart storage initialization. Music waits for 60 rendered
+frames before its first ROM DMA, making a scheduler failure distinguishable
+from a boot or storage failure.
+
 ### Texture art exports
 
 The game tiles are generated in `generate_assets.py` as 16x16 CI4 textures.
@@ -202,10 +215,9 @@ prefer a smaller or clearer asset, set `MUSIC_RATE`, for example
 different private source folder, set `MUSIC_SOURCE_DIR=/path/to/music`. To
 keep the input's level and EQ unchanged, set `MUSIC_EFFECTS=`.
 
-Music playback is intentionally not linked into the default ROM. The first
-runtime integration could stall the shared RSP scheduler on real hardware, so
-it remains disabled until its task scheduling and ROM streaming are validated
-independently.
+Music playback is intentionally not linked into the default ROM. Use the
+separate `AUDIO=1` ROM for hardware validation; a known-good silent build
+always remains available at `build/mine64.n64`.
 
 For the complete art-to-cartridge walkthrough, see
 [Custom texture workflow](docs/custom-textures.md).

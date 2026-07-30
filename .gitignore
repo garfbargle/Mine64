@@ -1,6 +1,8 @@
 /.vscode
 /build
 /assets
+/mine64-audio.out
+__pycache__/
 *.sh
 !toolchain/
 !toolchain/spicy-ld.sh
