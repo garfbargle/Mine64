@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# Build Mine64 in the project SDK container and load it into SummerCart64 RAM.
+set -euo pipefail
+
+PROJECT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+BUILD_IMAGE="${MINE64_BUILD_IMAGE:-mine64-nusys-build:local}"
+DOCKER_PLATFORM="${MINE64_DOCKER_PLATFORM:-linux/amd64}"
+SC64_DEPLOYER="${SC64_DEPLOYER:-$PROJECT_DIR/../N64FlashcartMenu/tools/sc64/sc64deployer}"
+
+if ! command -v docker >/dev/null; then
+    echo "Docker is required to build Mine64." >&2
+    exit 1
+fi
+
+if [[ ! -x "$SC64_DEPLOYER" ]]; then
+    echo "SummerCart64 deployer was not found: $SC64_DEPLOYER" >&2
+    echo "Set SC64_DEPLOYER to its full path and retry." >&2
+    exit 1
+fi
+
+echo "Building Mine64..."
+docker run --rm --platform "$DOCKER_PLATFORM" \
+    -v "$PROJECT_DIR:/work" -w /work \
+    "$BUILD_IMAGE" make -j2
+
+echo "Live-loading build/mine64.n64 to SummerCart64 RAM..."
+"$SC64_DEPLOYER" upload "$PROJECT_DIR/build/mine64.n64"
+"$SC64_DEPLOYER" info | grep -F "Boot mode:"
+

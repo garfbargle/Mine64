@@ -66,7 +66,7 @@ else
 CODESEGMENT := $(OBJDIR)/codesegment.o
 endif
 BASE_ASSETS := $(ASSDIR)/texture_data.h $(ASSDIR)/font.h
-CUSTOM_TEXTURE_SOURCE := $(wildcard art/custom-textures.png)
+TEXTURE_SOURCE_STAMP := $(ASSDIR)/.texture-source.stamp
 
 # Encoded audio is versioned with the source tree.  The original WAV masters
 # are only needed for the explicit `make music MUSIC_SOURCE_DIR=/path` import.
@@ -101,7 +101,7 @@ SOX ?= sox
 VADPCM ?= vadpcm
 
 .DEFAULT_GOAL := default
-.PHONY: default audio clean music sfx FORCE_CODESEGMENT FORCE_ROM
+.PHONY: default audio clean music sfx FORCE_CODESEGMENT FORCE_ROM FORCE_TEXTURE_SOURCE
 
 default: $(ROM)
 
@@ -129,9 +129,27 @@ sfx:
 $(MUSIC_ASSETS) $(SFX_ASSETS):
 	@test -f $@
 
-$(BASE_ASSETS): generate_assets.py tools/import_textures.py $(CUSTOM_TEXTURE_SOURCE)
+FORCE_TEXTURE_SOURCE:
+
+# Re-evaluate the optional artist atlas on every invocation, but only update
+# the stamp when its state or contents have changed.  A wildcard prerequisite
+# cannot notice when art/custom-textures.png is removed, which previously left
+# a stale generated texture header in place.
+$(TEXTURE_SOURCE_STAMP): FORCE_TEXTURE_SOURCE
+	@mkdir -p $(@D)
+	@if [ -f art/custom-textures.png ]; then \
+		cksum art/custom-textures.png | awk '{ print "custom " $$1 ":" $$2 }'; \
+	else \
+		printf '%s\n' builtin; \
+	fi > $@.tmp
+	@if ! cmp -s $@.tmp $@; then mv $@.tmp $@; else rm -f $@.tmp; fi
+
+$(ASSDIR)/texture_data.h: generate_assets.py tools/import_textures.py $(TEXTURE_SOURCE_STAMP)
 	python3 generate_assets.py
-	@if [ -n "$(CUSTOM_TEXTURE_SOURCE)" ]; then python3 tools/import_textures.py $(CUSTOM_TEXTURE_SOURCE); fi
+	@if [ -f art/custom-textures.png ]; then python3 tools/import_textures.py art/custom-textures.png; fi
+
+$(ASSDIR)/font.h: generate_assets.py
+	python3 generate_assets.py
 
 ifeq ($(AUDIO),1)
 $(ROM): $(MUSIC_ASSETS) $(SFX_ASSETS)

@@ -93,7 +93,9 @@ table is targeted.
 
 For the normal SummerCart64 menu workflow, upload the built ROM to the
 cartridge SD card, then select it in the menu. This is the persistent,
-recommended deployment path:
+recommended deployment path. **Turn the N64 off before this upload**: while
+the console is running, it owns the SummerCart64 SD card and the USB write is
+rejected as locked by the N64 side.
 
 ```sh
 ../N64FlashcartMenu/tools/sc64/sc64deployer sd upload \
@@ -107,7 +109,23 @@ The menu path is `/Games/Mine64.n64`. The prior ROM is preserved as
 (`mine64/world_128_*.m64`) are also preserved. This 112x112-world build uses
 `mine64/world_112_*.m64`, so saves cannot be
 misread with a different packed-world length. Saves are stored on the
-cartridge SD card when libcart detects a supported flash cartridge.
+cartridge SD card when libcart detects a supported flash cartridge. Once the
+upload completes, turn the N64 on and select Mine64 from the SummerCart64 SD
+menu.
+
+For the usual persistent build-and-save workflow, run the project script from
+the repository root:
+
+```sh
+./perma-load
+```
+
+It verifies that the SummerCart64 SD card is initialized and that the N64 is
+powered off, which releases the SD card from the N64 side for USB writing. It
+then builds the ROM in `mine64-nusys-build:local`, saves it to
+`/Games/Mine64.n64`, and verifies the stored file. Turn the N64 on afterward
+and select Mine64 from the SummerCart64 SD menu. Set `SC64_DEPLOYER` or
+`SC64_SD_PATH` to override the deployer location or menu path.
 
 For development-only USB streaming, with the SummerCart64 connected, use:
 
@@ -118,6 +136,18 @@ For development-only USB streaming, with the SummerCart64 connected, use:
 This sends the ROM to the cartridge's RAM and configures **Bootloader → ROM**;
 it does not create or replace a file on the SD card. To bypass the bootloader
 and start the uploaded ROM directly, add `--direct`.
+
+For the usual edit-build-test loop, run the project script from the repository
+root instead:
+
+```sh
+./live-load
+```
+
+It builds the default ROM in `mine64-nusys-build:local`, uploads it to the
+connected SummerCart64's temporary ROM RAM, and confirms the boot mode. Set
+`SC64_DEPLOYER` if your deployer is not at the adjacent
+`../N64FlashcartMenu/tools/sc64/sc64deployer` path.
 
 ## Build
 

@@ -336,11 +336,16 @@ static void setWorldLight(u8 player_num) {
 
 static void setPreviewLight() {
   Lights0 *lights = &preview_lights[dl_no];
-  SkyColor ambient = {215, 215, 215};
-  SkyColor no_direct_light = {0, 0, 0};
+  SkyColor ambient = {152, 164, 174};
+  SkyColor direct = {94, 88, 70};
 
   setAmbientColor(&lights->a, ambient);
-  setLightColor(&lights->l[0], no_direct_light);
+  setLightColor(&lights->l[0], direct);
+  /* A fixed warm key light gives the terrain relief at any saved world
+     time, rather than flattening the showcase with an all-ambient pass. */
+  lights->l[0].l.dir[0] = -48;
+  lights->l[0].l.dir[1] = 104;
+  lights->l[0].l.dir[2] = 54;
 }
 
 static void setCelestialVertex(Vtx *vertex, Vector3 point, u16 s, u16 t) {
@@ -1141,7 +1146,9 @@ void drawWorld() {
   u8 viewer_count = cinematic ? 1 : active_player_count;
 
   if (cinematic) {
-    clearBuffers(GPACK_RGBA5551(42, 78, 130, 1));
+    /* A brighter blue keeps the distant water legible while the warm
+       terrain light provides depth in the foreground. */
+    clearBuffers(GPACK_RGBA5551(48, 123, 211, 1));
   } else {
     /* A single time-varying clear is much cheaper than the former banded
      * gradient while retaining a daylight/nightfall sky behind the terrain. */

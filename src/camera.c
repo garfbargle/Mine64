@@ -5,9 +5,11 @@
 #include "math.h"
 #include "graphics.h"
 #include "geometry.h"
+#include "menu.h"
 
 #define FOV_Y 60
 #define FOV_Y_COOP 40
+#define FOV_Y_LOADING 52
 #define FOV_RATIO ((float) SCREEN_WD / (float) SCREEN_HT)
 #define COOP_FOV_RATIO ((float) SCREEN_WD / (float) (SCREEN_HT / 2))
 #define FOUR_PLAYER_FOV_RATIO ((float) (SCREEN_WD / 2) / (float) (SCREEN_HT / 2))
@@ -16,14 +18,17 @@
 #define SOLO_MAX_VISIBLE_COLUMNS 128
 #define COOP_MAX_VISIBLE_COLUMNS 24
 #define FOUR_PLAYER_MAX_VISIBLE_COLUMNS 8
+#define LOADING_MAX_VISIBLE_COLUMNS 96
 #define THIRD_PERSON_DISTANCE 176.f
 #define THIRD_PERSON_HEIGHT 24.f
 #define THIRD_PERSON_SAMPLES 12
 #define THIRD_PERSON_AVATAR_MIN_DISTANCE 40.f
-#define LOADING_PREVIEW_FRAMES 150
-#define LOADING_ORBIT_RADIUS 5600.f
-#define LOADING_CAMERA_HEIGHT 3850.f
-#define LOADING_CAMERA_BOB 280.f
+#define LOADING_PREVIEW_FRAMES 180
+#define LOADING_ORBIT_DEGREES_PER_FRAME .62f
+#define MENU_ORBIT_DEGREES_PER_FRAME .28f
+#define LOADING_ORBIT_RADIUS 3900.f
+#define LOADING_CAMERA_HEIGHT 2450.f
+#define LOADING_CAMERA_BOB 120.f
 #define LOADING_WORLD_CENTER (MAX_X * BLOCK_SIZE / 2.f)
 
 typedef struct {
@@ -35,7 +40,8 @@ typedef struct {
 enum CameraViewMode {
   CAMERA_VIEW_SOLO,
   CAMERA_VIEW_TWO_PLAYER,
-  CAMERA_VIEW_FOUR_PLAYER
+  CAMERA_VIEW_FOUR_PLAYER,
+  CAMERA_VIEW_LOADING
 };
 
 u8 visible_columns[MAX_PLAYERS][CHUNKS_X * CHUNKS_Z];
@@ -55,7 +61,7 @@ static Mtx cam_translate[NUM_DISPLAY_LISTS][MAX_PLAYERS];
 static Line2D cull_lines[NUM_CULL_LINES];
 static u8 point_sides[CHUNKS_X + 1][CHUNKS_Z + 1];
 static Player loading_camera;
-static u16 loading_preview_frame;
+static u32 loading_preview_frame;
 static u8 loading_preview_active;
 
 static u8 cameraPointSolid(Vector3 position) {
@@ -134,6 +140,9 @@ void initCamera() {
       FOV_Y_COOP, COOP_FOV_RATIO, 10, 8000, 1.0);
     guPerspective(&projection_matrix[frame][CAMERA_VIEW_FOUR_PLAYER], &perspective_norm[frame][CAMERA_VIEW_FOUR_PLAYER],
       FOV_Y_COOP, FOUR_PLAYER_FOV_RATIO, 10, 8000, 1.0);
+    guPerspective(&projection_matrix[frame][CAMERA_VIEW_LOADING],
+      &perspective_norm[frame][CAMERA_VIEW_LOADING], FOV_Y_LOADING,
+      FOV_RATIO, 10, 14000, 1.0);
   }
 }
 
@@ -175,11 +184,14 @@ static void updateVisibleColumnsFor(u8 player_num, Player *player,
   u8 visible_count = 0;
   u8 farthest_x = 0, farthest_z = 0;
   float dx, dz, distance, farthest_distance;
-  u8 multiplayer = view_mode != CAMERA_VIEW_SOLO;
-  u8 max_visible_columns = view_mode == CAMERA_VIEW_SOLO ?
+  u8 multiplayer = view_mode == CAMERA_VIEW_TWO_PLAYER ||
+    view_mode == CAMERA_VIEW_FOUR_PLAYER;
+  u8 max_visible_columns = view_mode == CAMERA_VIEW_LOADING ?
+    LOADING_MAX_VISIBLE_COLUMNS : (view_mode == CAMERA_VIEW_SOLO ?
     SOLO_MAX_VISIBLE_COLUMNS : (view_mode == CAMERA_VIEW_FOUR_PLAYER ?
-    FOUR_PLAYER_MAX_VISIBLE_COLUMNS : COOP_MAX_VISIBLE_COLUMNS);
-  float fov_y = multiplayer ? FOV_Y_COOP : FOV_Y;
+    FOUR_PLAYER_MAX_VISIBLE_COLUMNS : COOP_MAX_VISIBLE_COLUMNS));
+  float fov_y = view_mode == CAMERA_VIEW_LOADING ? FOV_Y_LOADING :
+    (multiplayer ? FOV_Y_COOP : FOV_Y);
   float fov_x = fov_y * (view_mode == CAMERA_VIEW_FOUR_PLAYER ?
     FOUR_PLAYER_FOV_RATIO : (multiplayer ? COOP_FOV_RATIO : FOV_RATIO));
 
@@ -220,9 +232,9 @@ static void updateVisibleColumnsFor(u8 player_num, Player *player,
     }
   }
 
-  /* Display submission is bounded even for the loading orbit: 128 columns
-     x 11 texture lists stays below the 3,072-command solo list, while the
-     multiplayer caps keep all viewports within the same budget. */
+  /* The loading orbit has no interaction radius to protect, so its smaller
+     cap trades the most distant terrain for steadier frame pacing.  It still
+     leaves a broad foreground and a full-width landmark horizon. */
   while (visible_count > max_visible_columns) {
     farthest_distance = -1;
     for (cx = 0; cx < CHUNKS_X; cx++) {
@@ -278,13 +290,25 @@ void beginLoadingPreview() {
 }
 
 void updateLoadingCamera() {
-  float angle = loading_preview_frame * .9f;
-  float low_orbit = sinf(angle * .5f * M_DTOR);
+  float angle;
+  float low_orbit;
   Vector3 camera_position;
 
-  /* The orbit looks inward across the centre of the 112x112-block map. Its
-     radius and height keep the complete landscape in a 60-degree view
-     without using a separate, low-detail world model. */
+  if (current_screen == LOADING_PREVIEW) {
+    /* A steady camera gives the eye enough motion to blend individual N64
+       frames. Easing from a crawl made the terrain read as a tick-tock
+       slideshow on displays where the render cadence is not perfectly even. */
+    angle = loading_preview_frame * LOADING_ORBIT_DEGREES_PER_FRAME;
+  } else {
+    /* The world picker may remain open for minutes, so keep its orbit a
+       calm, continuous carousel rather than reusing the loading reveal. */
+    angle = loading_preview_frame * MENU_ORBIT_DEGREES_PER_FRAME;
+  }
+  low_orbit = sinf(angle * .5f * M_DTOR);
+
+  /* This is a terrain showcase rather than a map view. Keeping the camera
+     close enough for the block textures to resolve avoids the moire grid
+     that the old high, distant orbit produced on a CRT. */
   loading_camera.position.x = LOADING_WORLD_CENTER +
     sinf(angle * M_DTOR) * LOADING_ORBIT_RADIUS;
   loading_camera.position.z = LOADING_WORLD_CENTER +
@@ -292,13 +316,18 @@ void updateLoadingCamera() {
   loading_camera.position.y = LOADING_CAMERA_HEIGHT +
     low_orbit * LOADING_CAMERA_BOB;
   loading_camera.yaw = angle;
-  /* A steeper look direction lifts the landscape in the loading composition
-     and keeps it clear of the status deck at the bottom of the screen. */
-  loading_camera.pitch = -30.f;
+  /* Aim into the near/middle terrain rather than across the whole map. This
+     crops the square world boundary out of the composition and gives ridges
+     a stronger silhouette above the status deck. */
+  loading_camera.pitch = -36.f;
   loading_camera.camera_mode = CAMERA_FIRST_PERSON;
   camera_position = loading_camera.position;
 
-  updateVisibleColumnsFor(0, &loading_camera, camera_position, CAMERA_VIEW_SOLO);
+  /* Keep the visible set in lockstep with the camera. The loading-specific
+     column cap is already the substantial performance saving here; caching
+     this step made the slow orbit visibly jump at each refresh. */
+  updateVisibleColumnsFor(0, &loading_camera, camera_position,
+    CAMERA_VIEW_LOADING);
   updateCameraMatricesFor(0, &loading_camera, camera_position, FALSE);
   loading_preview_frame++;
 }
@@ -320,7 +349,9 @@ u8 loadingPreviewProgress() {
 
 void loadCameraMatrices(u8 player_num) {
   u8 projection = CAMERA_VIEW_SOLO;
-  if (!loading_preview_active) {
+  if (loading_preview_active) {
+    projection = CAMERA_VIEW_LOADING;
+  } else {
     projection = active_player_count >= 3 ? CAMERA_VIEW_FOUR_PLAYER :
       (active_player_count == 2 ? CAMERA_VIEW_TWO_PLAYER : CAMERA_VIEW_SOLO);
   }
