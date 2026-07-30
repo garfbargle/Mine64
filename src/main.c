@@ -12,10 +12,20 @@
 #include "day_cycle.h"
 
 void callbackGfx(int pendingGfx) {
-  if(pendingGfx < 2) {
+  /*
+   * The preview deliberately draws 96 detailed columns.  Since caves and ore
+   * were added, one cinematic task can outlive a video retrace; queuing a
+   * second task in that case lets NuSystem rotate framebuffers while the RDP
+   * is still writing the older one.  That presents as torn terrain followed
+   * by corrupt UI, and eventually starves the loading transition.  Submit
+   * only after the previous task has completely drained.  This keeps the
+   * original camera and visible-column budget, while allowing the display to
+   * pace itself to the actual RSP/RDP cost.
+   */
+  if (pendingGfx == 0) {
     /* A mesh arena can only be recycled when no submitted task can still
        reference its display lists. */
-    draw(pendingGfx == 0);
+    draw(TRUE);
   }
 
   if (current_screen == GENERATING) {
