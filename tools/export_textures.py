@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from generate_assets import PALETTES, tile
-from import_textures import decode_png, median_cut
+from import_textures import decode_png, median_cut, usable_tile_pixels
 
 TILE_SIZE = 16
 COLUMNS = 4
@@ -71,6 +71,7 @@ def main():
                             [origin_x + min(cell_width - 1, (x * cell_width + cell_width // 2) // TILE_SIZE)]
                 for y in range(TILE_SIZE) for x in range(TILE_SIZE)
             ]
+            tile_pixels = usable_tile_pixels(name, tile_pixels)
             palette = median_cut(tile_pixels, 16)
         else:
             palette = PALETTES[name]

@@ -1,4 +1,5 @@
 #include "world.h"
+#include "day_cycle.h"
 #include "blocks.h"
 #include "noise.h"
 #include "math.h"
@@ -6,7 +7,7 @@
 
 u8 blocks[NUM_BLOCKS];
 
-#define SEA_LEVEL 10
+#define SEA_LEVEL 8
 #define MIN_SURFACE_HEIGHT 6
 #define MAX_SURFACE_HEIGHT (MAX_Y - 2)
 
@@ -40,10 +41,50 @@ static int terrainHeight(int x, int z) {
    * mountain regions.  This leaves room for beaches and low grasslands. */
   height = 5 + (int)(continents * 11.0f) + (int)((rolling - 0.5f) * 5.0f);
   if (mountain_mask > 0.51f) {
-    height += (int)((mountain_mask - 0.51f) * ridges * 64.0f);
+    height += (int)((mountain_mask - 0.51f) * ridges * 40.0f);
   }
 
   return clampHeight(height);
+}
+
+static int isLake(int x, int z, int natural_height) {
+  float basin = perlin2d(x - 719, z + 337, 0.018f, 3);
+  float moisture = perlin2d(x + 281, z - 647, 0.033f, 2);
+
+  /* Large, low-frequency islands in the basin signal become lakes only in
+   * low-to-mid terrain.  That avoids flat mountaintop puddles. */
+  return natural_height <= SEA_LEVEL + 5 &&
+    basin > 0.66f && moisture > 0.55f;
+}
+
+static int isRiver(int x, int z, int natural_height) {
+  float watershed = perlin2d(x + 157, z - 491, 0.012f, 3);
+  float channel = absolute(perlin2d(x - 383, z + 73, 0.024f, 2) - 0.5f);
+
+  /* An iso-line in a second noise field provides long, gently winding river
+   * courses.  The watershed mask breaks it into distinct drainages instead
+   * of a regular grid of channels. */
+  return natural_height > SEA_LEVEL && natural_height <= SEA_LEVEL + 5 &&
+    watershed > 0.58f && channel < 0.022f;
+}
+
+static int shapedSurfaceHeight(int x, int z, int *water_level) {
+  int natural_height = terrainHeight(x, z);
+
+  *water_level = -1;
+  if (natural_height <= SEA_LEVEL) {
+    *water_level = SEA_LEVEL;
+    return natural_height;
+  }
+  if (isLake(x, z, natural_height)) {
+    *water_level = SEA_LEVEL;
+    return SEA_LEVEL - 2;
+  }
+  if (isRiver(x, z, natural_height)) {
+    *water_level = SEA_LEVEL;
+    return SEA_LEVEL - 1;
+  }
+  return natural_height;
 }
 
 static int isCave(int x, int y, int z, int surface_height) {
@@ -58,7 +99,7 @@ static int isCave(int x, int y, int z, int surface_height) {
 
   chambers = perlin3d(x + 71, y, z - 191, 0.105f, 3);
   passages = perlin3d(x - 389, y + 53, z + 127, 0.165f, 2);
-  return chambers > 0.625f && passages > 0.53f;
+  return chambers > 0.68f && passages > 0.58f;
 }
 
 void generateLeafHeights(int *heights) {
@@ -146,25 +187,28 @@ u8 tryPlantTree(u8 x, u8 y, u8 z) {
 
 void initWorld() {
   int x, y, z;
-  int height, dirt_depth;
+  int height, dirt_depth, water_level;
   float biome, slope;
   u8 block, do_sand, exposed_stone;
 
   seed = (u32) osGetTime();
+  setDayCycleWorldTicks(DAY_CYCLE_START_TICK);
   initTrees();
 
   for (x = 0; x < MAX_X; x++) {
     for (z = 0; z < MAX_Z; z++) {
-      height = terrainHeight(x, z);
+      height = shapedSurfaceHeight(x, z, &water_level);
       biome = perlin2d(x + 883, z - 521, 0.025f, 3);
       slope = absolute((float)(terrainHeight(x + 1, z) - terrainHeight(x - 1, z))) +
               absolute((float)(terrainHeight(x, z + 1) - terrainHeight(x, z - 1)));
-      do_sand = height <= SEA_LEVEL + 1 || biome < 0.38f;
+      do_sand = water_level >= 0 || height <= SEA_LEVEL + 2 || biome < 0.38f;
       exposed_stone = height > 21 || slope >= 5;
       dirt_depth = 3 + (int)(biome * 2.0f);
 
       for (y = 0; y < MAX_Y; y++) {
-        if (y >= height)  {
+        if (y >= height && y <= water_level) {
+          block = WATER;
+        } else if (y >= height)  {
           block = AIR;
         } else if (isCave(x, y, z, height)) {
           block = AIR;

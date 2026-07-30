@@ -67,7 +67,7 @@ static u8 cameraPointSolid(Vector3 position) {
     return TRUE;
   }
   return y < MAX_Y &&
-    blocks[x * MAX_Y * MAX_Z + y * MAX_Z + z] != AIR;
+    BLOCK_IS_SOLID(blocks[x * MAX_Y * MAX_Z + y * MAX_Z + z]);
 }
 
 static u8 cameraSpaceClear(Vector3 position) {
@@ -292,7 +292,9 @@ void updateLoadingCamera() {
   loading_camera.position.y = LOADING_CAMERA_HEIGHT +
     low_orbit * LOADING_CAMERA_BOB;
   loading_camera.yaw = angle;
-  loading_camera.pitch = -22.f;
+  /* A steeper look direction lifts the landscape in the loading composition
+     and keeps it clear of the status deck at the bottom of the screen. */
+  loading_camera.pitch = -30.f;
   loading_camera.camera_mode = CAMERA_FIRST_PERSON;
   camera_position = loading_camera.position;
 

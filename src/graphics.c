@@ -10,6 +10,7 @@
 #include "quads.h"
 #include "cube.h"
 #include "textures.h"
+#include "day_cycle.h"
 
 #define CROSSHAIR_SIZE 10
 #define HOTBAR_SLOT_COUNT INVENTORY_COLUMNS
@@ -19,6 +20,11 @@
 #define HELD_PREVIEW_SIZE 32
 #define INVENTORY_SLOT_SIZE 18
 #define INVENTORY_ICON_SIZE 14
+#define SKY_BANDS 6
+#define CELESTIAL_DISTANCE_SOLO 11000.f
+#define CELESTIAL_DISTANCE_COOP 7000.f
+#define SUN_SIZE 430.f
+#define MOON_SIZE 360.f
 
 Gfx *dlp;
 u32 dl_no = 0;
@@ -39,6 +45,13 @@ static Gfx empty_column_display_list[] = {
 
 static Mtx c_models[NUM_BLOCKS / BLOCKS_PER_CHUNK];
 static Mtx b_models[CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE];
+
+/* Lighting and sky geometry are both frame-buffered just like the camera:
+   the RSP can still be drawing the previous frame when the CPU prepares the
+   next one. */
+static Lights1 world_lights[NUM_DISPLAY_LISTS][MAX_PLAYERS];
+static Lights0 preview_lights[NUM_DISPLAY_LISTS];
+static Vtx celestial_verts[NUM_DISPLAY_LISTS][MAX_PLAYERS][8];
 
 static Mtx dropped_item_translate[NUM_DISPLAY_LISTS][MAX_DROPPED_ITEMS];
 static Mtx dropped_item_rotate[NUM_DISPLAY_LISTS][MAX_DROPPED_ITEMS];
@@ -175,6 +188,8 @@ static Gfx steve_eyes_display_list[] = {
 
 static Texture *loaded_texture;
 
+void loadTexture(Texture *texture);
+
 static Vp full_viewport = {
     SCREEN_WD*2, SCREEN_HT*2, G_MAXZ/2, 0,
     SCREEN_WD*2, SCREEN_HT*2, G_MAXZ/2, 0,
@@ -228,6 +243,139 @@ static void selectPlayerViewport(u8 player_num) {
   }
   gDPSetScissor(dlp++, G_SC_NON_INTERLACE, x, y,
     x + playerViewportWidth(), y + playerViewportHeight());
+}
+
+static void setLightColor(Light *light, SkyColor color) {
+  light->l.col[0] = color.r;
+  light->l.col[1] = color.g;
+  light->l.col[2] = color.b;
+  light->l.colc[0] = color.r;
+  light->l.colc[1] = color.g;
+  light->l.colc[2] = color.b;
+}
+
+static void setAmbientColor(Ambient *ambient, SkyColor color) {
+  ambient->l.col[0] = color.r;
+  ambient->l.col[1] = color.g;
+  ambient->l.col[2] = color.b;
+  ambient->l.colc[0] = color.r;
+  ambient->l.colc[1] = color.g;
+  ambient->l.colc[2] = color.b;
+}
+
+static void setWorldLight(u8 player_num) {
+  Lights1 *lights = &world_lights[dl_no][player_num];
+  Vector3 direction = dayCycleLightDirection();
+
+  setAmbientColor(&lights->a, dayCycleAmbientLight());
+  setLightColor(&lights->l[0], dayCycleDirectLight());
+  lights->l[0].l.dir[0] = direction.x * 127;
+  lights->l[0].l.dir[1] = direction.y * 127;
+  lights->l[0].l.dir[2] = direction.z * 127;
+}
+
+static void setPreviewLight() {
+  Lights0 *lights = &preview_lights[dl_no];
+  SkyColor preview_ambient = {155, 174, 196};
+  SkyColor no_direct_light = {0, 0, 0};
+
+  /* The loading orbit can expose almost every column at once.  It keeps a
+     pleasant, evenly lit terrain preview, but deliberately has no moving
+     directional light for the RSP to evaluate on each submitted vertex. */
+  setAmbientColor(&lights->a, preview_ambient);
+  setLightColor(&lights->l[0], no_direct_light);
+}
+
+static void drawSkyGradient(u8 player_num) {
+  u8 band;
+  u32 x = playerViewportX(player_num);
+  u32 y = playerViewportY(player_num);
+  u32 width = playerViewportWidth();
+  u32 height = playerViewportHeight();
+
+  gDPSetCycleType(dlp++, G_CYC_FILL);
+  gDPSetRenderMode(dlp++, G_RM_NOOP, G_RM_NOOP2);
+  for (band = 0; band < SKY_BANDS; band++) {
+    SkyColor color = dayCycleSkyColor((band * 255 + 127) / SKY_BANDS);
+    u32 top = y + band * height / SKY_BANDS;
+    u32 bottom = y + (band + 1) * height / SKY_BANDS - 1;
+    u16 packed = GPACK_RGBA5551(color.r, color.g, color.b, 1);
+
+    gDPSetFillColor(dlp++, (packed << 16) | packed);
+    gDPFillRectangle(dlp++, x, top, x + width - 1, bottom);
+  }
+  gDPPipeSync(dlp++);
+}
+
+static void setCelestialVertex(Vtx *vertex, Vector3 point, u16 s, u16 t) {
+  vertex->v.ob[0] = point.x;
+  vertex->v.ob[1] = point.y;
+  vertex->v.ob[2] = point.z;
+  vertex->v.flag = 0;
+  vertex->v.tc[0] = s;
+  vertex->v.tc[1] = t;
+  vertex->v.cn[0] = 255;
+  vertex->v.cn[1] = 255;
+  vertex->v.cn[2] = 255;
+  vertex->v.cn[3] = 255;
+}
+
+static void makeCelestialQuad(Vtx *vertices, Vector3 center, Vector3 right,
+    Vector3 up, float size) {
+  Vector3 horizontal = mul(right, size);
+  Vector3 vertical = mul(up, size);
+  Vector3 top_left = add(add(center, vertical), mul(horizontal, -1.f));
+  Vector3 top_right = add(add(center, vertical), horizontal);
+  Vector3 bottom_right = add(add(center, mul(vertical, -1.f)), horizontal);
+  Vector3 bottom_left = add(add(center, mul(vertical, -1.f)), mul(horizontal, -1.f));
+
+  setCelestialVertex(&vertices[0], top_left, 0, 0);
+  setCelestialVertex(&vertices[1], top_right, 16 << 5, 0);
+  setCelestialVertex(&vertices[2], bottom_right, 16 << 5, 16 << 5);
+  setCelestialVertex(&vertices[3], bottom_left, 0, 16 << 5);
+}
+
+static Texture *moonTexture() {
+  static Texture *moon_textures[] = {
+    &moon_0_texture, &moon_1_texture, &moon_2_texture, &moon_3_texture,
+    &moon_4_texture, &moon_5_texture, &moon_6_texture, &moon_7_texture
+  };
+  return moon_textures[dayCycleMoonPhase()];
+}
+
+static void drawCelestialBodies(u8 player_num) {
+  Player *player = &players[player_num];
+  Vector3 sun = dayCycleSunDirection();
+  Vector3 moon = mul(sun, -1.f);
+  Vector3 camera = playerCameraPosition(player_num);
+  Vector3 right = rotateY((Vector3) {1, 0, 0}, -player->yaw);
+  Vector3 up = rotateY(rotateX((Vector3) {0, 1, 0}, player->pitch), -player->yaw);
+  Vtx *vertices = celestial_verts[dl_no][player_num];
+  float distance = active_player_count > 1 ? CELESTIAL_DISTANCE_COOP :
+    CELESTIAL_DISTANCE_SOLO;
+
+  gSPClearGeometryMode(dlp++, G_CULL_BACK | G_LIGHTING);
+  gDPSetCombineMode(dlp++, G_CC_MODULATERGB, G_CC_MODULATERGB);
+  gDPSetRenderMode(dlp++, G_RM_AA_ZB_TEX_EDGE, G_RM_AA_ZB_TEX_EDGE2);
+  gDPSetAlphaCompare(dlp++, G_AC_THRESHOLD);
+
+  if (sun.y >= 0) {
+    makeCelestialQuad(vertices, add(camera, mul(sun, distance)),
+      right, up, SUN_SIZE);
+    loadTexture(&sun_texture);
+    gSPVertex(dlp++, vertices, 4, 0);
+    gSP1Quadrangle(dlp++, 0, 1, 2, 3, 0);
+  }
+  if (moon.y >= 0) {
+    makeCelestialQuad(vertices + 4, add(camera, mul(moon, distance)),
+      right, up, MOON_SIZE);
+    loadTexture(moonTexture());
+    gSPVertex(dlp++, vertices + 4, 4, 0);
+    gSP1Quadrangle(dlp++, 0, 1, 2, 3, 0);
+  }
+
+  gDPSetAlphaCompare(dlp++, G_AC_NONE);
+  loaded_texture = NULL;
 }
 
 static Gfx setup_display_list[] = {
@@ -756,23 +904,42 @@ void drawWorld() {
 
   gSPDisplayList(dlp++, setup_display_list);
 
-  clearBuffers(cinematic ?
-    GPACK_RGBA5551(42, 78, 130, 1) : GPACK_RGBA5551(158, 207, 255, 1));
+  if (cinematic) {
+    clearBuffers(GPACK_RGBA5551(42, 78, 130, 1));
+  } else {
+    SkyColor zenith = dayCycleSkyColor(0);
+    clearBuffers(GPACK_RGBA5551(zenith.r, zenith.g, zenith.b, 1));
+  }
 
   for (player_num = 0; player_num < viewer_count; player_num++) {
-    gSPDisplayList(dlp++, draw_setup_display_list);
     if (viewer_count > 1) {
       selectPlayerViewport(player_num);
     } else {
       gSPViewport(dlp++, &full_viewport);
       gDPSetScissor(dlp++, G_SC_NON_INTERLACE, 0, 0, SCREEN_WD, SCREEN_HT);
     }
+    if (!cinematic) {
+      drawSkyGradient(player_num);
+    }
+    gSPDisplayList(dlp++, draw_setup_display_list);
     loadCameraMatrices(player_num);
+    if (!cinematic) {
+      drawCelestialBodies(player_num);
+    }
+    gSPSetGeometryMode(dlp++, G_CULL_BACK | G_LIGHTING);
+    if (cinematic) {
+      setPreviewLight();
+      gSPSetLights0(dlp++, preview_lights[dl_no]);
+    } else {
+      setWorldLight(player_num);
+      gSPSetLights1(dlp++, world_lights[dl_no][player_num]);
+    }
     for (i = 0; i < NUM_TEXTURES; i++) {
       loadTexture(textures[i]->texture);
       drawTextured(i, player_num);
     }
     if (!cinematic) {
+      gSPClearGeometryMode(dlp++, G_LIGHTING);
       drawFallingTrees();
       drawDroppedItems();
     }

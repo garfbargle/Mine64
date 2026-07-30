@@ -8,6 +8,7 @@
 #include "player.h"
 #include "trees.h"
 #include "world.h"
+#include "day_cycle.h"
 
 static FATFS fs;
 
@@ -17,7 +18,7 @@ static FATFS fs;
 #define LEGACY_COOP_HEADER_SIZE 256
 #define LEGACY_MAX_PLAYERS 2
 #define BUFFER_LEN 512
-#define SAVE_VERSION 8
+#define SAVE_VERSION 9
 
 typedef struct {
   u32 magic_num;
@@ -48,8 +49,21 @@ typedef struct {
   u32 save_count;
   u32 player_count;
   u32 checksum;
+  u32 world_ticks;
   SavedPlayer player[MAX_PLAYERS];
 } Header;
+
+/* Version 8 is the current four-player header before the world clock.  Keep
+   it separate so its packed world data and checksum remain readable. */
+typedef struct {
+  u32 magic_num;
+  u32 version;
+  u32 file_num;
+  u32 save_count;
+  u32 player_count;
+  u32 checksum;
+  SavedPlayer player[MAX_PLAYERS];
+} HeaderV8;
 
 /* Versions 4-7 stored exactly two SavedPlayer records in a 256-byte header.
    Keep this ABI frozen so expanding the live player array never makes an old
@@ -193,6 +207,14 @@ static u32 checksumSave(SavedPlayer *players_to_save, u32 player_count,
 
   for (index = 0; index < NUM_BLOCKS; index++) {
     checksum = checksumByte(checksum, blocks[index]);
+  }
+  return checksum;
+}
+
+static u32 checksumWorldTicks(u32 checksum, u32 world_ticks) {
+  u8 byte;
+  for (byte = 0; byte < 4; byte++) {
+    checksum = checksumByte(checksum, world_ticks >> (byte * 8));
   }
   return checksum;
 }
@@ -552,12 +574,14 @@ u8 saveGame() {
   header->file_num = game_file_num;
   header->save_count = save_count + 1;
   header->player_count = active_player_count;
+  header->world_ticks = dayCycleWorldTicks();
   for (player_num = 0; player_num < active_player_count; player_num++) {
     savePlayerState(&header->player[player_num], &players[player_num]);
   }
   saveWorldDimensions(header);
-  header->checksum = checksumTrees(
-    checksumSave(header->player, header->player_count, MAX_PLAYERS));
+  header->checksum = checksumWorldTicks(checksumTrees(
+    checksumSave(header->player, header->player_count, MAX_PLAYERS)),
+    header->world_ticks);
 
   cursor_pos = sizeof(Header);
   while (cursor_pos < BUFFER_LEN) {
@@ -621,6 +645,7 @@ u8 saveGame() {
 void loadGame() {
   FIL file;
   Header *header = (Header *) file_buffer;
+  HeaderV8 *header_v8 = (HeaderV8 *) file_buffer;
   HeaderV7 *header_v7 = (HeaderV7 *) file_buffer;
   HeaderV3 *header_v3 = (HeaderV3 *) file_buffer;
   HeaderV2 *header_v2 = (HeaderV2 *) file_buffer;
@@ -663,13 +688,19 @@ void loadGame() {
       legacy_header->version > SAVE_VERSION ||
       (legacy_header->version == SAVE_VERSION &&
        buffer_bytes_read < sizeof(Header)) ||
+      (legacy_header->version == 8 &&
+       buffer_bytes_read < sizeof(HeaderV8)) ||
       (legacy_header->version == 7 &&
        !savedWorldDimensionsMatch(header_v7->player)) ||
       (legacy_header->version == SAVE_VERSION &&
        !savedWorldDimensionsMatch(header->player)) ||
+      (legacy_header->version == 8 &&
+       !savedWorldDimensionsMatch(header_v8->player)) ||
       (legacy_header->version >= 1 &&
        ((legacy_header->version == SAVE_VERSION &&
          (header->player_count < 1 || header->player_count > MAX_PLAYERS)) ||
+        (legacy_header->version == 8 &&
+         (header_v8->player_count < 1 || header_v8->player_count > MAX_PLAYERS)) ||
         (legacy_header->version < SAVE_VERSION &&
          (header_v1->player_count < 1 ||
           header_v1->player_count > LEGACY_MAX_PLAYERS))))) {
@@ -729,6 +760,21 @@ void loadGame() {
     full_inventory_saved = TRUE;
     tree_records_saved = TRUE;
     cursor_pos = BUFFER_LEN;
+    setDayCycleWorldTicks(header->world_ticks);
+  } else if (legacy_header->version == 8) {
+    expected_checksum = header_v8->checksum;
+    computed_checksum = checksumPlayers(header_v8->player,
+      header_v8->player_count, MAX_PLAYERS);
+    for (player_num = 0; player_num < header_v8->player_count; player_num++) {
+      restorePlayerState(&players[player_num], header_v8->player[player_num].position,
+        header_v8->player[player_num].pitch, header_v8->player[player_num].yaw, AIR);
+      restoreSavedInventory(&players[player_num], &header_v8->player[player_num]);
+    }
+    active_player_count = header_v8->player_count;
+    full_inventory_saved = TRUE;
+    tree_records_saved = TRUE;
+    cursor_pos = BUFFER_LEN;
+    setDayCycleWorldTicks(DAY_CYCLE_START_TICK);
   } else if (legacy_header->version >= 4) {
     expected_checksum = header_v7->checksum;
     computed_checksum = checksumPlayers(header_v7->player,
@@ -831,6 +877,10 @@ void loadGame() {
     cursor_pos = LEGACY_HEADER_PAGE_SIZE;
   }
 
+  if (legacy_header->version < 8) {
+    setDayCycleWorldTicks(DAY_CYCLE_START_TICK);
+  }
+
   if (!full_inventory_saved) {
     resetPlayerInventory(&players[0]);
     restoreInventoryItem(&players[0], WOOD, wood_count[0]);
@@ -880,10 +930,10 @@ void loadGame() {
     packed = file_buffer[cursor_pos++];
     blocks_ptr[0] = packed >> 4;
     blocks_ptr[1] = packed & 0xF;
-    if (blocks_ptr[0] > BLOCK_TYPE_COUNT) {
+    if (!BLOCK_IS_VALID(blocks_ptr[0])) {
       blocks_ptr[0] = AIR;
     }
-    if (blocks_ptr[1] > BLOCK_TYPE_COUNT) {
+    if (!BLOCK_IS_VALID(blocks_ptr[1])) {
       blocks_ptr[1] = AIR;
     }
     if (full_inventory_saved) {
@@ -922,6 +972,10 @@ void loadGame() {
   }
 
   f_close(&file);
+  if (legacy_header->version == SAVE_VERSION) {
+    computed_checksum = checksumWorldTicks(computed_checksum,
+      header->world_ticks);
+  }
   if (!read_ok ||
       (full_inventory_saved && computed_checksum != expected_checksum) ||
       (tree_records_saved && !treesValid())) {

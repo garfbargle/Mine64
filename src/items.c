@@ -101,7 +101,7 @@ static u8 solidBlockAt(float x, float y, float z) {
   if (by >= MAX_Y) {
     return FALSE;
   }
-  return blocks[bx * MAX_Y * MAX_Z + by * MAX_Z + bz] != AIR;
+  return BLOCK_IS_SOLID(blocks[bx * MAX_Y * MAX_Z + by * MAX_Z + bz]);
 }
 
 static void updateDropPhysics(DroppedItem *drop, float delta) {

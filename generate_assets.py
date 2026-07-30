@@ -12,8 +12,9 @@ ASSET_DIR = Path("assets")
 
 
 def rgba5551(rgb):
-    r, g, b = rgb
-    return ((r >> 3) << 11) | ((g >> 3) << 6) | ((b >> 3) << 1) | 1
+    r, g, b = rgb[:3]
+    alpha = rgb[3] if len(rgb) == 4 else 255
+    return ((r >> 3) << 11) | ((g >> 3) << 6) | ((b >> 3) << 1) | (1 if alpha else 0)
 
 
 def pack_nibbles(values):
@@ -93,6 +94,9 @@ def tile(kind, x, y):
         return 2 + ((shifted_x // 4 + y // 4) & 1)
     if kind == "sand":
         return int(SAND[y][x])
+    if kind == "water":
+        wave = ((x + y * 2) // 4) & 3
+        return 1 + (wave if wave < 3 else 1)
     if kind == "wood_top":
         ring = max(abs(x - 7), abs(y - 7))
         return 1 + ((ring // 2 + (x // 6)) & 2)
@@ -111,6 +115,34 @@ def tile(kind, x, y):
         if y % 4 == 0 or shifted_x % 8 == 0:
             return 1
         return 2 + ((shifted_x // 4 + y // 4) & 1)
+    if kind == "sun":
+        # A subtle cross-shaped corona reads clearly at N64 resolution without
+        # shimmering like a noisy radial gradient.
+        distance = abs(x - 7) + abs(y - 7)
+        if distance < 4:
+            return 3
+        if distance < 7:
+            return 2
+        return 1
+    if kind.startswith("moon_"):
+        phase = int(kind.rsplit("_", 1)[1])
+        dx = x - 7.5
+        dy = y - 7.5
+        if dx * dx + dy * dy > 45:
+            return 0
+        # The phases progress full, waning, new, then waxing.  Deliberately
+        # blocky edges preserve the project’s original pixel-art language.
+        widths = (8, 6, 4, 2, 0, 2, 4, 6)
+        width = widths[phase]
+        if phase == 0:
+            return 2 + ((x + y) & 1)
+        if phase == 4 or abs(dx) > width:
+            return 0
+        if phase < 4 and dx > 0:
+            return 0
+        if phase > 4 and dx < 0:
+            return 0
+        return 2 + ((x + y) & 1)
     raise ValueError(f"unknown tile: {kind}")
 
 
@@ -126,6 +158,16 @@ PALETTES = {
     "leaves": [(24, 62, 30), (35, 84, 39), (48, 105, 47), (68, 126, 57)],
     "planks": [(91, 55, 27), (120, 75, 36), (152, 99, 50), (184, 127, 69)],
     "bricks": [(93, 43, 34), (126, 57, 45), (157, 73, 57), (188, 92, 72)],
+    "water": [(22, 62, 112), (31, 88, 148), (47, 116, 178), (72, 145, 201)],
+    "sun": [(255, 175, 56), (255, 207, 76), (255, 239, 139)],
+    "moon_0": [(0, 0, 0, 0), (121, 137, 166), (186, 200, 218), (226, 231, 236)],
+    "moon_1": [(0, 0, 0, 0), (121, 137, 166), (186, 200, 218), (226, 231, 236)],
+    "moon_2": [(0, 0, 0, 0), (121, 137, 166), (186, 200, 218), (226, 231, 236)],
+    "moon_3": [(0, 0, 0, 0), (121, 137, 166), (186, 200, 218), (226, 231, 236)],
+    "moon_4": [(0, 0, 0, 0), (121, 137, 166), (186, 200, 218), (226, 231, 236)],
+    "moon_5": [(0, 0, 0, 0), (121, 137, 166), (186, 200, 218), (226, 231, 236)],
+    "moon_6": [(0, 0, 0, 0), (121, 137, 166), (186, 200, 218), (226, 231, 236)],
+    "moon_7": [(0, 0, 0, 0), (121, 137, 166), (186, 200, 218), (226, 231, 236)],
 }
 
 

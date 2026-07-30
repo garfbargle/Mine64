@@ -25,8 +25,15 @@ static u8 selected_option = 0;
 static u8 menu_preview_requested = TRUE;
 static char world_name_edit[WORLD_NAME_LENGTH + 1];
 static u8 world_name_cursor;
-static char world_name_characters[] =
-  " ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+static u8 world_name_key_row;
+static u8 world_name_key_column;
+
+static const char *world_name_keyboard[] = {
+  "ABCDEFGHIJ",
+  "KLMNOPQRST",
+  "UVWXYZ0123",
+  "456789"
+};
 
 static char *info_text[] = {
   "Mine64 v0.3",
@@ -51,15 +58,6 @@ static char *generating_text[] = {
 
 static char *loading_text[] = {
   "Loading world..."
-};
-
-static char *world_naming_text[] = {
-  "Name your world",
-  "Up Down: Letter",
-  "Left Right: Cursor",
-  "A: Clear Letter",
-  "Start: Create",
-  ""
 };
 
 static char *saved_text[] = {
@@ -179,17 +177,6 @@ static u32 stringWidth(const char *text) {
   return width;
 }
 
-static u8 worldNameCharacterIndex(char character) {
-  u8 i;
-
-  for (i = 0; world_name_characters[i]; i++) {
-    if (world_name_characters[i] == character) {
-      return i;
-    }
-  }
-  return 0;
-}
-
 void drawString(const char *text, u32 x, u32 y) {
   while (*text) {
     if (*text != ' ') {
@@ -197,6 +184,115 @@ void drawString(const char *text, u32 x, u32 y) {
     }
     x += charWidth(*text);
     text++;
+  }
+}
+
+static void setMenuFillColor(u8 r, u8 g, u8 b) {
+  u16 color = GPACK_RGBA5551(r, g, b, 1);
+  gDPSetFillColor(dlp++, (color << 16) | color);
+}
+
+static void drawCenteredString(const char *text, u32 y) {
+  drawString(text, (SCREEN_WD - stringWidth(text)) / 2, y);
+}
+
+static u8 worldNameLength() {
+  u8 length = WORLD_NAME_LENGTH;
+
+  while (length > 0 && world_name_edit[length - 1] == ' ') {
+    length--;
+  }
+  return length;
+}
+
+static u8 worldNameKeyColumns(u8 row) {
+  u8 columns = 0;
+
+  while (world_name_keyboard[row][columns]) {
+    columns++;
+  }
+  return columns;
+}
+
+static void drawWorldNaming() {
+  u8 i;
+  u8 row;
+  u8 column;
+  u32 slot_x = 58;
+  u32 key_x = 75;
+  u32 key_y = 116;
+
+  /* This is intentionally a solid, arcade-like card: it stays legible over
+     every terrain preview while letting the spinning world remain visible. */
+  gDPPipeSync(dlp++);
+  gDPSetCycleType(dlp++, G_CYC_FILL);
+  gDPSetRenderMode(dlp++, G_RM_NOOP, G_RM_NOOP2);
+  setMenuFillColor(8, 19, 33);
+  gDPFillRectangle(dlp++, 29, 26, 290, 214);
+  setMenuFillColor(72, 168, 190);
+  gDPFillRectangle(dlp++, 29, 26, 290, 28);
+  gDPFillRectangle(dlp++, 29, 212, 290, 214);
+  gDPFillRectangle(dlp++, 29, 26, 31, 214);
+  gDPFillRectangle(dlp++, 288, 26, 290, 214);
+
+  setMenuFillColor(16, 43, 62);
+  gDPFillRectangle(dlp++, 47, 67, 272, 98);
+  setMenuFillColor(104, 204, 210);
+  gDPFillRectangle(dlp++, 47, 67, 272, 68);
+  gDPFillRectangle(dlp++, 47, 97, 272, 98);
+
+  for (i = 0; i < WORLD_NAME_LENGTH; i++) {
+    u32 x = slot_x + i * 17;
+    /* At the 12-character limit, the insertion point sits just beyond the
+       last slot; retaining the final highlight keeps that state visible. */
+    u8 selected = i == world_name_cursor ||
+      (world_name_cursor == WORLD_NAME_LENGTH &&
+        i == WORLD_NAME_LENGTH - 1);
+
+    setMenuFillColor(selected ? 230 : 34, selected ? 212 : 79,
+      selected ? 90 : 102);
+    gDPFillRectangle(dlp++, x, 76, x + 14, 92);
+    setMenuFillColor(selected ? 82 : 12, selected ? 72 : 29,
+      selected ? 21 : 44);
+    gDPFillRectangle(dlp++, x + 2, 78, x + 12, 90);
+  }
+
+  for (row = 0; row < sizeof(world_name_keyboard) / sizeof(char *); row++) {
+    for (column = 0; world_name_keyboard[row][column]; column++) {
+      u32 x = key_x + column * 17;
+      u32 y = key_y + row * 16;
+      u8 selected = row == world_name_key_row &&
+        column == world_name_key_column;
+
+      setMenuFillColor(selected ? 102 : 31, selected ? 214 : 91,
+        selected ? 192 : 122);
+      gDPFillRectangle(dlp++, x, y, x + 15, y + 13);
+      setMenuFillColor(selected ? 20 : 10, selected ? 53 : 25,
+        selected ? 48 : 37);
+      gDPFillRectangle(dlp++, x + 2, y + 2, x + 13, y + 11);
+    }
+  }
+  gDPPipeSync(dlp++);
+
+  beginText();
+  drawCenteredString("NAME WORLD", 39);
+  drawCenteredString("YOUR WORLD NAME", 57);
+  for (i = 0; i < WORLD_NAME_LENGTH; i++) {
+    if (world_name_edit[i] != ' ') {
+      drawChar(world_name_edit[i], slot_x + i * 17 + 4, 80);
+    }
+  }
+  drawCenteredString("PICK A LETTER", 103);
+  for (row = 0; row < sizeof(world_name_keyboard) / sizeof(char *); row++) {
+    for (column = 0; world_name_keyboard[row][column]; column++) {
+      drawChar(world_name_keyboard[row][column], key_x + column * 17 + 4,
+        key_y + row * 16 + 3);
+    }
+  }
+  drawCenteredString("A: ADD   B: DELETE", 184);
+  drawCenteredString("C LR: CURSOR   START: CREATE", 197);
+  if (!saving_available) {
+    drawCenteredString("NO CART SAVE DEVICE", 205);
   }
 }
 
@@ -239,10 +335,8 @@ void drawMenu() {
       y_start = 18;
       break;
     case WORLD_NAMING:
-      text = world_naming_text;
-      n_lines = sizeof(world_naming_text) / sizeof(char *);
-      y_start = 62;
-      break;
+      drawWorldNaming();
+      return;
     case GAME:
       if (save_failed_message > 0) {
         text = save_failed_text;
@@ -343,15 +437,6 @@ void drawMenu() {
     }
   }
 
-  if (current_screen == WORLD_NAMING) {
-    x = (SCREEN_WD - stringWidth(world_name_edit)) / 2;
-    drawString(world_name_edit, x, 130);
-    for (j = 0; j < world_name_cursor; j++) {
-      x += charWidth(world_name_edit[j]);
-    }
-    drawChar('^', x + 1, 140);
-  }
-  
   if (current_screen == MENU) {
     option_y = option_lines[selected_option] * 12 + y_start;
     drawChar('>', SCREEN_WD / 2 - 40 - charWidth('>'), option_y);
@@ -414,16 +499,53 @@ u8 menuSelectedWorld() {
 
 void beginWorldNaming() {
   u8 i;
+  const char *default_name = "NEW WORLD";
 
   for (i = 0; i < WORLD_NAME_LENGTH; i++) {
     world_name_edit[i] = ' ';
   }
-  for (i = 0; i < WORLD_NAME_LENGTH && world_names[selected_option][i]; i++) {
-    world_name_edit[i] = world_names[selected_option][i];
+  /* Empty save slots inherit a storage-side "World N" label for the menu.
+     A new-world editor should instead start with an obvious editable name. */
+  for (i = 0; i < WORLD_NAME_LENGTH && default_name[i]; i++) {
+    world_name_edit[i] = default_name[i];
   }
   world_name_edit[WORLD_NAME_LENGTH] = 0;
-  world_name_cursor = 0;
+  world_name_cursor = worldNameLength();
+  world_name_key_row = 0;
+  world_name_key_column = 0;
   current_screen = WORLD_NAMING;
+}
+
+void worldNameKeyboardLeft() {
+  u8 columns = worldNameKeyColumns(world_name_key_row);
+
+  world_name_key_column = world_name_key_column == 0 ? columns - 1 :
+    world_name_key_column - 1;
+}
+
+void worldNameKeyboardRight() {
+  u8 columns = worldNameKeyColumns(world_name_key_row);
+
+  world_name_key_column = (world_name_key_column + 1) % columns;
+}
+
+void worldNameKeyboardUp() {
+  if (world_name_key_row == 0) {
+    world_name_key_row = sizeof(world_name_keyboard) / sizeof(char *) - 1;
+  } else {
+    world_name_key_row--;
+  }
+  if (world_name_key_column >= worldNameKeyColumns(world_name_key_row)) {
+    world_name_key_column = worldNameKeyColumns(world_name_key_row) - 1;
+  }
+}
+
+void worldNameKeyboardDown() {
+  world_name_key_row = (world_name_key_row + 1) %
+    (sizeof(world_name_keyboard) / sizeof(char *));
+  if (world_name_key_column >= worldNameKeyColumns(world_name_key_row)) {
+    world_name_key_column = worldNameKeyColumns(world_name_key_row) - 1;
+  }
 }
 
 void worldNameCursorLeft() {
@@ -433,29 +555,36 @@ void worldNameCursorLeft() {
 }
 
 void worldNameCursorRight() {
-  if (world_name_cursor < WORLD_NAME_LENGTH - 1) {
+  if (world_name_cursor < worldNameLength()) {
     world_name_cursor++;
   }
 }
 
-void worldNameCharacterPrevious() {
-  u8 index = worldNameCharacterIndex(world_name_edit[world_name_cursor]);
-  u8 count = sizeof(world_name_characters) - 1;
+void worldNameInsertCharacter() {
+  u8 i;
 
-  world_name_edit[world_name_cursor] = index == 0 ?
-    world_name_characters[count - 1] : world_name_characters[index - 1];
-}
-
-void worldNameCharacterNext() {
-  u8 index = worldNameCharacterIndex(world_name_edit[world_name_cursor]);
-  u8 count = sizeof(world_name_characters) - 1;
-
-  world_name_edit[world_name_cursor] = world_name_characters[
-    (index + 1) % count];
+  if (worldNameLength() >= WORLD_NAME_LENGTH) {
+    return;
+  }
+  for (i = WORLD_NAME_LENGTH - 1; i > world_name_cursor; i--) {
+    world_name_edit[i] = world_name_edit[i - 1];
+  }
+  world_name_edit[world_name_cursor] =
+    world_name_keyboard[world_name_key_row][world_name_key_column];
+  world_name_cursor++;
 }
 
 void worldNameErase() {
-  world_name_edit[world_name_cursor] = ' ';
+  u8 i;
+
+  if (world_name_cursor == 0) {
+    return;
+  }
+  world_name_cursor--;
+  for (i = world_name_cursor; i < WORLD_NAME_LENGTH - 1; i++) {
+    world_name_edit[i] = world_name_edit[i + 1];
+  }
+  world_name_edit[WORLD_NAME_LENGTH - 1] = ' ';
 }
 
 void confirmWorldName() {

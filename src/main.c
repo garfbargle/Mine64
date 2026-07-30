@@ -8,6 +8,7 @@
 #include "graphics.h"
 #include "items.h"
 #include "storage.h"
+#include "day_cycle.h"
 
 void draw(void);
 
@@ -65,6 +66,11 @@ void callbackGfx(int pendingGfx) {
     menuPreviewLoaded();
   }
 
+  if (current_screen == GAME || current_screen == INVENTORY) {
+    updateDayCycle();
+  } else {
+    pauseDayCycle();
+  }
   updatePlayers();
 #ifdef ENABLE_AUDIO
   updateAudio(current_screen);
@@ -96,6 +102,7 @@ void initVideo() {
 void mainproc(void) {
   initVideo();
   initCamera();
+  initDayCycle();
   initGraphics();
   initStorage();
   nuContInit();

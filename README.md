@@ -29,9 +29,9 @@ files.
   files so an interrupted cartridge write can recover the previous world.
 * All terrain can now be mined. Wooden pickaxes gather stone, cobblestone, and
   bricks and break them much faster, while wooden swords cut leaves quickly.
-* New worlds combine lowlands, rolling grasslands, ridge-shaped mountain
-  regions, beaches/deserts, variable soil depths, exposed stone cliffs, and
-  underground cave networks.
+* New worlds combine oceans, lakes, winding river channels, lowlands, rolling
+  grasslands, ridge-shaped mountain regions, beaches/deserts, variable soil
+  depths, exposed stone cliffs, and underground cave networks.
 * Every gatherable block becomes a physical pickup, which pops out, settles,
   and then pulls into the nearby player. Tools are non-stackable, pickups are
   protected when the entity pool is full, and partial inventory transfers can
@@ -192,9 +192,9 @@ This writes `art/mine64-textures.png` (a native 64x48 atlas),
 
 ### Custom texture import
 
-Put an edited 4x3 PNG atlas at `art/custom-textures.png`. The first eleven
-cells are used in this order: dirt, stone, grass top, grass side, cobblestone,
-sand, log end, log side, leaves, planks, bricks; the final cell is ignored.
+Put an edited 4x3 PNG atlas at `art/custom-textures.png`. All twelve cells are
+used in this order: dirt, stone, grass top, grass side, cobblestone, sand, log
+end, log side, leaves, planks, bricks, water.
 `make` automatically converts each cell into a 16x16, 16-colour CI4 tile.
 The importer preserves crisp source pixels with nearest sampling and reduces
 each tile to its own N64 palette.

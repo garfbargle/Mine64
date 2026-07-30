@@ -33,10 +33,13 @@ u8 menuPreviewRequested();
 void menuPreviewLoaded();
 u8 menuSelectedWorld();
 void beginWorldNaming();
+void worldNameKeyboardLeft();
+void worldNameKeyboardRight();
+void worldNameKeyboardUp();
+void worldNameKeyboardDown();
 void worldNameCursorLeft();
 void worldNameCursorRight();
-void worldNameCharacterPrevious();
-void worldNameCharacterNext();
+void worldNameInsertCharacter();
 void worldNameErase();
 void confirmWorldName();
 

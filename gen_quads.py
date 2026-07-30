@@ -36,12 +36,15 @@ tex_coords = [[0, 0],
               [1, 1],
               [0, 1]]
 
-front_shade  = 166
-left_shade   = 223
-back_shade   = 166
-right_shade  = 223
-top_shade    = 255
-bottom_shade = 143
+# These are RSP lighting normals, not baked RGB shades.  Keeping them in the
+# generated vertex table lets a single directional light animate every face
+# without touching world geometry or rebuilding any display lists.
+front_normal  = [0, 0, 127]
+left_normal   = [127, 0, 0]
+back_normal   = [0, 0, -127]
+right_normal  = [-127, 0, 0]
+top_normal    = [0, 127, 0]
+bottom_normal = [0, -127, 0]
 
 scale = 64
 tex_scale = 16
@@ -58,7 +61,7 @@ static Vtx quad_verts[] = {{
 """
 
 
-def write_quad(unit_quad, shade, sx, sy, sz, tx, ty):
+def write_quad(unit_quad, normal, sx, sy, sz, tx, ty):
     scaled_quad = np.array(unit_quad) * [sx, sy, sz] * scale
     scaled_tex = (np.array(tex_coords) * [tx, ty] * tex_scale) << 6
     for pos, tex in zip(scaled_quad, scaled_tex):
@@ -67,38 +70,38 @@ def write_quad(unit_quad, shade, sx, sy, sz, tx, ty):
         line += ",    0,    "
         line += f"{tex[0]:>4}, {tex[1]:>4}"
         line += ",    "
-        line += ", ".join([f"{shade:>3}"] * 3)
+        line += ", ".join(f"{component:>3}" for component in normal)
         line += ", 255}"
 
         lines.append(line)
 
 
-def generate_vertex_code(unit_quad, shade, max_sx, max_sy, max_sz, tex_x_axis, tex_y_axis, order='xyz'):
+def generate_vertex_code(unit_quad, normal, max_sx, max_sy, max_sz, tex_x_axis, tex_y_axis, order='xyz'):
     if order == 'xyz':
         for sx in range(1, max_sx + 1):
             for sy in range(1, max_sy + 1):
                 for sz in range(1, max_sz + 1):
                     tex_x = [sx, sy, sz][tex_x_axis]
                     tex_y = [sx, sy, sz][tex_y_axis]
-                    write_quad(unit_quad, shade, sx, sy, sz, tex_x, tex_y)
+                    write_quad(unit_quad, normal, sx, sy, sz, tex_x, tex_y)
     elif order == 'zyx':
         for sz in range(1, max_sz + 1):
             for sy in range(1, max_sy + 1):
                 for sx in range(1, max_sx + 1):
                     tex_x = [sx, sy, sz][tex_x_axis]
                     tex_y = [sx, sy, sz][tex_y_axis]
-                    write_quad(unit_quad, shade, sx, sy, sz, tex_x, tex_y)
+                    write_quad(unit_quad, normal, sx, sy, sz, tex_x, tex_y)
     else:
         raise RuntimeError(f"Unsupported order: {order}")
 
 lines = []
 
-generate_vertex_code(front_quad,  front_shade,  max_size, max_size, 1, 0, 1, order='xyz')
-generate_vertex_code(left_quad,   left_shade,   1, max_size, max_size, 2, 1, order='zyx')
-generate_vertex_code(back_quad,   back_shade,   max_size, max_size, 1, 0, 1, order='xyz')
-generate_vertex_code(right_quad,  right_shade,  1, max_size, max_size, 2, 1, order='zyx')
-generate_vertex_code(top_quad,    top_shade,    max_size, 1, max_size, 0, 2)
-generate_vertex_code(bottom_quad, bottom_shade, max_size, 1, max_size, 0, 2)
+generate_vertex_code(front_quad,  front_normal,  max_size, max_size, 1, 0, 1, order='xyz')
+generate_vertex_code(left_quad,   left_normal,   1, max_size, max_size, 2, 1, order='zyx')
+generate_vertex_code(back_quad,   back_normal,   max_size, max_size, 1, 0, 1, order='xyz')
+generate_vertex_code(right_quad,  right_normal,  1, max_size, max_size, 2, 1, order='zyx')
+generate_vertex_code(top_quad,    top_normal,    max_size, 1, max_size, 0, 2)
+generate_vertex_code(bottom_quad, bottom_normal, max_size, 1, max_size, 0, 2)
 
 code = code_template % ",\n".join(lines)
 

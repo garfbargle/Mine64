@@ -363,7 +363,7 @@ static void spawnPlayer(Player *player, int x, int z) {
   player->position.z = (z + 0.5) * BLOCK_SIZE;
 
   for (y = MAX_Y - 1; y >= 0; y--) {
-    if (blocks[x * MAX_Y * MAX_Z + y * MAX_Z + z]) {
+    if (BLOCK_IS_SOLID(blocks[x * MAX_Y * MAX_Z + y * MAX_Z + z])) {
       player->position.y = (y + 1 + EYE_HEIGHT) * BLOCK_SIZE;
       return;
     }
@@ -380,7 +380,7 @@ static void respawnPlayer(Player *player, int x, int z) {
   player->position.x = (x + 0.5f) * BLOCK_SIZE;
   player->position.z = (z + 0.5f) * BLOCK_SIZE;
   for (y = MAX_Y - 1; y >= 0; y--) {
-    if (blocks[x * MAX_Y * MAX_Z + y * MAX_Z + z]) {
+    if (BLOCK_IS_SOLID(blocks[x * MAX_Y * MAX_Z + y * MAX_Z + z])) {
       player->position.y = (y + 1 + EYE_HEIGHT) * BLOCK_SIZE;
       break;
     }
@@ -511,7 +511,7 @@ static u8 boxObstructed(Vector3 pos, int override_axis, int override_block) {
     for (y = min_block.y; y <= max_block.y; y++) {
       for (z = min_block.z; z <= max_block.z; z++) {
         if (x < 0 || y < 0 || z < 0 || x >= MAX_X || z >= MAX_Z ||
-            (y < MAX_Y && blocks[x * MAX_Y * MAX_Z + y * MAX_Z + z])) {
+            (y < MAX_Y && BLOCK_IS_SOLID(blocks[x * MAX_Y * MAX_Z + y * MAX_Z + z]))) {
           return TRUE;
         }
       }
@@ -814,9 +814,28 @@ static u8 onGround(Player *player) {
   for (x = min_block.x; x <= max_block.x; x++) {
     for (z = min_block.z; z <= max_block.z; z++) {
       if (x < 0 || y < 0 || z < 0 || x >= MAX_X || z >= MAX_Z ||
-          (y < MAX_Y && blocks[x * MAX_Y * MAX_Z + y * MAX_Z + z])) {
+          (y < MAX_Y && BLOCK_IS_SOLID(blocks[x * MAX_Y * MAX_Z + y * MAX_Z + z]))) {
         return TRUE;
       }
+    }
+  }
+  return FALSE;
+}
+
+static u8 playerInWater(Player *player) {
+  int x = floor(player->position.x / BLOCK_SIZE);
+  int y = floor(player->position.y / BLOCK_SIZE);
+  int z = floor(player->position.z / BLOCK_SIZE);
+  int scan_y;
+
+  if (x < 0 || z < 0 || x >= MAX_X || z >= MAX_Z) {
+    return FALSE;
+  }
+  /* Position is at eye height, so inspect the body volume beneath it rather
+   * than only the block containing the camera. */
+  for (scan_y = max(0, y - 2); scan_y <= min(MAX_Y - 1, y); scan_y++) {
+    if (blocks[x * MAX_Y * MAX_Z + scan_y * MAX_Z + z] == WATER) {
+      return TRUE;
     }
   }
   return FALSE;
@@ -831,6 +850,7 @@ static u8 updatePlayer(u8 player_num, float delta) {
   int collision_axis = 0;
   s8 stick_x = cont->stick_x;
   s8 stick_y = cont->stick_y;
+  u8 swimming = playerInWater(player);
 
   if (cont->trigger & U_CBUTTONS) {
     player->camera_mode = player->camera_mode == CAMERA_FIRST_PERSON ?
@@ -857,6 +877,10 @@ static u8 updatePlayer(u8 player_num, float delta) {
     velocity.z -= stick_x * sinf(player->yaw * M_DTOR) + stick_y * cosf(player->yaw * M_DTOR);
     velocity.x *= MOVE_SPEED;
     velocity.z *= MOVE_SPEED;
+    if (swimming) {
+      velocity.x *= 0.55f;
+      velocity.z *= 0.55f;
+    }
     if (cont->button & L_TRIG) {
       velocity.x *= SPRINT_MULTIPLIER;
       velocity.z *= SPRINT_MULTIPLIER;
@@ -898,7 +922,13 @@ static u8 updatePlayer(u8 player_num, float delta) {
     }
   } else block_inc_held[player_num] = FALSE;
 
-  if (onGround(player)) {
+  if (swimming) {
+    if (cont->button & R_TRIG) {
+      player->y_velocity = JUMP_SPEED * 0.45f;
+    } else if (player->y_velocity > -BLOCK_SIZE / 10.f) {
+      player->y_velocity -= GRAVITY * delta * 0.18f;
+    }
+  } else if (onGround(player)) {
     player->y_velocity = (cont->button & R_TRIG) ? JUMP_SPEED : 0;
   } else if (player->y_velocity > -TERMINAL_SPEED) {
     player->y_velocity -= GRAVITY * delta;
@@ -1058,19 +1088,26 @@ void updatePlayers() {
   }
 
   if (current_screen == WORLD_NAMING) {
-    /* The world-name editor uses edge-triggered D-pad/C-button input so a
-       single tap always changes exactly one character or cursor position. */
+    /* The name editor is an on-screen keyboard.  D-pad picks a key, C-left
+       and C-right reposition the insertion point, and every action is
+       edge-triggered so the player never overshoots a character. */
     if (cont_data[0].trigger & START_BUTTON) {
       confirmWorldName();
-    } else if (cont_data[0].trigger & (L_JPAD | L_CBUTTONS)) {
+    } else if (cont_data[0].trigger & L_JPAD) {
+      worldNameKeyboardLeft();
+    } else if (cont_data[0].trigger & R_JPAD) {
+      worldNameKeyboardRight();
+    } else if (cont_data[0].trigger & U_JPAD) {
+      worldNameKeyboardUp();
+    } else if (cont_data[0].trigger & D_JPAD) {
+      worldNameKeyboardDown();
+    } else if (cont_data[0].trigger & L_CBUTTONS) {
       worldNameCursorLeft();
-    } else if (cont_data[0].trigger & (R_JPAD | R_CBUTTONS)) {
+    } else if (cont_data[0].trigger & R_CBUTTONS) {
       worldNameCursorRight();
-    } else if (cont_data[0].trigger & (U_JPAD | U_CBUTTONS)) {
-      worldNameCharacterNext();
-    } else if (cont_data[0].trigger & (D_JPAD | D_CBUTTONS)) {
-      worldNameCharacterPrevious();
-    } else if (cont_data[0].trigger & (A_BUTTON | B_BUTTON)) {
+    } else if (cont_data[0].trigger & A_BUTTON) {
+      worldNameInsertCharacter();
+    } else if (cont_data[0].trigger & B_BUTTON) {
       worldNameErase();
     }
     return;

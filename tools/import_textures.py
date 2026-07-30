@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Convert a 4x3 PNG texture atlas into Mine64's per-tile N64 CI4 header.
 
-The first eleven 16x16 cells are used in this order:
+All twelve 16x16 cells are used in this order:
 dirt, stone, grass_top, grass_side, cobblestone, sand, wood_top, wood_side,
-leaves, planks, bricks. The twelfth cell is ignored.
+leaves, planks, bricks, water.
 
 This importer uses only the Python standard library so the N64 build container
 does not need image-processing packages.
@@ -12,16 +12,20 @@ does not need image-processing packages.
 from collections import Counter
 from pathlib import Path
 from struct import unpack
-from sys import argv
+from sys import argv, path
 from zlib import decompress
 
 ROOT = Path(__file__).resolve().parents[1]
+path.insert(0, str(ROOT))
+
+from generate_assets import PALETTES, tile
+
 OUTPUT = ROOT / "assets" / "texture_data.h"
 TILE_SIZE = 16
 ATLAS_COLUMNS = 4
 TILE_NAMES = (
     "dirt", "stone", "grass_top", "grass_side", "cobblestone", "sand",
-    "wood_top", "wood_side", "leaves", "planks", "bricks",
+    "wood_top", "wood_side", "leaves", "planks", "bricks", "water",
 )
 
 
@@ -119,7 +123,10 @@ def median_cut(colours, max_colours):
         for index, (_, count) in enumerate(bucket):
             running += count
             if running >= midpoint:
-                split = max(1, index + 1)
+                # Keep both halves non-empty. An old unused atlas cell can
+                # contain a dominant flat colour; now that it is the water
+                # tile, palette reduction must handle that case too.
+                split = min(len(bucket) - 1, max(1, index + 1))
                 break
         buckets.extend((bucket[:split], bucket[split:]))
 
@@ -153,6 +160,24 @@ def convert_tile(pixels):
     return words, palette_words
 
 
+def default_water_pixels():
+    """Provide readable water for older atlases whose final cell was unused."""
+    palette = PALETTES["water"]
+    return [
+        palette[tile("water", x, y) - 1]
+        for y in range(TILE_SIZE) for x in range(TILE_SIZE)
+    ]
+
+
+def usable_tile_pixels(name, pixels):
+    # Before water existed, the twelfth atlas cell was deliberately ignored
+    # and this repository's sample left it black.  Keep legacy custom art
+    # looking good while allowing any painted, non-black water tile through.
+    if name == "water" and max(max(colour) for colour in pixels) < 40:
+        return default_water_pixels()
+    return pixels
+
+
 def main():
     if len(argv) != 2:
         raise SystemExit("usage: import_textures.py <4x3 texture atlas.png>")
@@ -174,6 +199,7 @@ def main():
                  [origin_x + min(cell_width - 1, (x * cell_width + cell_width // 2) // TILE_SIZE)]
             for y in range(TILE_SIZE) for x in range(TILE_SIZE)
         ]
+        tile_pixels = usable_tile_pixels(name, tile_pixels)
         words, palette = convert_tile(tile_pixels)
         chunks.append("\nTexture %s_texture = { { %s }, { %s } };\n" % (
             name,

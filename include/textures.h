@@ -34,6 +34,10 @@ FaceSpec sand_faces[] = {
   {SAND, TRUE, TRUE, TRUE}
 };
 
+FaceSpec water_faces[] = {
+  {WATER, TRUE, TRUE, TRUE}
+};
+
 FaceSpec wood_top_faces[] = {
   {WOOD, TRUE, TRUE, FALSE}
 };
@@ -85,6 +89,10 @@ TextureSpec sand_spec = {
   &sand_texture, 1, sand_faces
 };
 
+TextureSpec water_spec = {
+  &water_texture, 1, water_faces
+};
+
 TextureSpec wood_top_spec = {
   &wood_top_texture, 1, wood_top_faces
 };
@@ -107,7 +115,7 @@ TextureSpec bricks_spec = {
 
 TextureSpec *textures[] = {
   &dirt_spec, &stone_spec, &grass_top_spec, &grass_side_spec, &cobblestone_spec, &sand_spec,
-  &wood_top_spec, &wood_side_spec, &leaves_spec, &planks_spec, &bricks_spec
+  &water_spec, &wood_top_spec, &wood_side_spec, &leaves_spec, &planks_spec, &bricks_spec
 };
 
 Texture *preview_textures[] = {

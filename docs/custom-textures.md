@@ -1,6 +1,6 @@
 # Custom texture workflow
 
-Mine64 uses eleven 16×16 CI4 texture tiles. Each tile gets its own palette of
+Mine64 uses twelve 16×16 CI4 texture tiles. Each tile gets its own palette of
 up to 16 colours, so the source art can be richer than a single shared palette.
 
 ## 1. Start with the exported atlas
@@ -21,13 +21,13 @@ size, but must be square and all cells must be the same dimensions. The
 importer samples each cell down to 16×16 with nearest-neighbour sampling, so
 use crisp pixel art rather than blurred or anti-aliased edges.
 
-The first eleven cells are read left-to-right, top-to-bottom:
+All twelve cells are read left-to-right, top-to-bottom:
 
 | Row | Tiles |
 | --- | --- |
 | 1 | dirt, stone, grass top, grass side |
 | 2 | cobblestone, sand, log end, log side |
-| 3 | leaves, planks, bricks, unused |
+| 3 | leaves, planks, bricks, water |
 
 Keep important details broad enough to survive at 16×16. Fine one-pixel noise
 can shimmer on a CRT. The importer automatically reduces each tile to no more
