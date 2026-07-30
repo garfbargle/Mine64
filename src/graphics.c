@@ -10,6 +10,11 @@
 #include "textures.h"
 
 #define CROSSHAIR_SIZE 10
+#define HOTBAR_SLOT_COUNT BLOCK_TYPE_COUNT
+#define HOTBAR_SLOT_SIZE 22
+#define HOTBAR_ICON_SIZE 16
+#define HOTBAR_MARGIN 7
+#define HELD_PREVIEW_SIZE 32
 
 Gfx *dlp;
 u32 dl_no = 0;
@@ -475,6 +480,67 @@ static void drawCrosshair(u32 x, u32 y) {
   gDPSetTextureLUT(dlp++, G_TT_RGBA16);
 }
 
+static void setHudFillColor(u8 r, u8 g, u8 b) {
+  u32 color = GPACK_RGBA5551(r, g, b, 1);
+  gDPSetFillColor(dlp++, (color << 16) | color);
+}
+
+/* A compact, deliberately chunky version of the Minecraft hotbar.  It uses
+   the existing 16x16 block previews, keeping the HUD cheap enough for both
+   split-screen players without introducing another texture atlas. */
+static void drawHotbar(u8 player_num, u32 y_offset) {
+  u32 viewport_height = active_player_count == 2 ? SCREEN_HT / 2 : SCREEN_HT;
+  u32 bar_width = HOTBAR_SLOT_COUNT * HOTBAR_SLOT_SIZE;
+  u32 bar_x = (SCREEN_WD - bar_width) / 2;
+  u32 bar_y = y_offset + viewport_height - HOTBAR_SLOT_SIZE - HOTBAR_MARGIN;
+  u32 held_x = SCREEN_WD - HELD_PREVIEW_SIZE - HOTBAR_MARGIN;
+  u32 held_y = bar_y - HELD_PREVIEW_SIZE - 4;
+  u8 slot;
+
+  gDPSetCycleType(dlp++, G_CYC_FILL);
+  gDPSetRenderMode(dlp++, G_RM_NOOP, G_RM_NOOP2);
+
+  /* One raised rim groups all nine slots into a single familiar item bar. */
+  setHudFillColor(20, 20, 20);
+  gDPFillRectangle(dlp++, bar_x - 2, bar_y - 2, bar_x + bar_width + 1,
+    bar_y + HOTBAR_SLOT_SIZE + 1);
+
+  for (slot = 0; slot < HOTBAR_SLOT_COUNT; slot++) {
+    u32 x = bar_x + slot * HOTBAR_SLOT_SIZE;
+    u8 selected = players[player_num].held_block == slot + FIRST_PLACEABLE_BLOCK;
+
+    setHudFillColor(selected ? 250 : 78, selected ? 250 : 78, selected ? 250 : 78);
+    gDPFillRectangle(dlp++, x, bar_y, x + HOTBAR_SLOT_SIZE - 1,
+      bar_y + HOTBAR_SLOT_SIZE - 1);
+    setHudFillColor(selected ? 118 : 42, selected ? 118 : 42, selected ? 118 : 42);
+    gDPFillRectangle(dlp++, x + 2, bar_y + 2, x + HOTBAR_SLOT_SIZE - 3,
+      bar_y + HOTBAR_SLOT_SIZE - 3);
+  }
+
+  gDPPipeSync(dlp++);
+  gDPSetCycleType(dlp++, G_CYC_1CYCLE);
+  gDPSetRenderMode(dlp++, G_RM_NOOP, G_RM_NOOP2);
+  gDPSetCombineMode(dlp++, G_CC_MODULATEI_PRIM, G_CC_MODULATEI_PRIM);
+  gDPSetPrimColor(dlp++, 0, 0, 255, 255, 255, 255);
+  gDPSetTexturePersp(dlp++, G_TP_NONE);
+  gDPSetTextureLUT(dlp++, G_TT_RGBA16);
+
+  for (slot = 0; slot < HOTBAR_SLOT_COUNT; slot++) {
+    u32 x = bar_x + slot * HOTBAR_SLOT_SIZE + (HOTBAR_SLOT_SIZE - HOTBAR_ICON_SIZE) / 2;
+    u32 y = bar_y + (HOTBAR_SLOT_SIZE - HOTBAR_ICON_SIZE) / 2;
+    loadTexture(preview_textures[slot + FIRST_PLACEABLE_BLOCK]);
+    gSPTextureRectangle(dlp++, x << 2, y << 2,
+      ((x + HOTBAR_ICON_SIZE) << 2) - 2, ((y + HOTBAR_ICON_SIZE) << 2) - 2,
+      G_TX_RENDERTILE, 0, 0, 1 << 10, 1 << 10);
+  }
+
+  /* The enlarged current block is the first-person held-item cue. */
+  loadTexture(preview_textures[players[player_num].held_block]);
+  gSPTextureRectangle(dlp++, held_x << 2, held_y << 2,
+    ((held_x + HELD_PREVIEW_SIZE) << 2) - 2, ((held_y + HELD_PREVIEW_SIZE) << 2) - 2,
+    G_TX_RENDERTILE, 0, 0, 1 << 9, 1 << 9);
+}
+
 void drawHUD() {
   u8 player_num;
   dlp = hud_display_list;
@@ -488,11 +554,7 @@ void drawHUD() {
     for (player_num = 0; player_num < active_player_count; player_num++) {
       u32 y_offset = active_player_count == 2 ? player_num * (SCREEN_HT / 2) : 0;
       drawCrosshair(SCREEN_WD / 2, y_offset + (active_player_count == 2 ? SCREEN_HT / 4 : SCREEN_HT / 2));
-      loadTexture(preview_textures[players[player_num].held_block]);
-      gSPTextureRectangle(dlp++,
-        10 << 2, (10 + y_offset) << 2,
-        (26 << 2) - 2, ((26 + y_offset) << 2) - 2,
-        G_TX_RENDERTILE, 0, 0, 1 << 10, 1 << 10);
+      drawHotbar(player_num, y_offset);
     }
     if (active_player_count == 2) {
       gDPSetCycleType(dlp++, G_CYC_FILL);

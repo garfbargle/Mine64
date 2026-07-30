@@ -31,10 +31,14 @@ and an asset pipeline that does not require Minecraft files.
 | Analog stick | Walk |
 | Hold Z + analog stick | Look around |
 | A / B | Place / break a block |
-| C-left / C-right | Select a block |
+| C-left / C-right | Cycle the selected hotbar block |
 | R | Jump |
 | D-pad | Save, when cartridge storage is available |
 | Controller 2 START | Join co-op during a running world |
+
+The bottom hotbar contains all nine placeable block types. Its bright slot and
+the enlarged block at the lower right show what each player is holding; that is
+the block placed with **A**.
 
 ## SummerCart64
 
@@ -50,9 +54,43 @@ cartridge SD card when libcart detects a supported flash cartridge.
 
 ## Build
 
-v0.2 builds with a Modern N64 SDK-compatible environment containing the
-`mips-n64-*` toolchain, NuSystem, libultra, libcart, `spicy`, and `makemask`.
-With that environment installed and its compatibility root at `/etc/n64`:
+Mine64 uses a modern compatibility environment rather than the original
+proprietary Nintendo SDK. It contains the `mips-n64-*` cross compiler,
+NuSystem, libultra, libcart, `spicy`, and `makemask`.
+
+### SDK setup used for this build
+
+The environment was assembled from the public
+[ModernN64SDKArchives/n64sdkmod](https://github.com/ModernN64SDKArchives/n64sdkmod)
+package archive. The source-controlled
+[`docker/N64SDK.Dockerfile`](docker/N64SDK.Dockerfile) downloads the compiler
+and newlib packages, sparse-checks out the NuSystem/libultra/libcart packages,
+and installs them under the historical compatibility root `/etc/n64`.
+
+On macOS, Linux, or Windows with Docker Desktop, build the Linux/amd64 image:
+
+```sh
+docker build --platform linux/amd64 \
+  -t mine64-nusys-build:local \
+  -f docker/N64SDK.Dockerfile .
+```
+
+`linux/amd64` is required because the archived host tools (`spicy` and the
+cross compiler) are amd64 binaries. Docker Desktop handles this on Apple
+Silicon.
+
+### Build the ROM
+
+Build inside that container:
+
+```sh
+docker run --rm --platform linux/amd64 \
+  -v "$PWD:/work" -w /work \
+  mine64-nusys-build:local make -j2
+```
+
+If you already installed a compatible SDK yourself, set `ROOT=/etc/n64` (or
+the equivalent compatibility root) and run:
 
 ```
 make
@@ -60,8 +98,8 @@ make
 
 The ROM is written to `build/mine64.n64`. `generate_assets.py` runs
 automatically and creates the compact original tile set and UI font required by
-the game; no Minecraft assets or Python packages are needed. The build also
-uses `toolchain/spicy-ld.sh` to bridge the historical makerom flags and
+the game; no Minecraft assets are needed. The build uses
+`toolchain/spicy-ld.sh` to bridge the historical makerom flags and
 compiler-runtime objects to modern GNU ld.
 
 ### Texture art exports

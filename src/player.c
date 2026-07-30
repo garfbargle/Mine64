@@ -293,14 +293,14 @@ static void updatePlayer(u8 player_num, float delta) {
   if (cont->button & L_CBUTTONS) {
     if (!block_dec_held[player_num]) {
       block_dec_held[player_num] = TRUE;
-      if (--player->held_block < 1) player->held_block = 9;
+      if (--player->held_block < FIRST_PLACEABLE_BLOCK) player->held_block = BLOCK_TYPE_COUNT;
     }
   } else block_dec_held[player_num] = FALSE;
 
   if (cont->button & R_CBUTTONS) {
     if (!block_inc_held[player_num]) {
       block_inc_held[player_num] = TRUE;
-      if (++player->held_block > 9) player->held_block = 1;
+      if (++player->held_block > BLOCK_TYPE_COUNT) player->held_block = FIRST_PLACEABLE_BLOCK;
     }
   } else block_inc_held[player_num] = FALSE;
 
