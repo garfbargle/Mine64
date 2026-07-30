@@ -119,7 +119,10 @@ SkyColor dayCycleAmbientLight() {
   Vector3 sun = dayCycleSunDirection();
   float daylight = sun.y > 0 ? sun.y : 0;
   SkyColor night = {19, 25, 50};
-  SkyColor day = {92, 112, 140};
+  /* This is the light on faces turned away from the Sun.  Keep enough
+     daylight fill that terrain shadows stay readable instead of looking
+     nearly black at midday. */
+  SkyColor day = {142, 160, 182};
   return mixColor(night, day, daylight);
 }
 
