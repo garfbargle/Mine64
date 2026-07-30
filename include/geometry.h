@@ -49,10 +49,6 @@ extern ChunkQuads column_quads[CHUNKS_Y];
 /* The scenic preview mesh does not need seam refinement; disabling it removes
    the dominant cost of compiling a world. */
 void geometrySetTjunctionRefinement(u8 enabled);
-/* Planes that hit the refinement cap.  Large values mean terrain is
-   fragmented enough that the cap is doing real work. */
-extern u32 tjunction_refinement_caps;
-
 void initGeometry();
 void makeColumnGeometry(u8 cx, u8 cz);
 

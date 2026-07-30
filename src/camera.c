@@ -193,7 +193,7 @@ static void updateVisibleColumnsFor(u8 player_num, Player *player,
   u8 multiplayer = view_mode == CAMERA_VIEW_TWO_PLAYER ||
     view_mode == CAMERA_VIEW_FOUR_PLAYER;
   u8 max_visible_columns = view_mode == CAMERA_VIEW_LOADING ?
-    diag_column_cap : (view_mode == CAMERA_VIEW_SOLO ?
+    LOADING_MAX_VISIBLE_COLUMNS : (view_mode == CAMERA_VIEW_SOLO ?
     SOLO_MAX_VISIBLE_COLUMNS : (view_mode == CAMERA_VIEW_FOUR_PLAYER ?
     FOUR_PLAYER_MAX_VISIBLE_COLUMNS : COOP_MAX_VISIBLE_COLUMNS));
   float fov_y = view_mode == CAMERA_VIEW_LOADING ? FOV_Y_LOADING :
@@ -262,7 +262,6 @@ static void updateVisibleColumnsFor(u8 player_num, Player *player,
     visible_columns[player_num][farthest_x * CHUNKS_Z + farthest_z] = FALSE;
     visible_count--;
   }
-  diag_visible_columns = visible_count;
 }
 
 void updateVisibleColumns(u8 player_num) {

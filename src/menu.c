@@ -4,7 +4,6 @@
 #include "storage.h"
 #include "player.h"
 #include "main.h"
-#include "geometry.h"
 
 enum Screen current_screen = MENU;
 u32 save_message_cooldown = 0;
@@ -200,50 +199,6 @@ static void setMenuFillColor(u8 r, u8 g, u8 b) {
 
 static void drawCenteredString(const char *text, u32 y) {
   drawString(text, (SCREEN_WD - stringWidth(text)) / 2, y);
-}
-
-static u32 drawUnsigned(u32 value, u32 x, u32 y) {
-  char digits[10];
-  u8 count = 0;
-
-  do {
-    digits[count++] = (char) ('0' + value % 10);
-    value /= 10;
-  } while (value > 0 && count < sizeof(digits));
-  while (count > 0) {
-    drawChar(digits[--count], x, y);
-    x += 7;
-  }
-  return x;
-}
-
-static void drawDiagnosticValue(char label, u32 value, u32 y) {
-  drawChar(label, 4, y);
-  drawUnsigned(value, 13, y);
-}
-
-/*
- * The splash draws correctly and then stops dead, on a delay that varies with
- * the world, so what matters is the cost of the last good frame.  F is the
- * decisive one: if the picture is frozen but F keeps climbing the CPU is fine
- * and the RSP is starved; if F stops with the picture up, the RSP is hung.
- */
-static void drawSplashDiagnostics() {
-  drawDiagnosticValue('D', diag_frame_commands, 4);
-  drawDiagnosticValue('P', diag_peak_frame_commands, 13);
-  drawDiagnosticValue('B', diag_terrain_branches, 22);
-  drawDiagnosticValue('C', diag_visible_columns, 31);
-  drawDiagnosticValue('A', diag_arena_used, 40);
-  drawDiagnosticValue('E', diag_mesh_failures, 49);
-  drawDiagnosticValue('O', frame_overflows, 58);
-  drawDiagnosticValue('F', diag_frames, 67);
-  drawDiagnosticValue('N', diag_arena_id, 76);
-  drawDiagnosticValue('W', diag_build_active, 85);
-  drawDiagnosticValue('T', tjunction_refinement_caps, 94);
-  /* Switch states: terrain pass, seam refinement, column cap. */
-  drawChar(diag_draw_terrain ? '1' : '0', 4, 103);
-  drawChar(diag_refine_seams ? '1' : '0', 12, 103);
-  drawUnsigned(diag_column_cap, 22, 103);
 }
 
 static u8 worldNameLength() {
@@ -564,8 +519,6 @@ void drawMenu() {
     } else if (frame_overflows > 0) {
       drawCenteredString("FRAME BUDGET EXCEEDED", 148);
     }
-    drawSplashDiagnostics();
-    drawCenteredString("CL TERRAIN  CR SEAMS  CU/CD COLUMNS", 158);
   }
 }
 

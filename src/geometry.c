@@ -24,8 +24,6 @@ ChunkQuads column_quads[CHUNKS_Y];
 #define MAX_TJUNCTION_REFINEMENTS 8
 
 static u8 refine_tjunctions = TRUE;
-u32 tjunction_refinement_caps;
-
 void geometrySetTjunctionRefinement(u8 enabled) {
   refine_tjunctions = enabled;
 }
@@ -349,9 +347,6 @@ static void splitTjunctions(QuadList *front, QuadList *back) {
   while (refinements < MAX_TJUNCTION_REFINEMENTS &&
       splitOneTjunction(front, back)) {
     refinements++;
-  }
-  if (refinements >= MAX_TJUNCTION_REFINEMENTS) {
-    tjunction_refinement_caps++;
   }
 }
 

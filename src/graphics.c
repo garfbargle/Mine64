@@ -63,26 +63,6 @@ static Gfx *frame_dlp_limit;
 /* Non-zero means a frame had to shed terrain or was dropped outright.  Shown
    on the picker so this failure mode can never be silent again. */
 u32 frame_overflows;
-/*
- * Splash diagnostics.  The console renders correctly and then stops dead on a
- * delay that varies with the world, so the useful question is what the last
- * good frame actually cost -- not what the code looks like.
- */
-u32 diag_frame_commands;
-u32 diag_peak_frame_commands;
-u32 diag_terrain_branches;
-u32 diag_visible_columns;
-u32 diag_arena_used;
-u32 diag_mesh_failures;
-u32 diag_frames;
-u32 diag_arena_id;
-/* Runtime bisect switches, driven from the C buttons on the picker.  Each one
-   removes a suspect subsystem so the fault can be cornered in a single flash
-   rather than one rebuild per hypothesis. */
-u8 diag_draw_terrain = TRUE;
-u8 diag_refine_seams = TRUE;
-u8 diag_column_cap = 96;
-u32 diag_build_active;
 /* Set while compiling the reduced scenic mesh; makeQuadDL drops everything
    below the surface shell. */
 static u8 building_surface_mesh;
@@ -1002,13 +982,12 @@ u8 stepWorldMeshBuild(u16 columns) {
   /* Seam refinement is a cosmetic fix for hairline cracks between quads.  The
      scenic camera never gets close enough to see one, and it is the single
      most expensive part of compiling a world. */
-  geometrySetTjunctionRefinement(diag_refine_seams && !mesh_build_surface_only);
+  geometrySetTjunctionRefinement(!mesh_build_surface_only);
   while (columns > 0 && mesh_build_cursor < CHUNKS_X * CHUNKS_Z) {
     u8 cx = mesh_build_cursor / CHUNKS_Z;
     u8 cz = mesh_build_cursor % CHUNKS_Z;
 
     if (!makeColumnDisplayLists(cx, cz)) {
-      diag_mesh_failures++;
       mesh_build_complete = FALSE;
       mesh_build_cursor = CHUNKS_X * CHUNKS_Z;
       break;
@@ -1161,7 +1140,6 @@ void drawTextured(u8 texture, u8 player_num) {
           frame_overflows++;
           return;
         }
-        diag_terrain_branches++;
         gSPDisplayList(dlp++, column_starts[active_column_arena][texture]
           [cx * CHUNKS_Z + cz]);
       }
@@ -2683,15 +2661,6 @@ void drawHUD() {
     clearBuffers(GPACK_RGBA5551(0, 0, 0, 1));
   } else if (current_screen == LOADING_PREVIEW) {
     drawLoadingOverlay();
-  } else if ((current_screen == MENU || current_screen == WORLD_NAMING) &&
-      !diag_draw_terrain) {
-    /* Bisect: menu with no terrain pass at all.  clearBuffers leaves the RDP
-       in FILL cycle mode, which would lock the console the moment drawMenu
-       issues a texture rectangle. */
-    updateLoadingCamera();
-    clearBuffers(GPACK_RGBA5551(48, 123, 211, 1));
-    gDPPipeSync(dlp++);
-    gDPSetCycleType(dlp++, G_CYC_1CYCLE);
   } else if (current_screen == MENU || current_screen == WORLD_NAMING) {
     /* The carousel has its own text overlay; never let the inventory panel
        fall through on top of its world preview.  Every other branch here ends
@@ -2754,7 +2723,6 @@ void draw(int can_reclaim_mesh_arena) {
   Gfx *frame_start = &frame_display_lists[dl_no][0];
 
   loaded_texture = NULL;
-  diag_terrain_branches = 0;
   dlp = frame_start;
   /* Leave room for every pass that runs after the terrain branches: HUD,
      menu text, and the trailing sync. */
@@ -2798,18 +2766,6 @@ void draw(int can_reclaim_mesh_arena) {
     frame_overflows++;
     dlp = frame_start;
   }
-  diag_frame_commands = (u32) (dlp - frame_start);
-  if (diag_frame_commands > diag_peak_frame_commands) {
-    diag_peak_frame_commands = diag_frame_commands;
-  }
-  diag_arena_used = (u32) (column_arena_ends[active_column_arena] -
-    column_display_lists[active_column_arena]);
-  /* Which arena is on screen, and whether a build is mid-flight.  If A reads
-     zero while terrain still draws, the published arena and the one the column
-     pointers refer to have diverged. */
-  diag_arena_id = active_column_arena;
-  diag_build_active = mesh_build_active;
-  diag_frames++;
   gDPFullSync(dlp++);
   gSPEndDisplayList(dlp++);
   assert(dlp - frame_start <= FRAME_DISPLAY_LIST_SIZE);
