@@ -36,16 +36,15 @@ and an asset pipeline that does not require Minecraft files.
 
 ## SummerCart64
 
-The v0.2 ROM is intended to live alongside the original build, not replace it.
 On the cartridge SD card, launch:
 
 ```
-/roms/Mine64 v0.2.n64
+/games/Mine64.n64
 ```
 
-The original `/roms/Mine64.n64` and existing `mine64/world_*.m64` save files
-are left alone. Saves are stored on the cartridge SD card when libcart detects
-a supported flash cartridge.
+The prior ROM is preserved as `/games/Mine64_original.64`; existing
+`mine64/world_*.m64` save files are left alone. Saves are stored on the
+cartridge SD card when libcart detects a supported flash cartridge.
 
 ## Build
 
@@ -57,11 +56,24 @@ With that environment installed and its compatibility root at `/etc/n64`:
 make
 ```
 
-The ROM is written to `build/mine64_v0_2.n64`. `generate_assets.py` runs
+The ROM is written to `build/mine64.n64`. `generate_assets.py` runs
 automatically and creates the compact original tile set and UI font required by
 the game; no Minecraft assets or Python packages are needed. The build also
 uses `toolchain/spicy-ld.sh` to bridge the historical makerom flags and
 compiler-runtime objects to modern GNU ld.
+
+### Texture art exports
+
+The game tiles are generated in `generate_assets.py` as 16x16 CI4 textures.
+Export the current art for a viewer or paint workflow with:
+
+```
+python3 tools/export_textures.py
+```
+
+This writes `art/mine64-textures.png` (a native 64x48 atlas),
+`art/mine64-textures-preview.png` (16x nearest-neighbour), and
+`art/mine64-textures.json` (tile order and palette metadata).
 
 ## Hardware notes
 

@@ -14,7 +14,7 @@ SRCDIR := src
 INCDIR := include
 ASSDIR := assets
 OBJDIR := build
-TARGET := mine64_v0_2
+TARGET := mine64
 
 LIB := $(ROOT)/usr/lib
 MAKEMASK ?= makemask

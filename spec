@@ -18,6 +18,6 @@ beginseg
 endseg
 
 beginwave
-	name	"mine64_v0_2"
+	name	"mine64"
 	include	"program"
 endwave

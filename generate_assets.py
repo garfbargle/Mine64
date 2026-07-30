@@ -26,40 +26,106 @@ def pack_nibbles(values):
     return result
 
 
+def mottled(x, y, salt):
+    """A 2x2-pixel, low-frequency pattern that stays readable on a CRT."""
+    return ((x // 2) * 3 + (y // 2) * 5 + ((x // 4) * (y // 4)) + salt) & 3
+
+
+# Hand-composed low-frequency tiles. These stay 16x16 CI4 textures, but avoid
+# the obvious mathematical checkerboard a simple formula creates when repeated
+# across a large greedy-meshed surface.
+GRASS_TOP = (
+    "2222233333222222",
+    "2222333333322222",
+    "2222333333322222",
+    "2222233333332222",
+    "2222223333333222",
+    "2222222333333222",
+    "2222222233333222",
+    "2222222233333222",
+    "2222222223333222",
+    "2222222222333322",
+    "2222222222333322",
+    "2222222222233322",
+    "2222222222223322",
+    "2222222222223332",
+    "2222222222222332",
+    "2222222222222222",
+)
+
+SAND = (
+    "2222222222222222",
+    "2222222222222222",
+    "2222222222222322",
+    "2222222222233322",
+    "2222222222333322",
+    "2222222222333222",
+    "2222222222332222",
+    "2222222222222222",
+    "2222222222222222",
+    "2222222322222222",
+    "2222223332222222",
+    "2222233332222222",
+    "2222233322222222",
+    "2222223322222222",
+    "2222222222222222",
+    "2222222222222222",
+)
+
 def tile(kind, x, y):
+    # These designs intentionally avoid 1-pixel noise. Nearest-sampled CI4
+    # texture on the N64 makes that kind of detail shimmer and look corrupted.
+    if kind == "dirt":
+        return 1 + (mottled(x, y, 1) >> 1)
+    if kind == "stone":
+        return 1 + (mottled(x, y, 3) >> 1)
     if kind == "grass_top":
-        return 1 + ((x * 3 + y * 5 + x * y) % 3)
+        return int(GRASS_TOP[y][x])
     if kind == "grass_side":
         if y < 4:
-            return 1 + ((x + y) % 3)
-        return 4 + ((x * 5 + y * 3) % 3)
+            return 1 + ((x // 4 + y // 2) & 1)
+        return 4 + (mottled(x, y - 4, 2) >> 1)
     if kind == "cobblestone":
-        return 1 + (((x // 4) + (y // 3) + (x * y) // 19) % 4)
+        # Offset 8x4 stones with a single dark mortar pixel between them.
+        shifted_x = (x + ((y // 4) & 1) * 3) & 15
+        if y % 4 == 0 or shifted_x % 8 == 0:
+            return 1
+        return 2 + ((shifted_x // 4 + y // 4) & 1)
+    if kind == "sand":
+        return int(SAND[y][x])
     if kind == "wood_top":
-        return 1 + ((max(abs(x - 7), abs(y - 7)) + x // 5) % 4)
+        ring = max(abs(x - 7), abs(y - 7))
+        return 1 + ((ring // 2 + (x // 6)) & 2)
     if kind == "wood_side":
-        return 1 + ((x // 3 + (y // 5) * 2) % 4)
+        if y % 6 == 0:
+            return 1
+        return 2 + ((x // 4) & 1)
     if kind == "leaves":
-        return 1 + ((x * 7 + y * 11 + x * y) % 4)
+        return 1 + ((mottled(x, y, 0) + x // 4) >> 2)
     if kind == "planks":
-        return 1 + ((x // 4 + (y // 5) * 2) % 4)
+        if y % 5 == 0:
+            return 1
+        return 2 + ((x // 6 + y // 5) & 1)
     if kind == "bricks":
-        return 1 + (((x // 6 + (y // 4) * 3 + ((y // 4) & 1)) % 4))
-    return 1 + ((x * 7 + y * 3 + (x * y) // 9) % 4)
+        shifted_x = (x + ((y // 4) & 1) * 3) & 15
+        if y % 4 == 0 or shifted_x % 8 == 0:
+            return 1
+        return 2 + ((shifted_x // 4 + y // 4) & 1)
+    raise ValueError(f"unknown tile: {kind}")
 
 
 PALETTES = {
-    "dirt": [(65, 38, 20), (91, 55, 27), (121, 77, 39), (155, 100, 51)],
-    "stone": [(67, 72, 75), (91, 98, 101), (119, 126, 127), (151, 157, 155)],
-    "grass_top": [(27, 83, 31), (42, 111, 40), (61, 140, 48), (91, 167, 57)],
-    "grass_side": [(28, 82, 31), (48, 118, 42), (75, 62, 34), (123, 85, 42), (157, 111, 56), (103, 70, 35)],
-    "cobblestone": [(55, 60, 63), (82, 88, 91), (111, 116, 117), (143, 148, 147)],
-    "sand": [(157, 132, 73), (187, 161, 91), (215, 190, 112), (240, 218, 141)],
-    "wood_top": [(77, 47, 22), (112, 69, 31), (149, 95, 45), (187, 126, 65)],
-    "wood_side": [(71, 41, 19), (105, 62, 28), (143, 85, 39), (179, 113, 57)],
-    "leaves": [(19, 62, 29), (32, 91, 39), (48, 121, 49), (74, 151, 60)],
-    "planks": [(101, 62, 28), (136, 85, 39), (172, 113, 56), (205, 145, 78)],
-    "bricks": [(90, 39, 31), (129, 55, 43), (165, 73, 55), (198, 98, 74)],
+    "dirt": [(79, 47, 25), (105, 65, 35), (132, 86, 47), (0, 0, 0)],
+    "stone": [(71, 76, 78), (94, 100, 102), (119, 124, 124), (0, 0, 0)],
+    "grass_top": [(30, 76, 34), (43, 101, 43), (58, 123, 50), (76, 143, 57)],
+    "grass_side": [(30, 76, 34), (43, 101, 43), (58, 123, 50), (79, 47, 25), (105, 65, 35), (132, 86, 47)],
+    "cobblestone": [(57, 62, 64), (85, 91, 93), (108, 114, 115), (132, 137, 137)],
+    "sand": [(166, 143, 88), (190, 168, 108), (211, 190, 132), (0, 0, 0)],
+    "wood_top": [(72, 43, 22), (103, 62, 30), (137, 87, 43), (174, 115, 62)],
+    "wood_side": [(67, 39, 20), (95, 56, 27), (127, 78, 38), (160, 103, 54)],
+    "leaves": [(24, 62, 30), (35, 84, 39), (48, 105, 47), (68, 126, 57)],
+    "planks": [(91, 55, 27), (120, 75, 36), (152, 99, 50), (184, 127, 69)],
+    "bricks": [(93, 43, 34), (126, 57, 45), (157, 73, 57), (188, 92, 72)],
 }
 
 
