@@ -2,6 +2,7 @@
 #include "graphics.h"
 #include "font.h"
 #include "storage.h"
+#include "player.h"
 
 enum Screen current_screen = MENU;
 u32 save_message_cooldown = 0;
@@ -79,6 +80,8 @@ static char *inventory_text[] = {
   "Craft",
   "Output",
   "Items",
+  "A: Move Stack",
+  "B: Move One",
   "C Left Right: Move",
   "D Pad: Move Rows",
   "Start: Close"
@@ -215,13 +218,13 @@ void drawMenu() {
       chr = text_line[j];
       if (chr != ' ') {
         if (current_screen == INVENTORY && i == 1) {
-          drawChar(chr, x + 48, 43);
+          drawChar(chr, x + (players[0].crafting_table_open ? 40 : 48), 43);
         } else if (current_screen == INVENTORY && i == 2) {
-          drawChar(chr, x + 86, 43);
+          drawChar(chr, x + (players[0].crafting_table_open ? 104 : 86), 43);
         } else if (current_screen == INVENTORY && i == 3) {
-          drawChar(chr, x + 115, 43);
+          drawChar(chr, x + (players[0].crafting_table_open ? 145 : 115), 43);
         } else if (current_screen == INVENTORY && i > 3) {
-          drawChar(chr, x + 174, (i - 4) * 10 + 145);
+          drawChar(chr, x + 42, (i - 4) * 10 + 142);
         } else {
           drawChar(chr, x + SCREEN_WD / 2 - center, i * 12 + y_start);
         }

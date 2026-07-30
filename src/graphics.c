@@ -11,7 +11,7 @@
 #include "textures.h"
 
 #define CROSSHAIR_SIZE 10
-#define HOTBAR_SLOT_COUNT BLOCK_TYPE_COUNT
+#define HOTBAR_SLOT_COUNT INVENTORY_COLUMNS
 #define HOTBAR_SLOT_SIZE 22
 #define HOTBAR_ICON_SIZE 16
 #define HOTBAR_MARGIN 7
@@ -597,6 +597,42 @@ static void setHudFillColor(u8 r, u8 g, u8 b) {
 /* A compact, deliberately chunky version of the Minecraft hotbar.  It uses
    the existing 16x16 block previews, keeping the HUD cheap enough for both
    split-screen players without introducing another texture atlas. */
+static void drawItemIcon(u8 item, u32 x, u32 y, u32 size) {
+  if (item <= BLOCK_TYPE_COUNT && preview_textures[item] != NULL) {
+    loadTexture(preview_textures[item]);
+    gSPTextureRectangle(dlp++, x << 2, y << 2,
+      ((x + size) << 2) - 2, ((y + size) << 2) - 2,
+      G_TX_RENDERTILE, 0, 0, 1 << 10, 1 << 10);
+    return;
+  }
+
+  gDPPipeSync(dlp++);
+  gDPSetCycleType(dlp++, G_CYC_FILL);
+  gDPSetRenderMode(dlp++, G_RM_NOOP, G_RM_NOOP2);
+  if (item == STICK) {
+    setHudFillColor(142, 83, 38);
+    gDPFillRectangle(dlp++, x + size / 2 - 1, y + 2, x + size / 2 + 1, y + size - 3);
+  } else if (item == WOOD_SWORD) {
+    setHudFillColor(188, 188, 178);
+    gDPFillRectangle(dlp++, x + size / 2 - 1, y + 1, x + size / 2 + 1, y + size - 6);
+    setHudFillColor(142, 83, 38);
+    gDPFillRectangle(dlp++, x + size / 2 - 3, y + size - 6, x + size / 2 + 3, y + size - 4);
+    gDPFillRectangle(dlp++, x + size / 2 - 1, y + size - 3, x + size / 2 + 1, y + size - 1);
+  } else if (item == WOOD_PICKAXE) {
+    setHudFillColor(188, 188, 178);
+    gDPFillRectangle(dlp++, x + 1, y + 2, x + size - 2, y + 4);
+    setHudFillColor(142, 83, 38);
+    gDPFillRectangle(dlp++, x + size / 2 - 1, y + 4, x + size / 2 + 1, y + size - 1);
+  }
+  gDPPipeSync(dlp++);
+  gDPSetCycleType(dlp++, G_CYC_1CYCLE);
+  gDPSetRenderMode(dlp++, G_RM_NOOP, G_RM_NOOP2);
+  gDPSetCombineMode(dlp++, G_CC_MODULATEI_PRIM, G_CC_MODULATEI_PRIM);
+  gDPSetPrimColor(dlp++, 0, 0, 255, 255, 255, 255);
+  gDPSetTexturePersp(dlp++, G_TP_NONE);
+  gDPSetTextureLUT(dlp++, G_TT_RGBA16);
+}
+
 static void drawHotbar(u8 player_num, u32 y_offset) {
   u32 viewport_height = active_player_count == 2 ? SCREEN_HT / 2 : SCREEN_HT;
   u32 bar_width = HOTBAR_SLOT_COUNT * HOTBAR_SLOT_SIZE;
@@ -637,17 +673,17 @@ static void drawHotbar(u8 player_num, u32 y_offset) {
   for (slot = 0; slot < HOTBAR_SLOT_COUNT; slot++) {
     u32 x = bar_x + slot * HOTBAR_SLOT_SIZE + (HOTBAR_SLOT_SIZE - HOTBAR_ICON_SIZE) / 2;
     u32 y = bar_y + (HOTBAR_SLOT_SIZE - HOTBAR_ICON_SIZE) / 2;
-    loadTexture(preview_textures[players[player_num].inventory[INVENTORY_HOTBAR_START + slot].item]);
-    gSPTextureRectangle(dlp++, x << 2, y << 2,
-      ((x + HOTBAR_ICON_SIZE) << 2) - 2, ((y + HOTBAR_ICON_SIZE) << 2) - 2,
-      G_TX_RENDERTILE, 0, 0, 1 << 10, 1 << 10);
+    ItemStack *stack = &players[player_num].inventory[INVENTORY_HOTBAR_START + slot];
+    if (stack->count > 0) {
+      drawItemIcon(stack->item, x, y, HOTBAR_ICON_SIZE);
+    }
   }
 
   /* The enlarged current block is the first-person held-item cue. */
-  loadTexture(preview_textures[players[player_num].held_block]);
-  gSPTextureRectangle(dlp++, held_x << 2, held_y << 2,
-    ((held_x + HELD_PREVIEW_SIZE) << 2) - 2, ((held_y + HELD_PREVIEW_SIZE) << 2) - 2,
-    G_TX_RENDERTILE, 0, 0, 1 << 9, 1 << 9);
+  if (players[player_num].inventory[INVENTORY_HOTBAR_START +
+      players[player_num].selected_hotbar_slot].count > 0) {
+    drawItemIcon(players[player_num].held_block, held_x, held_y, HELD_PREVIEW_SIZE);
+  }
 }
 
 static void drawInventorySlot(u32 x, u32 y, ItemStack *stack, u8 selected, u8 focused) {
@@ -667,18 +703,21 @@ static void drawInventorySlot(u32 x, u32 y, ItemStack *stack, u8 selected, u8 fo
     gDPSetPrimColor(dlp++, 0, 0, 255, 255, 255, 255);
     gDPSetTexturePersp(dlp++, G_TP_NONE);
     gDPSetTextureLUT(dlp++, G_TT_RGBA16);
-    loadTexture(preview_textures[stack->item]);
-    gSPTextureRectangle(dlp++, (x + 2) << 2, (y + 2) << 2,
-      ((x + 2 + INVENTORY_ICON_SIZE) << 2) - 2, ((y + 2 + INVENTORY_ICON_SIZE) << 2) - 2,
-      G_TX_RENDERTILE, 0, 0, 1 << 10, 1 << 10);
+    drawItemIcon(stack->item, x + 2, y + 2, INVENTORY_ICON_SIZE);
   }
 }
 
 static void drawInventory() {
   Player *player = &players[0];
-  u32 slot_x = 115;
+  u8 craft_columns = player->crafting_table_open ? CRAFTING_TABLE_COLUMNS : PLAYER_CRAFTING_COLUMNS;
+  u8 craft_rows = player->crafting_table_open ? CRAFTING_TABLE_ROWS : PLAYER_CRAFTING_ROWS;
+  u32 craft_x = player->crafting_table_open ? 40 : 48;
+  u32 output_x = player->crafting_table_open ? 104 : 86;
+  u32 output_y = player->crafting_table_open ? 71 : 62;
+  u32 slot_x = player->crafting_table_open ? 145 : 115;
   u32 slot_y = 53;
   u8 row, column;
+  ItemStack output = {AIR, 0};
 
   gDPSetCycleType(dlp++, G_CYC_FILL);
   gDPSetRenderMode(dlp++, G_RM_NOOP, G_RM_NOOP2);
@@ -689,35 +728,60 @@ static void drawInventory() {
   setHudFillColor(54, 54, 54);
   gDPFillRectangle(dlp++, 36, 24, SCREEN_WD - 37, SCREEN_HT - 25);
 
-  /* The 2x2 craft grid and output are visual placeholders until recipes are
-     implemented; the inventory and hotbar slots already use real stack data. */
-  for (row = 0; row < 2; row++) {
-    for (column = 0; column < 2; column++) {
-      ItemStack empty = {AIR, 0};
-      drawInventorySlot(48 + column * INVENTORY_SLOT_SIZE, 53 + row * INVENTORY_SLOT_SIZE,
-        &empty, FALSE, FALSE);
+  for (row = 0; row < craft_rows; row++) {
+    for (column = 0; column < craft_columns; column++) {
+      u8 index = row * CRAFTING_TABLE_COLUMNS + column;
+      drawInventorySlot(craft_x + column * INVENTORY_SLOT_SIZE, 53 + row * INVENTORY_SLOT_SIZE,
+        &player->crafting[index], FALSE, player->inventory_area == INVENTORY_AREA_CRAFTING &&
+          player->crafting_cursor == index);
     }
   }
-  {
-    ItemStack empty = {AIR, 0};
-    drawInventorySlot(86, 62, &empty, FALSE, FALSE);
-  }
+  getCraftResult(player, &output);
+  drawInventorySlot(output_x, output_y, &output, FALSE,
+    player->inventory_area == INVENTORY_AREA_OUTPUT);
+  drawInventorySlot(output_x, 104, &player->carried_item, FALSE, FALSE);
 
   for (row = 0; row < INVENTORY_STORAGE_ROWS + INVENTORY_HOTBAR_ROWS; row++) {
     for (column = 0; column < INVENTORY_COLUMNS; column++) {
       u8 index = row * INVENTORY_COLUMNS + column;
       drawInventorySlot(slot_x + column * INVENTORY_SLOT_SIZE, slot_y + row * INVENTORY_SLOT_SIZE,
         &player->inventory[index], row == INVENTORY_STORAGE_ROWS && player->selected_hotbar_slot == column,
-        player->inventory_cursor == index);
-    }
+        player->inventory_area == INVENTORY_AREA_ITEMS && player->inventory_cursor == index);
+  }
+}
+}
+
+static void drawStackCount(ItemStack *stack, u32 x, u32 y) {
+  if (stack->count >= 10) {
+    drawChar('0' + stack->count / 10, x + 2, y + 8);
+    drawChar('0' + stack->count % 10, x + 8, y + 8);
+  } else if (stack->count > 0) {
+    drawChar('0' + stack->count, x + 8, y + 8);
   }
 }
 
 static void drawInventoryStackCounts() {
   Player *player = &players[0];
-  u32 slot_x = 115;
+  u8 craft_columns = player->crafting_table_open ? CRAFTING_TABLE_COLUMNS : PLAYER_CRAFTING_COLUMNS;
+  u8 craft_rows = player->crafting_table_open ? CRAFTING_TABLE_ROWS : PLAYER_CRAFTING_ROWS;
+  u32 craft_x = player->crafting_table_open ? 40 : 48;
+  u32 output_x = player->crafting_table_open ? 104 : 86;
+  u32 output_y = player->crafting_table_open ? 71 : 62;
+  u32 slot_x = player->crafting_table_open ? 145 : 115;
   u32 slot_y = 53;
   u8 row, column;
+  ItemStack output = {AIR, 0};
+
+  for (row = 0; row < craft_rows; row++) {
+    for (column = 0; column < craft_columns; column++) {
+      u8 index = row * CRAFTING_TABLE_COLUMNS + column;
+      drawStackCount(&player->crafting[index], craft_x + column * INVENTORY_SLOT_SIZE,
+        53 + row * INVENTORY_SLOT_SIZE);
+    }
+  }
+  getCraftResult(player, &output);
+  drawStackCount(&output, output_x, output_y);
+  drawStackCount(&player->carried_item, output_x, 104);
 
   for (row = 0; row < INVENTORY_STORAGE_ROWS + INVENTORY_HOTBAR_ROWS; row++) {
     for (column = 0; column < INVENTORY_COLUMNS; column++) {
@@ -725,12 +789,7 @@ static void drawInventoryStackCounts() {
       u32 x = slot_x + column * INVENTORY_SLOT_SIZE;
       u32 y = slot_y + row * INVENTORY_SLOT_SIZE;
 
-      if (stack->count >= 10) {
-        drawChar('0' + stack->count / 10, x + 2, y + 8);
-        drawChar('0' + stack->count % 10, x + 8, y + 8);
-      } else if (stack->count > 0) {
-        drawChar('0' + stack->count, x + 8, y + 8);
-      }
+      drawStackCount(stack, x, y);
     }
   }
 }

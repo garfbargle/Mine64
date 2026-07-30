@@ -3,6 +3,7 @@
 
 #include "storage.h"
 #include "blocks.h"
+#include "items.h"
 #include "player.h"
 #include "world.h"
 
@@ -11,7 +12,7 @@ static FATFS fs;
 // "MI64"
 #define MAGIC_NUM 0x4D493634
 #define BUFFER_LEN 128
-#define SAVE_VERSION 2
+#define SAVE_VERSION 3
 
 typedef struct {
   u32 magic_num;
@@ -30,6 +31,11 @@ typedef struct {
   float yaw;
   u32 held_block;
   u32 wood_count;
+  u32 planks_count;
+  u32 crafting_table_count;
+  u32 stick_count;
+  u32 sword_count;
+  u32 pickaxe_count;
 } SavedPlayer;
 
 typedef struct {
@@ -40,6 +46,25 @@ typedef struct {
   u32 player_count;
   SavedPlayer player[MAX_PLAYERS];
 } Header;
+
+/* v2 saved just the log stack.  Keep its layout separate so existing worlds
+   can be loaded before their new crafting materials are added. */
+typedef struct {
+  Vector3 position;
+  float pitch;
+  float yaw;
+  u32 held_block;
+  u32 wood_count;
+} SavedPlayerV2;
+
+typedef struct {
+  u32 magic_num;
+  u32 version;
+  u32 file_num;
+  u32 save_count;
+  u32 player_count;
+  SavedPlayerV2 player[MAX_PLAYERS];
+} HeaderV2;
 
 /* The first co-op save format did not contain an inventory count.  Its
    separate definition keeps old save files readable after the v2 extension. */
@@ -73,6 +98,43 @@ static char *file_names[] = {
   "mine64/world_2.m64",
   "mine64/world_3.m64"
 };
+
+static u32 countInventoryItem(Player *player, u8 item) {
+  u8 slot;
+  u32 count = 0;
+  for (slot = 0; slot < INVENTORY_SIZE; slot++) {
+    if (player->inventory[slot].item == item) {
+      count += player->inventory[slot].count;
+    }
+  }
+  return count;
+}
+
+static void restoreInventoryItem(Player *player, u8 item, u32 count) {
+  while (count > 0) {
+    u8 chunk = count > MAX_ITEM_STACK ? MAX_ITEM_STACK : count;
+    if (addItemToInventory(player, item, chunk) != chunk) {
+      return;
+    }
+    count -= chunk;
+  }
+}
+
+static void restorePlayerState(Player *player, Vector3 position, float pitch,
+    float yaw, u32 held_block) {
+  player->position = position;
+  player->pitch = pitch;
+  player->yaw = yaw;
+  player->body_yaw = yaw;
+  player->walk_time = 0;
+  player->walk_swing = 0;
+  player->held_block = held_block;
+  player->y_velocity = 0;
+  player->active = TRUE;
+  player->target_present = FALSE;
+  player->breaking = FALSE;
+  player->break_progress = 0;
+}
 
 void initStorage() {
   FRESULT res;
@@ -134,14 +196,22 @@ void saveGame() {
   header->player[0].pitch = players[0].pitch;
   header->player[0].yaw = players[0].yaw;
   header->player[0].held_block = players[0].held_block;
-  header->player[0].wood_count = players[0].inventory[
-    INVENTORY_HOTBAR_START + (WOOD - FIRST_PLACEABLE_BLOCK)].count;
+  header->player[0].wood_count = countInventoryItem(&players[0], WOOD);
+  header->player[0].planks_count = countInventoryItem(&players[0], PLANKS);
+  header->player[0].crafting_table_count = countInventoryItem(&players[0], CRAFTING_TABLE);
+  header->player[0].stick_count = countInventoryItem(&players[0], STICK);
+  header->player[0].sword_count = countInventoryItem(&players[0], WOOD_SWORD);
+  header->player[0].pickaxe_count = countInventoryItem(&players[0], WOOD_PICKAXE);
   header->player[1].position = players[1].position;
   header->player[1].pitch = players[1].pitch;
   header->player[1].yaw = players[1].yaw;
   header->player[1].held_block = players[1].held_block;
-  header->player[1].wood_count = players[1].inventory[
-    INVENTORY_HOTBAR_START + (WOOD - FIRST_PLACEABLE_BLOCK)].count;
+  header->player[1].wood_count = countInventoryItem(&players[1], WOOD);
+  header->player[1].planks_count = countInventoryItem(&players[1], PLANKS);
+  header->player[1].crafting_table_count = countInventoryItem(&players[1], CRAFTING_TABLE);
+  header->player[1].stick_count = countInventoryItem(&players[1], STICK);
+  header->player[1].sword_count = countInventoryItem(&players[1], WOOD_SWORD);
+  header->player[1].pickaxe_count = countInventoryItem(&players[1], WOOD_PICKAXE);
 
   cursor_pos = sizeof(Header);
   while (cursor_pos < BUFFER_LEN) {
@@ -164,11 +234,17 @@ void saveGame() {
 void loadGame() {
   FIL file;
   Header *header = (Header *) file_buffer;
+  HeaderV2 *header_v2 = (HeaderV2 *) file_buffer;
   HeaderV1 *header_v1 = (HeaderV1 *) file_buffer;
   LegacyHeader *legacy_header = (LegacyHeader *) file_buffer;
   int page_num = 0;
   u8 packed;
-  u8 wood_count[2] = {0, 0};
+  u32 wood_count[2] = {0, 0};
+  u32 planks_count[2] = {0, 0};
+  u32 crafting_table_count[2] = {0, 0};
+  u32 stick_count[2] = {0, 0};
+  u32 sword_count[2] = {0, 0};
+  u32 pickaxe_count[2] = {0, 0};
   u8 *blocks_ptr;
   const u8 *blocks_end = blocks + NUM_BLOCKS;
 
@@ -202,8 +278,12 @@ void loadGame() {
     players[0].walk_time = 0;
     players[0].walk_swing = 0;
     players[0].held_block = header->player[0].held_block;
-    wood_count[0] = header->player[0].wood_count > MAX_ITEM_STACK ?
-      MAX_ITEM_STACK : header->player[0].wood_count;
+    wood_count[0] = header->player[0].wood_count;
+    planks_count[0] = header->player[0].planks_count;
+    crafting_table_count[0] = header->player[0].crafting_table_count;
+    stick_count[0] = header->player[0].stick_count;
+    sword_count[0] = header->player[0].sword_count;
+    pickaxe_count[0] = header->player[0].pickaxe_count;
     players[1].position = header->player[1].position;
     players[1].pitch = header->player[1].pitch;
     players[1].yaw = header->player[1].yaw;
@@ -211,8 +291,12 @@ void loadGame() {
     players[1].walk_time = 0;
     players[1].walk_swing = 0;
     players[1].held_block = header->player[1].held_block;
-    wood_count[1] = header->player[1].wood_count > MAX_ITEM_STACK ?
-      MAX_ITEM_STACK : header->player[1].wood_count;
+    wood_count[1] = header->player[1].wood_count;
+    planks_count[1] = header->player[1].planks_count;
+    crafting_table_count[1] = header->player[1].crafting_table_count;
+    stick_count[1] = header->player[1].stick_count;
+    sword_count[1] = header->player[1].sword_count;
+    pickaxe_count[1] = header->player[1].pickaxe_count;
     players[1].y_velocity = 0;
     players[1].active = TRUE;
     active_player_count = 2;
@@ -225,9 +309,30 @@ void loadGame() {
     players[0].walk_time = 0;
     players[0].walk_swing = 0;
     players[0].held_block = header->player[0].held_block;
-    wood_count[0] = header->player[0].wood_count > MAX_ITEM_STACK ?
-      MAX_ITEM_STACK : header->player[0].wood_count;
+    wood_count[0] = header->player[0].wood_count;
+    planks_count[0] = header->player[0].planks_count;
+    crafting_table_count[0] = header->player[0].crafting_table_count;
+    stick_count[0] = header->player[0].stick_count;
+    sword_count[0] = header->player[0].sword_count;
+    pickaxe_count[0] = header->player[0].pickaxe_count;
     cursor_pos = sizeof(Header);
+  } else if (legacy_header->version >= 2 && header_v2->player_count == 2) {
+    restorePlayerState(&players[0], header_v2->player[0].position,
+      header_v2->player[0].pitch, header_v2->player[0].yaw,
+      header_v2->player[0].held_block);
+    restorePlayerState(&players[1], header_v2->player[1].position,
+      header_v2->player[1].pitch, header_v2->player[1].yaw,
+      header_v2->player[1].held_block);
+    wood_count[0] = header_v2->player[0].wood_count;
+    wood_count[1] = header_v2->player[1].wood_count;
+    active_player_count = 2;
+    cursor_pos = sizeof(HeaderV2);
+  } else if (legacy_header->version >= 2) {
+    restorePlayerState(&players[0], header_v2->player[0].position,
+      header_v2->player[0].pitch, header_v2->player[0].yaw,
+      header_v2->player[0].held_block);
+    wood_count[0] = header_v2->player[0].wood_count;
+    cursor_pos = sizeof(HeaderV2);
   } else if (legacy_header->version >= 1 && header_v1->player_count == 2) {
     players[0].position = header_v1->player[0].position;
     players[0].pitch = header_v1->player[0].pitch;
@@ -261,10 +366,20 @@ void loadGame() {
   }
 
   resetPlayerInventory(&players[0]);
-  players[0].inventory[INVENTORY_HOTBAR_START + (WOOD - FIRST_PLACEABLE_BLOCK)].count = wood_count[0];
+  restoreInventoryItem(&players[0], WOOD, wood_count[0]);
+  restoreInventoryItem(&players[0], PLANKS, planks_count[0]);
+  restoreInventoryItem(&players[0], CRAFTING_TABLE, crafting_table_count[0]);
+  restoreInventoryItem(&players[0], STICK, stick_count[0]);
+  restoreInventoryItem(&players[0], WOOD_SWORD, sword_count[0]);
+  restoreInventoryItem(&players[0], WOOD_PICKAXE, pickaxe_count[0]);
   if (players[1].active) {
     resetPlayerInventory(&players[1]);
-    players[1].inventory[INVENTORY_HOTBAR_START + (WOOD - FIRST_PLACEABLE_BLOCK)].count = wood_count[1];
+    restoreInventoryItem(&players[1], WOOD, wood_count[1]);
+    restoreInventoryItem(&players[1], PLANKS, planks_count[1]);
+    restoreInventoryItem(&players[1], CRAFTING_TABLE, crafting_table_count[1]);
+    restoreInventoryItem(&players[1], STICK, stick_count[1]);
+    restoreInventoryItem(&players[1], WOOD_SWORD, sword_count[1]);
+    restoreInventoryItem(&players[1], WOOD_PICKAXE, pickaxe_count[1]);
   }
 
   for (blocks_ptr = blocks; blocks_ptr < blocks_end; blocks_ptr += 2) {

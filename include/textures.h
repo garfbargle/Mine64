@@ -47,7 +47,8 @@ FaceSpec leaves_faces[] = {
 };
 
 FaceSpec planks_faces[] = {
-  {PLANKS, TRUE, TRUE, TRUE}
+  {PLANKS, TRUE, TRUE, TRUE},
+  {CRAFTING_TABLE, TRUE, TRUE, TRUE}
 };
 
 FaceSpec bricks_faces[] = {
@@ -97,7 +98,7 @@ TextureSpec leaves_spec = {
 };
 
 TextureSpec planks_spec = {
-  &planks_texture, 1, planks_faces
+  &planks_texture, 2, planks_faces
 };
 
 TextureSpec bricks_spec = {
@@ -112,7 +113,7 @@ TextureSpec *textures[] = {
 Texture *preview_textures[] = {
   NULL, &dirt_texture, &stone_texture, &grass_side_texture,
   &cobblestone_texture, &sand_texture, &wood_side_texture,
-  &leaves_texture, &planks_texture, &bricks_texture
+  &leaves_texture, &planks_texture, &bricks_texture, &planks_texture
 };
 
 #define NUM_TEXTURES (sizeof(textures) / sizeof(textures[0]))

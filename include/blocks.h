@@ -11,11 +11,11 @@
 #define LEAVES      7
 #define PLANKS      8
 #define BRICKS      9
+#define CRAFTING_TABLE 10
 
-/* The creative hotbar exposes every placeable block.  Block IDs intentionally
-   match their one-based hotbar positions so a selected slot can be saved and
-   used directly when placing blocks. */
+/* Block IDs are also placeable item IDs.  The nine-slot hotbar starts with
+   the base blocks; crafted blocks can be moved into it from storage. */
 #define FIRST_PLACEABLE_BLOCK DIRT
-#define BLOCK_TYPE_COUNT      BRICKS
+#define BLOCK_TYPE_COUNT      CRAFTING_TABLE
 
 #endif /* BLOCKS_H */

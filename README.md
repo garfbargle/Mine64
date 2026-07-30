@@ -44,9 +44,13 @@ close to collect it into a stack of up to 64; placing a wood block consumes
 one. Hold B on a log to punch it—releasing B or looking away resets the
 breaking progress.
 
-Press **START** to open the inventory. It currently provides a 3-row storage
-grid, a selectable nine-slot hotbar, and a visible 2x2 crafting area. The
-crafting cells are UI-only for now; recipes will be added next.
+Press **START** to open the inventory. It has a 3-row storage grid, a
+selectable nine-slot hotbar, and a working 2x2 crafting area. Use **A** to
+pick up/place a stack or take the output, and **B** to move one item at a
+time. One log makes four planks; two
+vertical planks make four sticks; and four planks make a crafting table.
+Place a crafting table, look at it, then press **START** to open its 3x3 grid
+for wooden swords and wooden pickaxes.
 
 ## SummerCart64
 

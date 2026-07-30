@@ -6,6 +6,12 @@
 
 #define MAX_DROPPED_ITEMS 16
 
+/* Block IDs are also item IDs.  Tools start after the placeable block range
+   so they can share inventory stacks without ever being placed in the world. */
+#define STICK         11
+#define WOOD_SWORD    12
+#define WOOD_PICKAXE  13
+
 typedef struct {
   Vector3 position;
   Vector3 velocity;
