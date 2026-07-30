@@ -13,6 +13,7 @@
 #define ITEM_PICKUP_HEIGHT 160.f
 #define ITEM_PICKUP_DELAY 12.f
 #define ITEM_PICKUP_PULL_TIME 12.f
+#define ITEM_IDLE_ROTATION_SPEED 2.f
 #define ITEM_NO_PICKUP_PLAYER MAX_PLAYERS
 
 DroppedItem dropped_items[MAX_DROPPED_ITEMS];
@@ -137,7 +138,7 @@ static void updateDropPhysics(DroppedItem *drop, float delta) {
   if (drop->velocity.y < -ITEM_TERMINAL_SPEED) {
     drop->velocity.y = -ITEM_TERMINAL_SPEED;
   }
-  drop->rotation += delta * 6;
+  drop->rotation += delta * ITEM_IDLE_ROTATION_SPEED;
   if (drop->rotation >= 360) {
     drop->rotation -= 360;
   }
