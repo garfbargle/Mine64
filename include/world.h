@@ -16,7 +16,7 @@
 #define NUM_BLOCKS (MAX_X * MAX_Y * MAX_Z)
 #define NUM_CHUNKS (CHUNKS_X * CHUNKS_Y * CHUNKS_Z)
 
-u8 blocks[NUM_BLOCKS];
+extern u8 blocks[NUM_BLOCKS];
 
 void initWorld();
 

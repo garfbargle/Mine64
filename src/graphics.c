@@ -21,19 +21,26 @@
 
 Gfx *dlp;
 u32 dl_no = 0;
+Gfx display_lists[NUM_DISPLAY_LISTS][WORLD_DISPLAY_LIST_SIZE];
+Gfx line_display_lists[NUM_DISPLAY_LISTS][LINE_DISPLAY_LIST_SIZE];
+Gfx hud_display_lists[NUM_DISPLAY_LISTS][HUD_DISPLAY_LIST_SIZE];
 
 Gfx column_display_list[DISPLAY_LIST_SIZE];
 Gfx *column_dlp;
 Gfx *column_starts[NUM_TEXTURES][CHUNKS_X * CHUNKS_Z];
+static u8 column_display_list_full;
+
+static Gfx empty_column_display_list[] = {
+  gsSPEndDisplayList()
+};
 
 #define BLOCKS_PER_CHUNK (CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE)
 
 static Mtx c_models[NUM_BLOCKS / BLOCKS_PER_CHUNK];
 static Mtx b_models[CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE];
 
-static Mtx marker_model;
-static Mtx dropped_item_translate[MAX_DROPPED_ITEMS];
-static Mtx dropped_item_rotate[MAX_DROPPED_ITEMS];
+static Mtx dropped_item_translate[NUM_DISPLAY_LISTS][MAX_DROPPED_ITEMS];
+static Mtx dropped_item_rotate[NUM_DISPLAY_LISTS][MAX_DROPPED_ITEMS];
 
 #define ITEM_VERTEX(x, y, z, s, t) {x, y, z, 0, s, t, 255, 255, 255, 255}
 
@@ -65,8 +72,8 @@ static Gfx dropped_item_display_list[] = {
 #define STEVE_RIGHT_LEG 5
 #define STEVE_PART_COUNT 6
 
-static Mtx steve_translate[MAX_PLAYERS][STEVE_PART_COUNT];
-static Mtx steve_rotate[MAX_PLAYERS][STEVE_PART_COUNT];
+static Mtx steve_translate[NUM_DISPLAY_LISTS][MAX_PLAYERS][STEVE_PART_COUNT];
+static Mtx steve_rotate[NUM_DISPLAY_LISTS][MAX_PLAYERS][STEVE_PART_COUNT];
 
 #define STEVE_VERTEX(x, y, z, r, g, b) {x, y, z, 0, 0, 0, r, g, b, 255}
 
@@ -125,12 +132,6 @@ static Gfx steve_eyes_display_list[] = {
   gsSPEndDisplayList()
 };
 
-static OSTime lt;
-
-static u8 render_x;
-static u8 render_y;
-static u8 render_z;
-
 static Texture *loaded_texture;
 
 static Vp full_viewport = {
@@ -161,25 +162,6 @@ static Gfx draw_setup_display_list[] = {
   gsSPTexture(0x8000, 0x8000, 0, G_TX_RENDERTILE, G_ON),
   gsDPSetTexturePersp(G_TP_PERSP),
   gsDPSetCombineMode(G_CC_MODULATERGB, G_CC_MODULATERGB),
-  gsDPSetTextureLUT(G_TT_RGBA16),
-  gsSPEndDisplayList()
-};
-
-static Gfx crosshair_display_list[] = {
-  gsDPSetCycleType(G_CYC_FILL),
-  gsDPSetRenderMode (G_RM_NOOP, G_RM_NOOP2),
-  gsDPSetFillColor((GPACK_RGBA5551(255, 255, 255, 1) << 16 | 
-				GPACK_RGBA5551(255, 255, 255, 1))),
-  gsDPFillRectangle((SCREEN_WD - CROSSHAIR_SIZE) / 2, SCREEN_HT / 2 - 1,
-        (SCREEN_WD + CROSSHAIR_SIZE) / 2 - 1, SCREEN_HT / 2),
-  gsDPFillRectangle(SCREEN_WD / 2 - 1, (SCREEN_HT - CROSSHAIR_SIZE) / 2,
-        SCREEN_WD / 2, (SCREEN_HT + CROSSHAIR_SIZE) / 2 - 1),
-  gsDPPipeSync(),
-  gsDPSetCycleType(G_CYC_1CYCLE),
-  gsDPSetRenderMode(G_RM_NOOP, G_RM_NOOP2),
-  gsDPSetCombineMode(G_CC_MODULATEI_PRIM, G_CC_MODULATEI_PRIM),
-  gsDPSetPrimColor(0,0,255,255,255,255),
-  gsDPSetTexturePersp(G_TP_NONE),
   gsDPSetTextureLUT(G_TT_RGBA16),
   gsSPEndDisplayList()
 };
@@ -295,6 +277,13 @@ void loadTexture(Texture *texture) {
 void makeQuadDL(u8 chunk, u8 bx, u8 by, u8 bz, u8 width, u8 height, u8 face) {
   u32 b = bx * CHUNK_SIZE * CHUNK_SIZE + by * CHUNK_SIZE + bz;
 
+  /* Reserve one final command for the column's EndDisplayList.  A maximally
+     fragmented player-built chunk can exceed the normal greedy-mesh budget;
+     dropping only excess faces is far safer than overwriting adjacent RAM. */
+  if (column_display_list + DISPLAY_LIST_SIZE - column_dlp < 6) {
+    column_display_list_full = TRUE;
+    return;
+  }
   gSPMatrix(column_dlp++,OS_K0_TO_PHYSICAL(c_models + chunk),
     G_MTX_MODELVIEW|G_MTX_LOAD|G_MTX_NOPUSH);
   gSPMatrix(column_dlp++,OS_K0_TO_PHYSICAL(b_models + b),
@@ -336,6 +325,13 @@ void makeColumnDL(u8 cx, u8 cz, u8 texture) {
   ChunkQuads *c_quads;
   FaceSpec *faces = textures[texture]->faces;
 
+  if (column_display_list_full ||
+      column_display_list + DISPLAY_LIST_SIZE - column_dlp < 1) {
+    column_display_list_full = TRUE;
+    column_starts[texture][cx * CHUNKS_Z + cz] =
+      empty_column_display_list;
+    return;
+  }
   column_starts[texture][cx * CHUNKS_Z + cz] = column_dlp;
 
   for (cy = 0; cy < CHUNKS_Y; cy++) {
@@ -359,6 +355,9 @@ void makeColumnDL(u8 cx, u8 cz, u8 texture) {
 
 void makeWorldDisplayLists() {
   u8 cx, cz, i;
+  if (column_dlp == column_display_list) {
+    column_display_list_full = FALSE;
+  }
   for (i = 0; i < NUM_TEXTURES; i++) {
     for (cx = 0; cx < CHUNKS_X; cx++) {
       for (cz = 0; cz < CHUNKS_Z; cz++) {
@@ -374,7 +373,14 @@ void makeDisplayListsAt(u8 x, u8 z) {
   u8 cz = z / CHUNK_SIZE;
 
   if ((column_display_list + DISPLAY_LIST_SIZE - column_dlp) < (DISPLAY_LIST_SIZE) / 10) {
+    /*
+     * Normal edits append replacement column lists, so an in-flight RSP task
+     * can safely keep reading the old commands.  Compaction is the one time
+     * this arena is overwritten; wait for all submitted tasks before doing it.
+     */
+    nuGfxTaskAllEndWait();
     column_dlp = column_display_list;
+    column_display_list_full = FALSE;
     makeWorldDisplayLists();
   } else {
     for (i = 0; i < NUM_TEXTURES; i++) {
@@ -405,9 +411,9 @@ static void setStevePartTransform(u8 player_num, u8 part, Vector3 local_offset,
   Player *player = &players[player_num];
   Vector3 offset = rotateY(local_offset, -player->body_yaw);
 
-  guTranslate(&steve_translate[player_num][part], player->position.x + offset.x,
+  guTranslate(&steve_translate[dl_no][player_num][part], player->position.x + offset.x,
     player->position.y + offset.y, player->position.z + offset.z);
-  guRotateRPY(&steve_rotate[player_num][part], pitch, yaw, 0);
+  guRotateRPY(&steve_rotate[dl_no][player_num][part], pitch, yaw, 0);
 }
 
 static void makeStevePose(u8 player_num) {
@@ -431,9 +437,9 @@ static void makeStevePose(u8 player_num) {
 }
 
 static void drawStevePart(u8 player_num, u8 part, Vtx *verts, Gfx *part_dl) {
-  gSPMatrix(dlp++, OS_K0_TO_PHYSICAL(&steve_translate[player_num][part]),
+  gSPMatrix(dlp++, OS_K0_TO_PHYSICAL(&steve_translate[dl_no][player_num][part]),
     G_MTX_MODELVIEW | G_MTX_LOAD | G_MTX_NOPUSH);
-  gSPMatrix(dlp++, OS_K0_TO_PHYSICAL(&steve_rotate[player_num][part]),
+  gSPMatrix(dlp++, OS_K0_TO_PHYSICAL(&steve_rotate[dl_no][player_num][part]),
     G_MTX_MODELVIEW | G_MTX_MUL | G_MTX_NOPUSH);
   gSPVertex(dlp++, verts, 8, 0);
   gSPDisplayList(dlp++, part_dl);
@@ -479,13 +485,13 @@ static void drawDroppedItems() {
       continue;
     }
 
-    guTranslate(&dropped_item_translate[i], drop->position.x, drop->position.y,
+    guTranslate(&dropped_item_translate[dl_no][i], drop->position.x, drop->position.y,
       drop->position.z);
-    guRotateRPY(&dropped_item_rotate[i], 0, drop->rotation, 0);
+    guRotateRPY(&dropped_item_rotate[dl_no][i], 0, drop->rotation, 0);
     loadTexture(preview_textures[drop->item]);
-    gSPMatrix(dlp++, OS_K0_TO_PHYSICAL(&dropped_item_translate[i]),
+    gSPMatrix(dlp++, OS_K0_TO_PHYSICAL(&dropped_item_translate[dl_no][i]),
       G_MTX_MODELVIEW | G_MTX_LOAD | G_MTX_NOPUSH);
-    gSPMatrix(dlp++, OS_K0_TO_PHYSICAL(&dropped_item_rotate[i]),
+    gSPMatrix(dlp++, OS_K0_TO_PHYSICAL(&dropped_item_rotate[dl_no][i]),
       G_MTX_MODELVIEW | G_MTX_MUL | G_MTX_NOPUSH);
     gSPVertex(dlp++, dropped_item_verts, 8, 0);
     gSPDisplayList(dlp++, dropped_item_display_list);
@@ -533,6 +539,7 @@ void drawWorld() {
 
 void drawWireframes() {
   u8 player_num;
+  Gfx *line_display_list = line_display_lists[dl_no];
   dlp = line_display_list;
 
   gSPDisplayList(dlp++, setup_display_list);
@@ -555,7 +562,8 @@ void drawWireframes() {
     gSPVertex(dlp++, cube_verts, 8, 0);
     gSPDisplayList(dlp++, wireframe_display_list);
     if (players[player_num].breaking) {
-      u8 stage = players[player_num].break_progress * 3 / WOOD_BREAK_TIME;
+      u8 stage = players[player_num].break_progress * 3 /
+        players[player_num].break_time;
       if (stage > 2) {
         stage = 2;
       }
@@ -577,6 +585,12 @@ void drawWireframes() {
 static void drawCrosshair(u32 x, u32 y) {
   gDPSetCycleType(dlp++, G_CYC_FILL);
   gDPSetRenderMode(dlp++, G_RM_NOOP, G_RM_NOOP2);
+  gDPSetFillColor(dlp++, (GPACK_RGBA5551(0, 0, 0, 1) << 16 |
+    GPACK_RGBA5551(0, 0, 0, 1)));
+  gDPFillRectangle(dlp++, x - CROSSHAIR_SIZE / 2 - 1, y - 2,
+    x + CROSSHAIR_SIZE / 2, y + 1);
+  gDPFillRectangle(dlp++, x - 2, y - CROSSHAIR_SIZE / 2 - 1,
+    x + 1, y + CROSSHAIR_SIZE / 2);
   gDPSetFillColor(dlp++, (GPACK_RGBA5551(255, 255, 255, 1) << 16 | GPACK_RGBA5551(255, 255, 255, 1)));
   gDPFillRectangle(dlp++, x - CROSSHAIR_SIZE / 2, y - 1, x + CROSSHAIR_SIZE / 2 - 1, y);
   gDPFillRectangle(dlp++, x - 1, y - CROSSHAIR_SIZE / 2, x, y + CROSSHAIR_SIZE / 2 - 1);
@@ -708,7 +722,7 @@ static void drawInventorySlot(u32 x, u32 y, ItemStack *stack, u8 selected, u8 fo
 }
 
 static void drawInventory() {
-  Player *player = &players[0];
+  Player *player = &players[inventory_player];
   u8 craft_columns = player->crafting_table_open ? CRAFTING_TABLE_COLUMNS : PLAYER_CRAFTING_COLUMNS;
   u8 craft_rows = player->crafting_table_open ? CRAFTING_TABLE_ROWS : PLAYER_CRAFTING_ROWS;
   u32 craft_x = player->crafting_table_open ? 40 : 48;
@@ -761,7 +775,7 @@ static void drawStackCount(ItemStack *stack, u32 x, u32 y) {
 }
 
 static void drawInventoryStackCounts() {
-  Player *player = &players[0];
+  Player *player = &players[inventory_player];
   u8 craft_columns = player->crafting_table_open ? CRAFTING_TABLE_COLUMNS : PLAYER_CRAFTING_COLUMNS;
   u8 craft_rows = player->crafting_table_open ? CRAFTING_TABLE_ROWS : PLAYER_CRAFTING_ROWS;
   u32 craft_x = player->crafting_table_open ? 40 : 48;
@@ -794,8 +808,39 @@ static void drawInventoryStackCounts() {
   }
 }
 
+static void drawGameText() {
+  u8 player_num;
+
+  beginText();
+  for (player_num = 0; player_num < active_player_count; player_num++) {
+    u32 y_offset = active_player_count == 2 ?
+      player_num * (SCREEN_HT / 2) : 0;
+    u32 viewport_height = active_player_count == 2 ?
+      SCREEN_HT / 2 : SCREEN_HT;
+    u32 bar_width = HOTBAR_SLOT_COUNT * HOTBAR_SLOT_SIZE;
+    u32 bar_x = (SCREEN_WD - bar_width) / 2;
+    u32 bar_y = y_offset + viewport_height - HOTBAR_SLOT_SIZE -
+      HOTBAR_MARGIN;
+    ItemStack *held_stack = &players[player_num].inventory[
+      INVENTORY_HOTBAR_START + players[player_num].selected_hotbar_slot];
+    u8 slot;
+
+    drawChar('P', 6, y_offset + 6);
+    drawChar('1' + player_num, 13, y_offset + 6);
+    drawString(itemName(held_stack->count > 0 ? held_stack->item : AIR),
+      25, y_offset + 6);
+    for (slot = 0; slot < HOTBAR_SLOT_COUNT; slot++) {
+      ItemStack *stack = &players[player_num].inventory[
+        INVENTORY_HOTBAR_START + slot];
+      drawStackCount(stack, bar_x + slot * HOTBAR_SLOT_SIZE + 2,
+        bar_y + 1);
+    }
+  }
+}
+
 void drawHUD() {
   u8 player_num;
+  Gfx *hud_display_list = hud_display_lists[dl_no];
   dlp = hud_display_list;
 
   gSPDisplayList(dlp++, setup_display_list);
@@ -822,7 +867,9 @@ void drawHUD() {
     gDPPipeSync(dlp++);
   }
   drawMenu();
-  if (current_screen == INVENTORY) {
+  if (current_screen == GAME) {
+    drawGameText();
+  } else if (current_screen == INVENTORY) {
     drawInventoryStackCounts();
   }
 
@@ -832,13 +879,11 @@ void drawHUD() {
   nuGfxTaskStart(hud_display_list,
 		(s32)(dlp - hud_display_list) * sizeof (Gfx),
 		NU_GFX_UCODE_S2DEX,
-    osTvType == OS_TV_NTSC? NU_SC_NOSWAPBUFFER : NU_SC_SWAPBUFFER
+    NU_SC_SWAPBUFFER
   );
 }
 
 void draw() {
-  char conbuf[20];
-  OSTime t;
   loaded_texture = NULL;
 
   if (current_screen == GAME || current_screen == INVENTORY) {
@@ -853,29 +898,12 @@ void draw() {
   }
   drawHUD();
 
-  if (osTvType == OS_TV_NTSC) {
-    // nuDebTaskPerfBar0EX2(4, 20, NU_SC_NOSWAPBUFFER);
-    // t = osGetTime();
-
-    // nuDebConTextPos(0,0,0);
-    // sprintf(conbuf,"%llu", 1000000 / OS_CYCLES_TO_USEC(t - lt));
-    // nuDebConCPuts(0, conbuf);
-
-    // lt = t;
-      
-    nuDebConDisp(NU_SC_SWAPBUFFER);
-  }
-
   /* Switch display list buffers */
   dl_no ^= 1;
 }
 
 void initGraphics() {
-  int x, y, z, i;
-
-  render_x = 0;
-  render_y = 0;
-  render_z = 0;
+  int x, y, z;
 
   nuGfxInit();
   nuGfxDisplayOn();
@@ -897,4 +925,5 @@ void initGraphics() {
   }
 
   column_dlp = column_display_list;
+  column_display_list_full = FALSE;
 }

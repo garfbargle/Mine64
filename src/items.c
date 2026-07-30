@@ -13,6 +13,20 @@
 
 DroppedItem dropped_items[MAX_DROPPED_ITEMS];
 
+u8 itemMaxStack(u8 item) {
+  return (item == WOOD_SWORD || item == WOOD_PICKAXE) ? 1 : MAX_ITEM_STACK;
+}
+
+const char *itemName(u8 item) {
+  static const char *names[] = {
+    "Empty", "Dirt", "Stone", "Grass", "Cobblestone", "Sand", "Log",
+    "Leaves", "Planks", "Bricks", "Crafting Table", "Stick",
+    "Wood Sword", "Wood Pickaxe"
+  };
+
+  return item <= WOOD_PICKAXE ? names[item] : "Unknown";
+}
+
 void initDroppedItems() {
   u8 i;
 
@@ -21,7 +35,7 @@ void initDroppedItems() {
   }
 }
 
-void spawnDroppedItem(u8 item, u8 count, u8 x, u8 y, u8 z) {
+u8 spawnDroppedItem(u8 item, u8 count, u8 x, u8 y, u8 z) {
   u8 i;
   DroppedItem *drop = NULL;
 
@@ -32,7 +46,7 @@ void spawnDroppedItem(u8 item, u8 count, u8 x, u8 y, u8 z) {
     }
   }
   if (drop == NULL) {
-    return;
+    return FALSE;
   }
 
   drop->position.x = (x + 0.5f) * BLOCK_SIZE;
@@ -46,6 +60,7 @@ void spawnDroppedItem(u8 item, u8 count, u8 x, u8 y, u8 z) {
   drop->count = count;
   drop->pickup_delay = ITEM_PICKUP_DELAY;
   drop->active = TRUE;
+  return TRUE;
 }
 
 static u8 solidBlockAt(float x, float y, float z) {
@@ -103,7 +118,9 @@ static void tryPickup(DroppedItem *drop) {
       if (drop->count == 0) {
         drop->active = FALSE;
       }
-      return;
+      if (added > 0) {
+        return;
+      }
     }
   }
 }

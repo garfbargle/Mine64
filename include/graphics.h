@@ -6,13 +6,16 @@
 
 #define DISPLAY_LIST_SIZE 65536
 #define NUM_DISPLAY_LISTS 2
+#define WORLD_DISPLAY_LIST_SIZE 1024
+#define LINE_DISPLAY_LIST_SIZE 512
+#define HUD_DISPLAY_LIST_SIZE 1024
 
 #define BLOCK_SIZE 64
 
 extern Gfx* dlp;
-Gfx display_lists[NUM_DISPLAY_LISTS][1024];
-Gfx line_display_list[512];
-Gfx hud_display_list[1024];
+extern Gfx display_lists[NUM_DISPLAY_LISTS][WORLD_DISPLAY_LIST_SIZE];
+extern Gfx line_display_lists[NUM_DISPLAY_LISTS][LINE_DISPLAY_LIST_SIZE];
+extern Gfx hud_display_lists[NUM_DISPLAY_LISTS][HUD_DISPLAY_LIST_SIZE];
 extern u32 dl_no;
 
 void initGraphics();
@@ -24,4 +27,3 @@ void drawHUD();
 void draw();
 
 #endif /* GRAPHICS_H */
-

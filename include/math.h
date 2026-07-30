@@ -15,9 +15,9 @@ typedef struct {
   int z;
 } Vector3i;
 
-u32 seed;
+extern u32 seed;
 
-u32 random(u32 max);
+u32 random(u32 limit);
 
 float min(float a, float b);
 

@@ -66,10 +66,12 @@ typedef struct {
   u8 breaking_y;
   u8 breaking_z;
   float break_progress;
+  float break_time;
 } Player;
 
 extern Player players[MAX_PLAYERS];
 extern u8 active_player_count;
+extern u8 inventory_player;
 
 void initPlayers();
 void updatePlayers();

@@ -13,15 +13,18 @@
 
 #define STICK_DAMPER 22
 #define MOVE_SPEED (1 / 8.f)
+#define SPRINT_MULTIPLIER 1.5f
 #define JUMP_SPEED (BLOCK_SIZE / 4.5)
 #define TERMINAL_SPEED (BLOCK_SIZE / 2)
 #define GRAVITY (BLOCK_SIZE / 40)
+#define MAX_FRAME_DELTA 2.5f
 #define BOX_RADIUS 0.35
 #define BOX_HEIGHT 1.8
 #define EYE_HEIGHT 1.5
 
 Player players[MAX_PLAYERS];
 u8 active_player_count = 1;
+u8 inventory_player = 0;
 
 static Vector3 bounding_box[] = {
   {-BOX_RADIUS, -EYE_HEIGHT, -BOX_RADIUS},
@@ -87,14 +90,15 @@ static void selectHotbarSlot(Player *player, u8 slot) {
 u8 addItemToInventory(Player *player, u8 item, u8 count) {
   u8 slot;
   u8 remaining = count;
+  u8 max_stack = itemMaxStack(item);
 
   for (slot = 0; slot < INVENTORY_SIZE && remaining > 0; slot++) {
     ItemStack *stack = &player->inventory[slot];
     u8 added;
-    if (stack->item != item || stack->count >= MAX_ITEM_STACK) {
+    if (stack->item != item || stack->count >= max_stack) {
       continue;
     }
-    added = remaining < MAX_ITEM_STACK - stack->count ? remaining : MAX_ITEM_STACK - stack->count;
+    added = remaining < max_stack - stack->count ? remaining : max_stack - stack->count;
     stack->count += added;
     remaining -= added;
   }
@@ -104,7 +108,7 @@ u8 addItemToInventory(Player *player, u8 item, u8 count) {
     if (stack->count != 0) {
       continue;
     }
-    added = remaining < MAX_ITEM_STACK ? remaining : MAX_ITEM_STACK;
+    added = remaining < max_stack ? remaining : max_stack;
     stack->item = item;
     stack->count = added;
     remaining -= added;
@@ -217,7 +221,8 @@ static void moveOneItem(ItemStack *target, ItemStack *carried) {
       target->item = carried->item;
       target->count = 1;
       carried->count--;
-    } else if (target->item == carried->item && target->count < MAX_ITEM_STACK) {
+    } else if (target->item == carried->item &&
+        target->count < itemMaxStack(target->item)) {
       target->count++;
       carried->count--;
     }
@@ -241,7 +246,7 @@ static void craftOutput(Player *player) {
 
   if (!getCraftRecipe(player, &result, &used_slots) ||
       (player->carried_item.count > 0 && player->carried_item.item != result.item) ||
-      player->carried_item.count + result.count > MAX_ITEM_STACK) {
+      player->carried_item.count + result.count > itemMaxStack(result.item)) {
     return;
   }
   for (slot = 0; slot < CRAFTING_SIZE; slot++) {
@@ -259,18 +264,22 @@ static void craftOutput(Player *player) {
 static void returnCraftingItems(Player *player) {
   u8 slot;
   for (slot = 0; slot < CRAFTING_SIZE; slot++) {
-    if (player->crafting[slot].count > 0 &&
-        addItemToInventory(player, player->crafting[slot].item, player->crafting[slot].count) ==
-          player->crafting[slot].count) {
-      player->crafting[slot].item = AIR;
-      player->crafting[slot].count = 0;
+    if (player->crafting[slot].count > 0) {
+      u8 added = addItemToInventory(player, player->crafting[slot].item,
+        player->crafting[slot].count);
+      player->crafting[slot].count -= added;
+      if (player->crafting[slot].count == 0) {
+        player->crafting[slot].item = AIR;
+      }
     }
   }
-  if (player->carried_item.count > 0 &&
-      addItemToInventory(player, player->carried_item.item, player->carried_item.count) ==
-        player->carried_item.count) {
-    player->carried_item.item = AIR;
-    player->carried_item.count = 0;
+  if (player->carried_item.count > 0) {
+    u8 added = addItemToInventory(player, player->carried_item.item,
+      player->carried_item.count);
+    player->carried_item.count -= added;
+    if (player->carried_item.count == 0) {
+      player->carried_item.item = AIR;
+    }
   }
 }
 
@@ -289,6 +298,7 @@ static void spawnPlayer(Player *player, int x, int z) {
   player->target_present = FALSE;
   player->breaking = FALSE;
   player->break_progress = 0;
+  player->break_time = WOOD_BREAK_TIME;
   player->position.x = (x + 0.5) * BLOCK_SIZE;
   player->position.z = (z + 0.5) * BLOCK_SIZE;
 
@@ -322,7 +332,7 @@ void activatePlayerTwo() {
 void updateTargetBlock(u8 player_num) {
   Player *player = &players[player_num];
   float t;
-  Vector3i step;
+  Vector3i step = {0, 0, 0};
   Vector3 direction = {0, 0, -1};
 
   direction = rotateX(direction, player->pitch);
@@ -433,6 +443,10 @@ static float detectCollision(Player *player, Vector3 velocity, float max_t, int 
   }
 }
 
+static u8 blockUsesInventory(u8 block) {
+  return block == WOOD || block == PLANKS || block == CRAFTING_TABLE;
+}
+
 static void placeBlock(u8 player_num, u8 x, u8 y, u8 z) {
   int bx, by, bz, i;
   Vector3i min_block, max_block;
@@ -445,7 +459,7 @@ static void placeBlock(u8 player_num, u8 x, u8 y, u8 z) {
     return;
   }
 
-  if ((player->held_block == WOOD || player->held_block == CRAFTING_TABLE) &&
+  if (blockUsesInventory(player->held_block) &&
       (held_stack->item != player->held_block || held_stack->count == 0)) {
     return;
   }
@@ -465,24 +479,25 @@ static void placeBlock(u8 player_num, u8 x, u8 y, u8 z) {
   }
 
   blocks[x * MAX_Y * MAX_Z + y * MAX_Z + z] = player->held_block;
-  if (player->held_block == WOOD || player->held_block == CRAFTING_TABLE) {
+  if (blockUsesInventory(player->held_block)) {
     held_stack->count--;
   }
   regenerateBlock(x, y, z);
   makeDisplayListsAt(x, z);
 }
 
-static void breakBlock(u8 x, u8 y, u8 z) {
+static u8 breakBlock(u8 x, u8 y, u8 z) {
   u8 block = blocks[x * MAX_Y * MAX_Z + y * MAX_Z + z];
 
   /* The log turns into a physical pickup rather than entering inventory
      immediately.  A full stack therefore leaves the wood on the ground. */
-  if (block == WOOD) {
-    spawnDroppedItem(WOOD, 1, x, y, z);
+  if (blockUsesInventory(block) && !spawnDroppedItem(block, 1, x, y, z)) {
+    return FALSE;
   }
   blocks[x * MAX_Y * MAX_Z + y * MAX_Z + z] = AIR;
   regenerateBlock(x, y, z);
   makeDisplayListsAt(x, z);
+  return TRUE;
 }
 
 static void resetBreaking(Player *player) {
@@ -490,14 +505,49 @@ static void resetBreaking(Player *player) {
   player->break_progress = 0;
 }
 
+static u8 heldItem(Player *player) {
+  ItemStack *held_stack = &player->inventory[
+    INVENTORY_HOTBAR_START + player->selected_hotbar_slot];
+
+  return held_stack->count > 0 ? held_stack->item : AIR;
+}
+
+static float blockBreakTime(u8 block, u8 tool) {
+  switch (block) {
+    case LEAVES:
+      return tool == WOOD_SWORD ? 5.f : 12.f;
+    case DIRT:
+    case GRASS:
+    case SAND:
+      return 22.f;
+    case WOOD:
+    case PLANKS:
+    case CRAFTING_TABLE:
+      return 36.f;
+    case STONE:
+    case COBBLESTONE:
+    case BRICKS:
+      return tool == WOOD_PICKAXE ? 32.f : 120.f;
+    default:
+      return 0;
+  }
+}
+
 static void updateBreaking(u8 player_num, float delta) {
   Player *player = &players[player_num];
   NUContData *cont = &cont_data[player_num];
+  u8 block;
+  float break_time;
 
-  /* For now, punching is intentionally a tree-harvesting action.  Other
-     terrain remains untouched until it has a proper tool/drop rule. */
-  if (!(cont->button & B_BUTTON) || !player->target_present ||
-      blocks[player->target_x * MAX_Y * MAX_Z + player->target_y * MAX_Z + player->target_z] != WOOD) {
+  if (!(cont->button & B_BUTTON) || !player->target_present) {
+    resetBreaking(player);
+    return;
+  }
+
+  block = blocks[player->target_x * MAX_Y * MAX_Z +
+    player->target_y * MAX_Z + player->target_z];
+  break_time = blockBreakTime(block, heldItem(player));
+  if (break_time <= 0) {
     resetBreaking(player);
     return;
   }
@@ -510,11 +560,16 @@ static void updateBreaking(u8 player_num, float delta) {
     player->breaking_z = player->target_z;
     player->break_progress = 0;
   }
+  player->break_time = break_time;
 
   player->break_progress += delta;
-  if (player->break_progress >= WOOD_BREAK_TIME) {
-    breakBlock(player->target_x, player->target_y, player->target_z);
-    resetBreaking(player);
+  if (player->break_progress >= player->break_time) {
+    if (breakBlock(player->target_x, player->target_y,
+        player->target_z)) {
+      resetBreaking(player);
+    } else {
+      player->break_progress = player->break_time;
+    }
   }
 }
 
@@ -542,6 +597,7 @@ static void updatePlayer(u8 player_num, float delta) {
   NUContData *cont = &cont_data[player_num];
   Vector3 velocity = {0, 0, 0};
   float t, t_total = 0;
+  float move_t;
   int collision_axis = 0;
   s8 stick_x = cont->stick_x;
   s8 stick_y = cont->stick_y;
@@ -563,6 +619,10 @@ static void updatePlayer(u8 player_num, float delta) {
     velocity.z -= stick_x * sinf(player->yaw * M_DTOR) + stick_y * cosf(player->yaw * M_DTOR);
     velocity.x *= MOVE_SPEED;
     velocity.z *= MOVE_SPEED;
+    if (cont->button & L_TRIG) {
+      velocity.x *= SPRINT_MULTIPLIER;
+      velocity.z *= SPRINT_MULTIPLIER;
+    }
   }
 
   /* The torso follows travel, while the avatar's head continues to follow
@@ -599,14 +659,15 @@ static void updatePlayer(u8 player_num, float delta) {
   if (onGround(player)) {
     player->y_velocity = (cont->button & R_TRIG) ? JUMP_SPEED : 0;
   } else if (player->y_velocity > -TERMINAL_SPEED) {
-    player->y_velocity -= GRAVITY;
+    player->y_velocity -= GRAVITY * delta;
   }
   velocity.y += player->y_velocity;
 
   velocity = mul(velocity, delta);
   while (t_total < 1) {
     t = detectCollision(player, velocity, 1 - t_total, &collision_axis);
-    player->position = add(player->position, mul(velocity, t - 0.01));
+    move_t = t > 0.01f ? t - 0.01f : 0;
+    player->position = add(player->position, mul(velocity, move_t));
     t_total += t;
     if (t_total < 1) {
       *at(&velocity, collision_axis) = 0;
@@ -631,20 +692,25 @@ void updatePlayers() {
   nuContDataGetEx(&cont_data[0], 0);
   nuContDataGetEx(&cont_data[1], 1);
   time = osGetTime();
-  delta = OS_CYCLES_TO_USEC(time - last_time) * 60 / 1000000.f;
+  delta = last_time == 0 ? 1.f :
+    OS_CYCLES_TO_USEC(time - last_time) * 60 / 1000000.f;
   last_time = time;
+  if (delta > MAX_FRAME_DELTA) {
+    delta = MAX_FRAME_DELTA;
+  }
 
   if (current_screen == INVENTORY) {
-    Player *player = &players[0];
+    Player *player = &players[inventory_player];
+    NUContData *inventory_cont = &cont_data[inventory_player];
     u8 row = player->inventory_cursor / INVENTORY_COLUMNS;
     u8 column = player->inventory_cursor % INVENTORY_COLUMNS;
 
-    if (cont_data[0].trigger & START_BUTTON) {
+    if (inventory_cont->trigger & START_BUTTON) {
       returnCraftingItems(player);
       current_screen = GAME;
       return;
     }
-    if (cont_data[0].trigger & A_BUTTON) {
+    if (inventory_cont->trigger & A_BUTTON) {
       if (player->inventory_area == INVENTORY_AREA_CRAFTING) {
         swapItemStacks(&player->crafting[player->crafting_cursor], &player->carried_item);
       } else if (player->inventory_area == INVENTORY_AREA_OUTPUT) {
@@ -658,7 +724,7 @@ void updatePlayers() {
       }
       return;
     }
-    if (cont_data[0].trigger & B_BUTTON) {
+    if (inventory_cont->trigger & B_BUTTON) {
       if (player->inventory_area == INVENTORY_AREA_CRAFTING) {
         moveOneItem(&player->crafting[player->crafting_cursor], &player->carried_item);
       } else if (player->inventory_area == INVENTORY_AREA_ITEMS) {
@@ -676,17 +742,17 @@ void updatePlayers() {
       u8 craft_rows = craftingRows(player);
       row = player->crafting_cursor / CRAFTING_TABLE_COLUMNS;
       column = player->crafting_cursor % CRAFTING_TABLE_COLUMNS;
-      if (cont_data[0].trigger & L_CBUTTONS) {
+      if (inventory_cont->trigger & L_CBUTTONS) {
         column = column == 0 ? craft_columns - 1 : column - 1;
-      } else if (cont_data[0].trigger & R_CBUTTONS) {
+      } else if (inventory_cont->trigger & R_CBUTTONS) {
         if (column == craft_columns - 1) {
           player->inventory_area = INVENTORY_AREA_OUTPUT;
           return;
         }
         column++;
-      } else if (cont_data[0].trigger & U_JPAD) {
+      } else if (inventory_cont->trigger & U_JPAD) {
         row = row == 0 ? craft_rows - 1 : row - 1;
-      } else if (cont_data[0].trigger & D_JPAD) {
+      } else if (inventory_cont->trigger & D_JPAD) {
         row = (row + 1) % craft_rows;
       } else {
         return;
@@ -696,17 +762,17 @@ void updatePlayers() {
     }
 
     if (player->inventory_area == INVENTORY_AREA_OUTPUT) {
-      if (cont_data[0].trigger & L_CBUTTONS) {
+      if (inventory_cont->trigger & L_CBUTTONS) {
         player->inventory_area = INVENTORY_AREA_CRAFTING;
         player->crafting_cursor = 1 + CRAFTING_TABLE_COLUMNS;
-      } else if (cont_data[0].trigger & R_CBUTTONS) {
+      } else if (inventory_cont->trigger & R_CBUTTONS) {
         player->inventory_area = INVENTORY_AREA_ITEMS;
         player->inventory_cursor = INVENTORY_COLUMNS;
       }
       return;
     }
 
-    if (cont_data[0].trigger & L_CBUTTONS) {
+    if (inventory_cont->trigger & L_CBUTTONS) {
       if (column == 0) {
         player->inventory_area = INVENTORY_AREA_CRAFTING;
         player->crafting_cursor = (row < craftingRows(player) ? row : craftingRows(player) - 1) *
@@ -714,11 +780,11 @@ void updatePlayers() {
         return;
       }
       column--;
-    } else if (cont_data[0].trigger & R_CBUTTONS) {
+    } else if (inventory_cont->trigger & R_CBUTTONS) {
       column = (column + 1) % INVENTORY_COLUMNS;
-    } else if (cont_data[0].trigger & U_JPAD) {
+    } else if (inventory_cont->trigger & U_JPAD) {
       row = row == 0 ? INVENTORY_STORAGE_ROWS : row - 1;
-    } else if (cont_data[0].trigger & D_JPAD) {
+    } else if (inventory_cont->trigger & D_JPAD) {
       row = row == INVENTORY_STORAGE_ROWS ? 0 : row + 1;
     } else {
       return;
@@ -746,22 +812,36 @@ void updatePlayers() {
 
   if (!players[1].active && (cont_data[1].trigger & START_BUTTON)) {
     activatePlayerTwo();
-  }
-  if (cont_data[0].trigger & START_BUTTON) {
-    players[0].crafting_table_open = players[0].target_present &&
-      blocks[players[0].target_x * MAX_Y * MAX_Z + players[0].target_y * MAX_Z +
-        players[0].target_z] == CRAFTING_TABLE;
-    players[0].inventory_area = INVENTORY_AREA_ITEMS;
-    current_screen = INVENTORY;
     return;
+  }
+  for (i = 0; i < active_player_count; i++) {
+    if (cont_data[i].trigger & START_BUTTON) {
+      players[i].crafting_table_open = players[i].target_present &&
+        blocks[players[i].target_x * MAX_Y * MAX_Z + players[i].target_y * MAX_Z +
+          players[i].target_z] == CRAFTING_TABLE;
+      players[i].inventory_area = INVENTORY_AREA_ITEMS;
+      inventory_player = i;
+      current_screen = INVENTORY;
+      return;
+    }
   }
   for (i = 0; i < active_player_count; i++) {
     updatePlayer(i, delta);
   }
   updateDroppedItems(delta);
 
-  if (saving_available && (cont_data[0].trigger & (U_JPAD | D_JPAD | L_JPAD | R_JPAD))) {
-    saveGame();
-    save_message_cooldown = 60;
+  if (saving_available) {
+    for (i = 0; i < active_player_count; i++) {
+      if (cont_data[i].trigger &
+          (U_JPAD | D_JPAD | L_JPAD | R_JPAD)) {
+        if (saveGame()) {
+          save_message_cooldown = 60;
+        } else {
+          saving_available = FALSE;
+          save_failed_message = 120;
+        }
+        break;
+      }
+    }
   }
 }

@@ -6,6 +6,8 @@
 #define NOT_VISIBLE 1
 #define OBSTRUCTED 2
 
+ChunkQuads chunk_quads[NUM_CHUNKS];
+
 typedef struct {
   u8 lower;
   u8 upper;
@@ -31,6 +33,9 @@ void setFront(Front *front, u8 lower, u8 upper, u8 start, u8 block) {
 
 void insertFront(Scanline *scan, u8 i, u8 lower, u8 upper, u8 start, u8 block) {
     u8 j;
+    if (scan->n_fronts >= CHUNK_SIZE) {
+      return;
+    }
     for (j = scan->n_fronts; j > i; j--) {
       scan->fronts[j] = scan->fronts[j - 1];
     }
@@ -49,6 +54,9 @@ void removeFront(Scanline *scan, u8 i) {
 }
 
 void appendQuad(QuadList *list, u8 bs, u8 bt, u8 width, u8 height, u8 block) {
+  if (list->n >= CHUNK_SIZE * CHUNK_SIZE) {
+    return;
+  }
   list->quads[list->n].bs = bs;
   list->quads[list->n].bt = bt;
   list->quads[list->n].width = width - 1;
@@ -68,6 +76,7 @@ u8 blockAt(u8 r, u8 s, u8 t, u8 axes) {
     }
     return blocks[s * MAX_Y * MAX_Z + r * MAX_Z + t];
   }
+  return AIR;
 }
 
 void dropFront(Scanline *scan, QuadList *quads, u8 bs) {
@@ -243,9 +252,11 @@ void makeChunkPlaneQuads(DualQuadList *axis_quads, u8 cr, u8 cs, u8 ct, u8 br, u
       both_quads->quads[i] = quads1.quads[i];
     }
 
-    for (i = 0; i < quads2.n; i++) {
+    for (i = 0; i < quads2.n &&
+        both_quads->n_front + i < CHUNK_SIZE * CHUNK_SIZE; i++) {
       both_quads->quads[both_quads->n_front + i] = quads2.quads[i];
     }
+    both_quads->n_back = i;
   }
 }
 

@@ -1,23 +1,38 @@
 # Mine64 for Nintendo 64
 
 Mine64 is a compact block-building game for original Nintendo 64 hardware.
-Version 0.2 adds a hardware-conscious two-player co-op mode, cartridge saves,
-and an asset pipeline that does not require Minecraft files.
+Version 0.3 adds hardware-stable two-player co-op, deeper mining and crafting,
+safer cartridge saves, and an asset pipeline that does not require Minecraft
+files.
 
 ![Mine64 box art](mine64.png)
 
 ![Mine64 in-game screenshot](game.png)
 
-## v0.2 highlights
+## v0.3 highlights
 
 * Two-player horizontal split-screen: Player 2 can join a running world with
   **START** on Controller 2.
 * Both players have independent movement, camera control, targeting, block
-  selection, placement, and breaking.
+  selection, placement, breaking, inventory management, and crafting.
+* Split-screen render commands and every camera/entity matrix are
+  double-buffered. This prevents the RSP from reading a camera transform while
+  the CPU prepares the following frame, an important difference on real N64
+  hardware.
 * Each player sees the other as a lightweight Steve-style character, with a
   walking swing and head/eye direction that follows their camera.
 * Co-op saves both player positions and inventories; older single-player saves
   still load safely.
+* Save v4 preserves exact hotbar, inventory, crafting, and carried-item state.
+  It validates player/world data with a checksum and uses temporary plus backup
+  files so an interrupted cartridge write can recover the previous world.
+* All terrain can now be mined. Wooden pickaxes break stone, cobblestone, and
+  bricks much faster, while wooden swords cut leaves quickly.
+* Planks and crafting tables are properly consumed when placed, tools are
+  non-stackable, dropped resources are protected when the entity pool is full,
+  and partial inventory transfers can no longer duplicate items.
+* Long frame hitches are clamped before physics simulation, preventing world
+  generation or storage delays from pushing players through terrain.
 * Co-op deliberately uses a narrower view and no more than 24 visible columns
   per player. This keeps the RSP and display-list workload within the limits of
   an unmodified N64.
@@ -29,22 +44,24 @@ and an asset pipeline that does not require Minecraft files.
 | Control | Action |
 | --- | --- |
 | Analog stick | Walk |
+| Hold L + analog stick | Sprint |
 | Hold Z + analog stick | Look around |
-| A / hold B | Place / punch a tree log |
+| A / hold B | Place / mine the targeted block |
 | C-left / C-right | Cycle the selected hotbar block |
-| START (Controller 1) | Open / close inventory |
+| START | Open / close that player's inventory |
 | R | Jump |
-| D-pad | Save, when cartridge storage is available |
+| D-pad (either player) | Save, when cartridge storage is available |
 | Controller 2 START | Join co-op during a running world |
 
 The bottom hotbar contains all nine placeable block types. Its bright slot and
 the enlarged block at the lower right show what each player is holding; that is
-the block placed with **A**. Punching a log makes a wood pickup pop out. Walk
-close to collect it into a stack of up to 64; placing a wood block consumes
-one. Hold B on a log to punch it—releasing B or looking away resets the
-breaking progress.
+the block placed with **A**. Mining a log, planks, or a crafting table makes a
+collectible pickup pop out. Walk close to collect it into a stack of up to 64;
+placing one of these resources consumes it. Hold B to mine—releasing B or
+looking away resets the breaking progress. A wooden pickaxe is substantially
+faster on rock, and a wooden sword clears leaves quickly.
 
-Press **START** to open the inventory. It has a 3-row storage grid, a
+Either player can press **START** to open their inventory. It has a 3-row storage grid, a
 selectable nine-slot hotbar, and a working 2x2 crafting area. Use **A** to
 pick up/place a stack or take the output, and **B** to move one item at a
 time. One log makes four planks; two
@@ -128,6 +145,10 @@ the game; no Minecraft assets are needed. The build uses
 `toolchain/spicy-ld.sh` to bridge the historical makerom flags and
 compiler-runtime objects to modern GNU ld.
 
+The default is an optimized release ROM using the non-debug NuSystem and
+libultra libraries. For an unoptimized SDK debug build, run `make DEBUG=1`.
+Release and debug objects are cached separately, so switching variants is safe.
+
 ### Texture art exports
 
 The game tiles are generated in `generate_assets.py` as 16x16 CI4 textures.
@@ -150,6 +171,34 @@ sand, log end, log side, leaves, planks, bricks; the final cell is ignored.
 The importer preserves crisp source pixels with nearest sampling and reduces
 each tile to its own N64 palette.
 
+### Music asset pipeline
+
+Put a WAV at `art/music.wav`, then create an N64-ready music asset inside the
+same Docker environment used for ROM builds:
+
+```sh
+docker run --rm --platform linux/amd64 \
+  -v "$PWD:/work" -w /work \
+  mine64-nusys-build:local make music
+```
+
+The pipeline downmixes to mono, resamples to 22,050 Hz, removes inaudible
+sub-bass/ultrasonic content, normalizes peaks to -3 dBFS, and encodes the
+result as N64 VADPCM. Outputs are written to `build/audio/`:
+`music-22050-mono.wav` is the review copy, `music.vadpcm.aifc` is the compact
+runtime asset, and `music.json` records its exact size, rate, duration,
+codebook, and an infinite whole-track loop.
+
+VADPCM uses roughly 28% of the space of 16-bit PCM.  The default 22,050 Hz
+mono asset is a strong quality/ROM-size balance for background music. To
+prefer a smaller or clearer asset, set `MUSIC_RATE`, for example
+`make music MUSIC_RATE=16000` or `make music MUSIC_RATE=32000`. To keep the
+input's level and EQ unchanged, set `MUSIC_EFFECTS=`.
+
+Make the WAV itself loop cleanly from its end back to its beginning; the
+runtime will use the full file as an infinite loop. The asset stays opt-in, so
+the normal `make` build continues to work before a track is supplied.
+
 For the complete art-to-cartridge walkthrough, see
 [Custom texture workflow](docs/custom-textures.md).
 
@@ -159,7 +208,12 @@ Mine64 renders the same world mesh for both cameras rather than duplicating the
 world. In co-op it also submits one small, untextured Steve-style model per
 viewport. The split-screen viewport shares the original framebuffer, and the
 explicit co-op visibility cap keeps the main per-frame display list below its
-1,024-command budget.
+1,024-command budget. All per-frame display lists and referenced matrices are
+double-buffered so their memory stays immutable until the RSP finishes.
+
+The linked release program currently occupies about 2.1 MiB including its world,
+geometry cache, NuSystem task buffers, and doubled render state. It remains
+within the stock console's 4 MiB RDRAM; an Expansion Pak is not required.
 
 ## Technical Details
 

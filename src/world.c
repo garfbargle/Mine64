@@ -3,6 +3,8 @@
 #include "noise.h"
 #include "math.h"
 
+u8 blocks[NUM_BLOCKS];
+
 void generateLeafHeights(int *heights) {
   int i;
   for (i = 0; i < 25; i++) {
@@ -62,7 +64,7 @@ void trySpawnTree(int tx, int tz) {
 }
 
 void initWorld() {
-  int x, y, z, i;
+  int x, y, z;
   float base, peaks;
   u8 height, block, do_sand;
 

@@ -24,8 +24,10 @@ typedef struct {
 
 extern DroppedItem dropped_items[MAX_DROPPED_ITEMS];
 
+u8 itemMaxStack(u8 item);
+const char *itemName(u8 item);
 void initDroppedItems();
-void spawnDroppedItem(u8 item, u8 count, u8 x, u8 y, u8 z);
+u8 spawnDroppedItem(u8 item, u8 count, u8 x, u8 y, u8 z);
 void updateDroppedItems(float delta);
 
 #endif /* ITEMS_H */

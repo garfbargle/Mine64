@@ -8,7 +8,7 @@ extern u8 files_present[3];
 extern u32 game_file_num;
 
 void initStorage();
-void saveGame();
+u8 saveGame();
 void loadGame();
 
 #endif /* STORAGE_H */

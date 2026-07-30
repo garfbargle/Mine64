@@ -21,17 +21,29 @@ typedef struct {
 
 u8 visible_columns[MAX_PLAYERS][CHUNKS_X * CHUNKS_Z];
 
-static Mtx projection_matrix[MAX_PLAYERS];
-static u16 perspective_norm[MAX_PLAYERS];
-static Mtx cam_rotate2[MAX_PLAYERS];
-static Mtx cam_rotate[MAX_PLAYERS];
-static Mtx cam_translate[MAX_PLAYERS];
+/*
+ * Every matrix referenced by an RSP display list must remain unchanged until
+ * that task has completed.  The CPU is allowed to prepare the next frame
+ * while the previous one is still in flight, so these matrices follow the
+ * same double-buffer index as the world display lists.
+ */
+static Mtx projection_matrix[NUM_DISPLAY_LISTS][MAX_PLAYERS];
+static u16 perspective_norm[NUM_DISPLAY_LISTS][MAX_PLAYERS];
+static Mtx cam_rotate2[NUM_DISPLAY_LISTS][MAX_PLAYERS];
+static Mtx cam_rotate[NUM_DISPLAY_LISTS][MAX_PLAYERS];
+static Mtx cam_translate[NUM_DISPLAY_LISTS][MAX_PLAYERS];
 static Line2D cull_lines[NUM_CULL_LINES];
 static u8 point_sides[CHUNKS_X + 1][CHUNKS_Z + 1];
 
 void initCamera() {
-  guPerspective(&projection_matrix[0], &perspective_norm[0], FOV_Y, FOV_RATIO, 10, 8000, 1.0);
-  guPerspective(&projection_matrix[1], &perspective_norm[1], FOV_Y_COOP, COOP_FOV_RATIO, 10, 8000, 1.0);
+  u8 frame;
+
+  for (frame = 0; frame < NUM_DISPLAY_LISTS; frame++) {
+    guPerspective(&projection_matrix[frame][0], &perspective_norm[frame][0],
+      FOV_Y, FOV_RATIO, 10, 8000, 1.0);
+    guPerspective(&projection_matrix[frame][1], &perspective_norm[frame][1],
+      FOV_Y_COOP, COOP_FOV_RATIO, 10, 8000, 1.0);
+  }
 }
 
 static void makeCullLine(Line2D *line, Vector3 normal, Player *player) {
@@ -132,16 +144,21 @@ void updateVisibleColumns(u8 player_num) {
 
 void updateCameraMatrices(u8 player_num) {
   Player *player = &players[player_num];
-  guTranslate(&cam_translate[player_num], -player->position.x, -player->position.y, -player->position.z);
-  guRotateRPY(&cam_rotate[player_num], 0.0, -player->yaw, 0.0);
-  guRotateRPY(&cam_rotate2[player_num], -player->pitch, 0.0, 0.0);
+  guTranslate(&cam_translate[dl_no][player_num], -player->position.x,
+    -player->position.y, -player->position.z);
+  guRotateRPY(&cam_rotate[dl_no][player_num], 0.0, -player->yaw, 0.0);
+  guRotateRPY(&cam_rotate2[dl_no][player_num], -player->pitch, 0.0, 0.0);
 }
 
 void loadCameraMatrices(u8 player_num) {
   u8 projection = active_player_count == 2;
-  gSPMatrix(dlp++, OS_K0_TO_PHYSICAL(&projection_matrix[projection]), G_MTX_PROJECTION | G_MTX_LOAD | G_MTX_NOPUSH);
-  gSPPerspNormalize(dlp++, perspective_norm[projection]);
-  gSPMatrix(dlp++, OS_K0_TO_PHYSICAL(&cam_rotate2[player_num]), G_MTX_PROJECTION | G_MTX_MUL | G_MTX_NOPUSH);
-  gSPMatrix(dlp++, OS_K0_TO_PHYSICAL(&cam_rotate[player_num]), G_MTX_PROJECTION | G_MTX_MUL | G_MTX_NOPUSH);
-  gSPMatrix(dlp++, OS_K0_TO_PHYSICAL(&cam_translate[player_num]), G_MTX_PROJECTION | G_MTX_MUL | G_MTX_NOPUSH);
+  gSPMatrix(dlp++, OS_K0_TO_PHYSICAL(&projection_matrix[dl_no][projection]),
+    G_MTX_PROJECTION | G_MTX_LOAD | G_MTX_NOPUSH);
+  gSPPerspNormalize(dlp++, perspective_norm[dl_no][projection]);
+  gSPMatrix(dlp++, OS_K0_TO_PHYSICAL(&cam_rotate2[dl_no][player_num]),
+    G_MTX_PROJECTION | G_MTX_MUL | G_MTX_NOPUSH);
+  gSPMatrix(dlp++, OS_K0_TO_PHYSICAL(&cam_rotate[dl_no][player_num]),
+    G_MTX_PROJECTION | G_MTX_MUL | G_MTX_NOPUSH);
+  gSPMatrix(dlp++, OS_K0_TO_PHYSICAL(&cam_translate[dl_no][player_num]),
+    G_MTX_PROJECTION | G_MTX_MUL | G_MTX_NOPUSH);
 }

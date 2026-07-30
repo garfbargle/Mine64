@@ -6,10 +6,11 @@
 
 enum Screen current_screen = MENU;
 u32 save_message_cooldown = 0;
+u8 save_failed_message = 0;
 u8 player_two_joined_message = 0;
 
 static char *menu_text[] = {
-  "Mine64 v0.2",
+  "Mine64 v0.3",
   "",
   "",
   "How to play",
@@ -20,7 +21,7 @@ static char *menu_text[] = {
 };
 
 static char *menu_text_no_saving[] = {
-  "Mine64 v0.2",
+  "Mine64 v0.3",
   "",
   "",
   "How to play",
@@ -46,12 +47,14 @@ static u8 option_lines[] = {
 static u8 selected_option = 0;
 
 static char *info_text[] = {
-  "Mine64 v0.2",
+  "Mine64 v0.3",
   "",
   "Walk: Analog stick",
+  "Sprint: Left shoulder",
   "Look around: Analog stick + Z trigger",
   "Place block: A button (wood is limited)",
-  "Hold B to punch a tree log",
+  "Mine block: Hold B button",
+  "Pickaxe mines rock faster",
   "Select block: C buttons left/right",
   "Inventory: START button",
   "Jump: Right shoulder",
@@ -69,6 +72,10 @@ static char *loading_text[] = {
 
 static char *saved_text[] = {
   "World saved"
+};
+
+static char *save_failed_text[] = {
+  "Save failed"
 };
 
 static char *player_two_joined_text[] = {
@@ -128,6 +135,20 @@ void drawChar(char chr, u32 x, u32 y) {
     1 << 10, 1 << 10);
 }
 
+void drawString(const char *text, u32 x, u32 y) {
+  while (*text) {
+    if (*text != ' ') {
+      drawChar(*text, x, y);
+    }
+    x += charWidth(*text);
+    text++;
+  }
+}
+
+void beginText() {
+  gSPDisplayList(dlp++, menu_setup_display_list);
+}
+
 void drawMenu() {
   u32 i, j, x, center;
   char chr;
@@ -157,7 +178,10 @@ void drawMenu() {
       y_start = SCREEN_HT / 3;
       break;
     case GAME:
-      if (save_message_cooldown > 0) {
+      if (save_failed_message > 0) {
+        text = save_failed_text;
+        n_lines = sizeof(save_failed_text) / sizeof(char *);
+      } else if (save_message_cooldown > 0) {
         text = saved_text;
         n_lines = sizeof(saved_text) / sizeof(char *);
       } else {
@@ -171,23 +195,31 @@ void drawMenu() {
       n_lines = sizeof(inventory_text) / sizeof(char *);
       y_start = 26;
       break;
+    default:
+      return;
   }
 
-  if (current_screen == GAME && save_message_cooldown == 0 && player_two_joined_message == 0) {
+  if (current_screen == GAME && save_message_cooldown == 0 &&
+      save_failed_message == 0 && player_two_joined_message == 0) {
     return;
   }
 
   if (save_message_cooldown > 0) {
     save_message_cooldown--;
   }
+  if (save_failed_message > 0) {
+    save_failed_message--;
+  }
   if (player_two_joined_message > 0) {
     player_two_joined_message--;
   }
 
-  gSPDisplayList(dlp++, menu_setup_display_list);
+  beginText();
 
   for (i = 0; i < n_lines; i++) {
-    if (current_screen == MENU && i >= option_lines[1] && files_present[i - option_lines[1]]) {
+    if (current_screen == INVENTORY && i == 0) {
+      text_line = inventory_player == 0 ? "P1 Inventory" : "P2 Inventory";
+    } else if (current_screen == MENU && i >= option_lines[1] && files_present[i - option_lines[1]]) {
       text_line = world_names[i - option_lines[1]];
     } else {
       text_line = text[i];
@@ -218,11 +250,11 @@ void drawMenu() {
       chr = text_line[j];
       if (chr != ' ') {
         if (current_screen == INVENTORY && i == 1) {
-          drawChar(chr, x + (players[0].crafting_table_open ? 40 : 48), 43);
+          drawChar(chr, x + (players[inventory_player].crafting_table_open ? 40 : 48), 43);
         } else if (current_screen == INVENTORY && i == 2) {
-          drawChar(chr, x + (players[0].crafting_table_open ? 104 : 86), 43);
+          drawChar(chr, x + (players[inventory_player].crafting_table_open ? 104 : 86), 43);
         } else if (current_screen == INVENTORY && i == 3) {
-          drawChar(chr, x + (players[0].crafting_table_open ? 145 : 115), 43);
+          drawChar(chr, x + (players[inventory_player].crafting_table_open ? 145 : 115), 43);
         } else if (current_screen == INVENTORY && i > 3) {
           drawChar(chr, x + 42, (i - 4) * 10 + 142);
         } else {

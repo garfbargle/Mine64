@@ -1,13 +1,19 @@
 #include "math.h"
 #include "graphics.h"
 
-u32 random(u32 max) {
-    seed = (seed << 2) + 2;
+u32 seed;
 
-    seed *= (seed + 1);
-    seed = seed >> 2;
-
-    return seed % max;
+u32 random(u32 limit) {
+  if (limit == 0) {
+    return 0;
+  }
+  if (seed == 0) {
+    seed = 0x6D2B79F5;
+  }
+  seed ^= seed << 13;
+  seed ^= seed >> 17;
+  seed ^= seed << 5;
+  return seed % limit;
 }
 
 float min(float a, float b) {
@@ -40,6 +46,7 @@ float * at(Vector3 *v, int i) {
     case 2:
       return &(v->z);
   }
+  return 0;
 }
 
 int * ati(Vector3i *v, int i) {
@@ -51,6 +58,7 @@ int * ati(Vector3i *v, int i) {
     case 2:
       return &(v->z);
   }
+  return 0;
 }
 
 Vector3 add(Vector3 a, Vector3 b) {

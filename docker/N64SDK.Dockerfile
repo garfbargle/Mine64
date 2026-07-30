@@ -3,7 +3,8 @@ FROM ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates curl file git make python3 xz-utils libc6-i386 lib32z1 \
+    build-essential ca-certificates cmake curl file git make python3 sox \
+    xz-utils libc6-i386 lib32z1 \
     && rm -rf /var/lib/apt/lists/*
 
 # Cross compiler and newlib packages from the public ModernN64SDKArchives mirror.
@@ -41,4 +42,16 @@ RUN git clone --depth 1 --filter=blob:none --no-checkout \
 
 ENV ROOT=/etc/n64
 ENV PATH=/opt/crashsdk/bin:${PATH}
+
+# N64 VADPCM encoder used by the music-asset pipeline.  Keep this pinned so
+# builds do not silently change the codec's output or quality characteristics.
+ARG VADPCM_REF=d2facb736fc57cdd01deafa65d37c76669526ac3
+RUN git clone --depth 1 https://github.com/depp/vadpcm.git /tmp/vadpcm \
+    && cd /tmp/vadpcm \
+    && git checkout "$VADPCM_REF" \
+    && cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF \
+    && cmake --build build --target vadpcm_cli -j"$(nproc)" \
+    && install -m 0755 build/vadpcm /usr/local/bin/vadpcm \
+    && rm -rf /tmp/vadpcm
+
 CMD ["/bin/bash"]

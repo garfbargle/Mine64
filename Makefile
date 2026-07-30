@@ -1,4 +1,4 @@
-# Modern N64 SDK-compatible build for Mine64 v0.2.
+# Modern N64 SDK-compatible build for Mine64 v0.3.
 #
 # ROOT defaults to the compatibility tree supplied by the build container.
 # Set ROOT to a locally installed Modern N64 SDK root when building elsewhere.
@@ -21,40 +21,89 @@ MAKEMASK ?= makemask
 SPICY_LD ?= $(CURDIR)/toolchain/spicy-ld.sh
 MAKEROM := spicy --toolchain-prefix=mips-n64- --ld_command=$(SPICY_LD)
 
-LCDEFS := -DNU_DEBUG -DF3DEX_GBI_2
 LCINCS := -I. -I$(NUSYSINCDIR) -I$(ROOT)/usr/include/PR -I$(INCDIR) -I$(INCDIR)/ff -I$(ASSDIR) -I$(ROOT)/usr/include
-LCOPTS := -mips3 -mgp32 -mfp32 -funsigned-char -fcommon -D_LANGUAGE_C -D_ULTRA64 -D__EXTENSIONS__
-LDFLAGS := $(MKDEPOPT) -L$(LIB) -L$(NUSYSLIBDIR) -lnusys_d -lultra_d -lcart
+LCOPTS := -mips3 -mgp32 -mfp32 -funsigned-char -fno-common -Wall -Wextra \
+	-Wno-missing-braces -Wno-unused-parameter \
+	-D_LANGUAGE_C -D_ULTRA64 -D__EXTENSIONS__
 
-OPTIMIZER := -g
+DEBUG ?= 0
+ifeq ($(DEBUG),1)
+SDK_VARIANT := _d
+BUILD_VARIANT := debug
+LCDEFS := -DNU_DEBUG -DF3DEX_GBI_2
+OPTIMIZER := -O0 -g3
+else
+SDK_VARIANT :=
+BUILD_VARIANT := release
+LCDEFS := -DF3DEX_GBI_2 -DNDEBUG
+OPTIMIZER := -O2 -g
+endif
 
+LDFLAGS := $(MKDEPOPT) -L$(LIB) -L$(NUSYSLIBDIR) -lnusys$(SDK_VARIANT) -lultra$(SDK_VARIANT) -lcart
+
+OBJECT_DIR := $(OBJDIR)/$(BUILD_VARIANT)
 APP := $(OBJDIR)/$(TARGET).out
 ROM := $(OBJDIR)/$(TARGET).n64
 CODEFILES := $(wildcard $(SRCDIR)/*.c) $(wildcard $(SRCDIR)/ff/*.c)
-CODEOBJECTS := $(patsubst $(SRCDIR)/%.c,$(OBJDIR)/%.o,$(CODEFILES)) $(NUSYSLIBDIR)/nusys_d.o
+CODEOBJECTS := $(patsubst $(SRCDIR)/%.c,$(OBJECT_DIR)/%.o,$(CODEFILES)) $(NUSYSLIBDIR)/nusys$(SDK_VARIANT).o
 CODESEGMENT := $(OBJDIR)/codesegment.o
 ASSETS := $(ASSDIR)/texture_data.h $(ASSDIR)/font.h
 CUSTOM_TEXTURE_SOURCE := $(wildcard art/custom-textures.png)
 
+# Music is intentionally opt-in: a source WAV is usually large and is not
+# required to build the game until audio playback is added.  The pipeline
+# normalizes it to a hardware-friendly format and encodes N64 VADPCM.
+AUDIO_BUILD_DIR := $(OBJDIR)/audio
+MUSIC_SOURCE ?= art/music.wav
+MUSIC_RATE ?= 22050
+MUSIC_EFFECTS ?= highpass 30 lowpass 10000 gain -n -3
+MUSIC_PCM := $(AUDIO_BUILD_DIR)/music-$(MUSIC_RATE)-mono.wav
+MUSIC_AIFC := $(AUDIO_BUILD_DIR)/music.vadpcm.aifc
+MUSIC_INFO := $(AUDIO_BUILD_DIR)/music.json
+SOX ?= sox
+VADPCM ?= vadpcm
+
 .DEFAULT_GOAL := default
-.PHONY: default clean
+.PHONY: default clean music music-info FORCE_CODESEGMENT FORCE_ROM
 
 default: $(ROM)
+
+# Run this inside the project Docker image. The encoder accepts mono 16-bit
+# PCM only, so SoX supplies the deterministic resample/downmix stage first.
+music: $(MUSIC_INFO)
+
+music-info: $(MUSIC_INFO)
+
+$(MUSIC_PCM): $(MUSIC_SOURCE)
+	@mkdir -p $(dir $@)
+	$(SOX) $< -r $(MUSIC_RATE) -c 1 -b 16 -e signed-integer $@ remix - $(MUSIC_EFFECTS)
+
+$(MUSIC_AIFC): $(MUSIC_PCM)
+	$(VADPCM) encode --predictors 4 $< $@
+
+$(MUSIC_INFO): $(MUSIC_AIFC) tools/audio_manifest.py
+	python3 tools/audio_manifest.py $< $@
 
 $(ASSETS): generate_assets.py tools/import_textures.py $(CUSTOM_TEXTURE_SOURCE)
 	python3 generate_assets.py
 	@if [ -n "$(CUSTOM_TEXTURE_SOURCE)" ]; then python3 tools/import_textures.py $(CUSTOM_TEXTURE_SOURCE); fi
 
-$(OBJDIR)/%.o: $(SRCDIR)/%.c $(ASSETS)
+$(OBJECT_DIR)/%.o: $(SRCDIR)/%.c $(ASSETS)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) $< -o $@
 
-$(CODESEGMENT): $(CODEOBJECTS) Makefile
+$(CODESEGMENT): FORCE_CODESEGMENT $(CODEOBJECTS) Makefile
 	$(LD) -o $@ -r $(CODEOBJECTS) $(LDFLAGS)
 
-$(ROM): $(CODESEGMENT) spec
+# Recreate the shared output when switching between cached release/debug
+# object trees, even if its timestamp is newer than the selected code segment.
+$(ROM): FORCE_ROM $(CODESEGMENT) spec
 	$(MAKEROM) spec -I$(NUSYSINCDIR) -r $@ -e $(APP)
 	$(MAKEMASK) $@
+
+FORCE_ROM:
+
+FORCE_CODESEGMENT:
 
 clean:
 	rm -rf $(OBJDIR)

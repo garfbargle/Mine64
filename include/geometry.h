@@ -43,7 +43,7 @@ typedef struct {
   DualQuadList z_quads[CHUNK_SIZE];
 } ChunkQuads;
 
-ChunkQuads chunk_quads[NUM_CHUNKS];
+extern ChunkQuads chunk_quads[NUM_CHUNKS];
 
 void initGeometry();
 void regenerateBlock(u8 x, u8 y, u8 z);
