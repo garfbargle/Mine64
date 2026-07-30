@@ -2170,12 +2170,45 @@ static void drawInventory() {
   }
 }
 
-static void drawStackCount(ItemStack *stack, u32 x, u32 y) {
+static void drawCompactDigit(char digit, u32 x, u32 y) {
+  u8 index = digit - ' ';
+  u32 source_x = index % 16;
+  u32 source_y = (index / 16) + 2;
+
+  gSPTextureRectangle(dlp++,
+    x << 2, y << 2,
+    ((x + 6) << 2) - 2, ((y + 6) << 2) - 2,
+    G_TX_RENDERTILE,
+    (source_x * 8) << 5, (source_y * 8) << 5,
+    (8 << 10) / 6, (8 << 10) / 6);
+}
+
+static void drawStackCount(ItemStack *stack, u32 x, u32 y,
+    u32 slot_size) {
+  u32 digit_x;
+  u32 digit_y;
+
+  if (stack->count <= 1) {
+    return;
+  }
+  digit_x = x + slot_size - (stack->count >= 10 ? 13 : 7);
+  digit_y = y + slot_size - 7;
+
+  /* Six-pixel digits sit against the lower-right rim instead of masking the
+     icon.  A one-pixel shadow keeps them readable over bright materials. */
+  gDPSetPrimColor(dlp++, 0, 0, 12, 14, 15, 255);
   if (stack->count >= 10) {
-    drawChar('0' + stack->count / 10, x + 2, y + 8);
-    drawChar('0' + stack->count % 10, x + 8, y + 8);
-  } else if (stack->count > 0) {
-    drawChar('0' + stack->count, x + 8, y + 8);
+    drawCompactDigit('0' + stack->count / 10, digit_x + 1, digit_y + 1);
+    drawCompactDigit('0' + stack->count % 10, digit_x + 7, digit_y + 1);
+  } else {
+    drawCompactDigit('0' + stack->count, digit_x + 1, digit_y + 1);
+  }
+  gDPSetPrimColor(dlp++, 0, 0, 248, 248, 238, 255);
+  if (stack->count >= 10) {
+    drawCompactDigit('0' + stack->count / 10, digit_x, digit_y);
+    drawCompactDigit('0' + stack->count % 10, digit_x + 6, digit_y);
+  } else {
+    drawCompactDigit('0' + stack->count, digit_x, digit_y);
   }
 }
 
@@ -2190,11 +2223,11 @@ static void drawInventoryStackCounts() {
       u32 y = row == INVENTORY_STORAGE_ROWS ? INVENTORY_HOTBAR_Y :
         INVENTORY_GRID_Y + row * INVENTORY_SLOT_SIZE;
 
-      drawStackCount(stack, x, y);
+      drawStackCount(stack, x, y, INVENTORY_SLOT_SIZE);
     }
   }
   if (player->carried_item.count > 0) {
-    drawStackCount(&player->carried_item, 164, 142);
+    drawStackCount(&player->carried_item, 164, 142, INVENTORY_SLOT_SIZE);
   }
 }
 
@@ -2437,9 +2470,8 @@ static void drawGameText() {
          Single items do not need a count label; retain labels only when a
          stack contains more than one item. */
       if (stack->count > 1) {
-        drawStackCount(stack,
-          bar_x + slot * (usesFourPlayerLayout() ? 14 : HOTBAR_SLOT_SIZE) + 2,
-          bar_y + 1);
+        u32 slot_size = usesFourPlayerLayout() ? 14 : HOTBAR_SLOT_SIZE;
+        drawStackCount(stack, bar_x + slot * slot_size, bar_y, slot_size);
       }
     }
   }
@@ -2502,6 +2534,9 @@ void drawHUD() {
   if (current_screen == GAME) {
     drawGameText();
   } else if (current_screen == INVENTORY) {
+    /* drawInventory may leave an item preview bound; restore the font before
+       issuing count glyph rectangles. */
+    beginText();
     drawInventoryStackCounts();
     drawInventoryText();
   }
