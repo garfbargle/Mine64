@@ -34,14 +34,16 @@ CODEFILES := $(wildcard $(SRCDIR)/*.c) $(wildcard $(SRCDIR)/ff/*.c)
 CODEOBJECTS := $(patsubst $(SRCDIR)/%.c,$(OBJDIR)/%.o,$(CODEFILES)) $(NUSYSLIBDIR)/nusys_d.o
 CODESEGMENT := $(OBJDIR)/codesegment.o
 ASSETS := $(ASSDIR)/texture_data.h $(ASSDIR)/font.h
+CUSTOM_TEXTURE_SOURCE := $(wildcard art/custom-textures.png)
 
 .DEFAULT_GOAL := default
 .PHONY: default clean
 
 default: $(ROM)
 
-$(ASSETS): generate_assets.py
+$(ASSETS): generate_assets.py tools/import_textures.py $(CUSTOM_TEXTURE_SOURCE)
 	python3 generate_assets.py
+	@if [ -n "$(CUSTOM_TEXTURE_SOURCE)" ]; then python3 tools/import_textures.py $(CUSTOM_TEXTURE_SOURCE); fi
 
 $(OBJDIR)/%.o: $(SRCDIR)/%.c $(ASSETS)
 	@mkdir -p $(dir $@)

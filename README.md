@@ -75,6 +75,18 @@ This writes `art/mine64-textures.png` (a native 64x48 atlas),
 `art/mine64-textures-preview.png` (16x nearest-neighbour), and
 `art/mine64-textures.json` (tile order and palette metadata).
 
+### Custom texture import
+
+Put an edited 4x3 PNG atlas at `art/custom-textures.png`. The first eleven
+cells are used in this order: dirt, stone, grass top, grass side, cobblestone,
+sand, log end, log side, leaves, planks, bricks; the final cell is ignored.
+`make` automatically converts each cell into a 16x16, 16-colour CI4 tile.
+The importer preserves crisp source pixels with nearest sampling and reduces
+each tile to its own N64 palette.
+
+For the complete art-to-cartridge walkthrough, see
+[Custom texture workflow](docs/custom-textures.md).
+
 ## Hardware notes
 
 Mine64 renders the same world mesh for both cameras rather than duplicating the

@@ -17,11 +17,13 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from generate_assets import PALETTES, tile
+from import_textures import decode_png, median_cut
 
 TILE_SIZE = 16
 COLUMNS = 4
 SCALE = 16
 OUTPUT_DIR = ROOT / "art"
+CUSTOM_SOURCE = OUTPUT_DIR / "custom-textures.png"
 
 
 def write_png(path, width, height, pixels):
@@ -50,13 +52,32 @@ def main():
     pixels = [(24, 28, 28)] * (width * height)
     manifest_tiles = []
 
+    imported = None
+    if CUSTOM_SOURCE.exists():
+        source_width, source_height, source_image = decode_png(CUSTOM_SOURCE)
+        if source_width % COLUMNS or source_height % 3:
+            raise ValueError("custom texture atlas must divide evenly into a 4x3 grid")
+        imported = (source_width // COLUMNS, source_height // 3, source_image)
+
     for number, name in enumerate(names):
         atlas_x = (number % COLUMNS) * TILE_SIZE
         atlas_y = (number // COLUMNS) * TILE_SIZE
-        palette = PALETTES[name]
+        if imported:
+            cell_width, cell_height, source_image = imported
+            origin_x = (number % COLUMNS) * cell_width
+            origin_y = (number // COLUMNS) * cell_height
+            tile_pixels = [
+                source_image[origin_y + min(cell_height - 1, (y * cell_height + cell_height // 2) // TILE_SIZE)]
+                            [origin_x + min(cell_width - 1, (x * cell_width + cell_width // 2) // TILE_SIZE)]
+                for y in range(TILE_SIZE) for x in range(TILE_SIZE)
+            ]
+            palette = median_cut(tile_pixels, 16)
+        else:
+            palette = PALETTES[name]
+            tile_pixels = [palette[tile(name, x, y) - 1] for y in range(TILE_SIZE) for x in range(TILE_SIZE)]
         for y in range(TILE_SIZE):
             for x in range(TILE_SIZE):
-                pixels[(atlas_y + y) * width + atlas_x + x] = palette[tile(name, x, y) - 1]
+                pixels[(atlas_y + y) * width + atlas_x + x] = tile_pixels[y * TILE_SIZE + x]
         manifest_tiles.append({
             "name": name,
             "atlas_x": atlas_x,
@@ -78,6 +99,7 @@ def main():
 
     (OUTPUT_DIR / "mine64-textures.json").write_text(json.dumps({
         "format": "RGB preview of Mine64 CI4 tiles",
+        "source": "custom-textures.png" if imported else "generate_assets.py",
         "tile_width": TILE_SIZE,
         "tile_height": TILE_SIZE,
         "atlas_columns": COLUMNS,
