@@ -17,6 +17,9 @@
 #define THIRD_PERSON_HEIGHT 24.f
 #define THIRD_PERSON_SAMPLES 12
 #define THIRD_PERSON_AVATAR_MIN_DISTANCE 40.f
+#define LOADING_PREVIEW_FRAMES 150
+#define LOADING_ORBIT_RADIUS 3200.f
+#define LOADING_WORLD_CENTER (MAX_X * BLOCK_SIZE / 2.f)
 
 typedef struct {
   float a;
@@ -40,6 +43,9 @@ static Mtx cam_rotate[NUM_DISPLAY_LISTS][MAX_PLAYERS];
 static Mtx cam_translate[NUM_DISPLAY_LISTS][MAX_PLAYERS];
 static Line2D cull_lines[NUM_CULL_LINES];
 static u8 point_sides[CHUNKS_X + 1][CHUNKS_Z + 1];
+static Player loading_camera;
+static u16 loading_preview_frame;
+static u8 loading_preview_active;
 
 static u8 cameraPointSolid(Vector3 position) {
   int x = floor(position.x / BLOCK_SIZE);
@@ -149,16 +155,15 @@ static void makeVerticalCullLine(Line2D *line, float side, Player *player,
   makeCullLine(line, normal, player, camera_position);
 }
 
-void updateVisibleColumns(u8 player_num) {
+static void updateVisibleColumnsFor(u8 player_num, Player *player,
+    Vector3 camera_position, u8 coop) {
   u8 cx, cz, i;
   u8 s1, s2, s3, s4;
   u8 visible_count = 0;
   u8 farthest_x = 0, farthest_z = 0;
   float dx, dz, distance, farthest_distance;
-  float fov_y = active_player_count == 2 ? FOV_Y_COOP : FOV_Y;
-  float fov_x = fov_y * (active_player_count == 2 ? COOP_FOV_RATIO : FOV_RATIO);
-  Player *player = &players[player_num];
-  Vector3 camera_position = playerCameraPosition(player_num);
+  float fov_y = coop ? FOV_Y_COOP : FOV_Y;
+  float fov_x = fov_y * (coop ? COOP_FOV_RATIO : FOV_RATIO);
 
   makeHorizontalCullLine(&cull_lines[0], -1, player, camera_position, fov_x);
   makeHorizontalCullLine(&cull_lines[1], 1, player, camera_position, fov_x);
@@ -190,7 +195,7 @@ void updateVisibleColumns(u8 player_num) {
         camera_position.x / BLOCK_SIZE;
       dz = cz * CHUNK_SIZE + CHUNK_SIZE / 2 -
         camera_position.z / BLOCK_SIZE;
-      if (active_player_count == 2 && dx * dx + dz * dz > 1600) {
+      if (coop && dx * dx + dz * dz > 1600) {
         visible_columns[player_num][cx * CHUNKS_Z + cz] = FALSE;
       }
       if (visible_columns[player_num][cx * CHUNKS_Z + cz]) visible_count++;
@@ -200,7 +205,7 @@ void updateVisibleColumns(u8 player_num) {
   /* The world display list is deliberately bounded as well as the view
      distance: 24 columns x 11 textures x 2 players is comfortably within
      the 1,024-command per-frame list on a stock N64. */
-  while (active_player_count == 2 && visible_count > COOP_MAX_VISIBLE_COLUMNS) {
+  while (coop && visible_count > COOP_MAX_VISIBLE_COLUMNS) {
     farthest_distance = -1;
     for (cx = 0; cx < CHUNKS_X; cx++) {
       for (cz = 0; cz < CHUNKS_Z; cz++) {
@@ -223,13 +228,17 @@ void updateVisibleColumns(u8 player_num) {
   }
 }
 
-void updateCameraMatrices(u8 player_num) {
-  Player *player = &players[player_num];
-  Vector3 camera_position = playerCameraPosition(player_num);
+void updateVisibleColumns(u8 player_num) {
+  updateVisibleColumnsFor(player_num, &players[player_num],
+    playerCameraPosition(player_num), active_player_count == 2);
+}
+
+static void updateCameraMatricesFor(u8 player_num, Player *player,
+    Vector3 camera_position, u8 show_avatar) {
   Vector3 camera_offset = add(camera_position, mul(player->position, -1.f));
 
   third_person_avatar_visible[player_num] =
-    player->camera_mode == CAMERA_THIRD_PERSON &&
+    show_avatar && player->camera_mode == CAMERA_THIRD_PERSON &&
     dot(camera_offset, camera_offset) >=
       THIRD_PERSON_AVATAR_MIN_DISTANCE * THIRD_PERSON_AVATAR_MIN_DISTANCE;
   guTranslate(&cam_translate[dl_no][player_num], -camera_position.x,
@@ -238,8 +247,56 @@ void updateCameraMatrices(u8 player_num) {
   guRotateRPY(&cam_rotate2[dl_no][player_num], -player->pitch, 0.0, 0.0);
 }
 
+void updateCameraMatrices(u8 player_num) {
+  updateCameraMatricesFor(player_num, &players[player_num],
+    playerCameraPosition(player_num), TRUE);
+}
+
+void beginLoadingPreview() {
+  loading_preview_frame = 0;
+  loading_preview_active = TRUE;
+}
+
+void updateLoadingCamera() {
+  float angle = loading_preview_frame * .9f;
+  float low_orbit = sinf(angle * .5f * M_DTOR);
+  Vector3 camera_position;
+
+  /* The orbit looks inward across the centre of the 64x64-block map.  Its
+     radius keeps the complete landscape in a 60-degree view without using a
+     separate, low-detail world model. */
+  loading_camera.position.x = LOADING_WORLD_CENTER +
+    sinf(angle * M_DTOR) * LOADING_ORBIT_RADIUS;
+  loading_camera.position.z = LOADING_WORLD_CENTER +
+    cosf(angle * M_DTOR) * LOADING_ORBIT_RADIUS;
+  loading_camera.position.y = 2200.f + low_orbit * 160.f;
+  loading_camera.yaw = angle;
+  loading_camera.pitch = -22.f;
+  loading_camera.camera_mode = CAMERA_FIRST_PERSON;
+  camera_position = loading_camera.position;
+
+  updateVisibleColumnsFor(0, &loading_camera, camera_position, FALSE);
+  updateCameraMatricesFor(0, &loading_camera, camera_position, FALSE);
+  loading_preview_frame++;
+}
+
+u8 loadingPreviewFinished() {
+  if (loading_preview_frame >= LOADING_PREVIEW_FRAMES) {
+    loading_preview_active = FALSE;
+    return TRUE;
+  }
+  return FALSE;
+}
+
+u8 loadingPreviewProgress() {
+  if (loading_preview_frame >= LOADING_PREVIEW_FRAMES) {
+    return 100;
+  }
+  return loading_preview_frame * 100 / LOADING_PREVIEW_FRAMES;
+}
+
 void loadCameraMatrices(u8 player_num) {
-  u8 projection = active_player_count == 2;
+  u8 projection = !loading_preview_active && active_player_count == 2;
   gSPMatrix(dlp++, OS_K0_TO_PHYSICAL(&projection_matrix[dl_no][projection]),
     G_MTX_PROJECTION | G_MTX_LOAD | G_MTX_NOPUSH);
   gSPPerspNormalize(dlp++, perspective_norm[dl_no][projection]);

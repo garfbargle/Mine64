@@ -85,8 +85,13 @@ MUSIC_GAME_HEADER := $(ASSDIR)/music_game_vadpcm.h
 MUSIC_TITLE_INFO := $(AUDIO_BUILD_DIR)/music-title.json
 MUSIC_GAME_INFO := $(AUDIO_BUILD_DIR)/music-game.json
 MUSIC_ASSETS := $(MUSIC_TITLE_BIN) $(MUSIC_GAME_BIN) $(MUSIC_TITLE_HEADER) $(MUSIC_GAME_HEADER)
+SFX_DIR := $(AUDIO_BUILD_DIR)/sfx
+SFX_HEADER := $(ASSDIR)/game_sfx.h
+SFX_STAMP := $(SFX_DIR)/.generated
+SFX_ASSETS := $(SFX_HEADER) $(SFX_DIR)/pickup.pcm.bin $(SFX_DIR)/punch.pcm.bin \
+	$(SFX_DIR)/break.pcm.bin $(SFX_DIR)/place.pcm.bin
 ifeq ($(AUDIO),1)
-ASSETS := $(BASE_ASSETS) $(MUSIC_TITLE_HEADER) $(MUSIC_GAME_HEADER)
+ASSETS := $(BASE_ASSETS) $(MUSIC_TITLE_HEADER) $(MUSIC_GAME_HEADER) $(SFX_HEADER)
 else
 ASSETS := $(BASE_ASSETS)
 endif
@@ -94,7 +99,7 @@ SOX ?= sox
 VADPCM ?= vadpcm
 
 .DEFAULT_GOAL := default
-.PHONY: default audio clean music music-info FORCE_CODESEGMENT FORCE_ROM
+.PHONY: default audio clean music music-info sfx FORCE_CODESEGMENT FORCE_ROM
 
 default: $(ROM)
 
@@ -106,6 +111,8 @@ audio:
 music: $(MUSIC_ASSETS) $(MUSIC_TITLE_INFO) $(MUSIC_GAME_INFO)
 
 music-info: $(MUSIC_TITLE_INFO) $(MUSIC_GAME_INFO)
+
+sfx: $(SFX_ASSETS)
 
 $(MUSIC_TITLE_PCM): $(MUSIC_TITLE_SOURCE)
 	@mkdir -p $(dir $@)
@@ -139,12 +146,19 @@ $(MUSIC_TITLE_INFO): $(MUSIC_TITLE_AIFC) tools/audio_manifest.py
 $(MUSIC_GAME_INFO): $(MUSIC_GAME_AIFC) tools/audio_manifest.py
 	python3 tools/audio_manifest.py $< $@
 
+$(SFX_STAMP): tools/generate_sfx.py
+	python3 $<
+	@touch $@
+
+$(SFX_ASSETS): $(SFX_STAMP)
+	@test -f $@
+
 $(BASE_ASSETS): generate_assets.py tools/import_textures.py $(CUSTOM_TEXTURE_SOURCE)
 	python3 generate_assets.py
 	@if [ -n "$(CUSTOM_TEXTURE_SOURCE)" ]; then python3 tools/import_textures.py $(CUSTOM_TEXTURE_SOURCE); fi
 
 ifeq ($(AUDIO),1)
-$(ROM): $(MUSIC_ASSETS)
+$(ROM): $(MUSIC_ASSETS) $(SFX_ASSETS)
 endif
 
 $(OBJECT_DIR)/%.o: $(SRCDIR)/%.c $(ASSETS)

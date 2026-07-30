@@ -30,9 +30,37 @@ beginseg
 	include "build/audio/music-game.vadpcm.bin"
 endseg
 
+beginseg
+	name "sfxPickup"
+	flags RAW
+	include "build/audio/sfx/pickup.pcm.bin"
+endseg
+
+beginseg
+	name "sfxPunch"
+	flags RAW
+	include "build/audio/sfx/punch.pcm.bin"
+endseg
+
+beginseg
+	name "sfxBreak"
+	flags RAW
+	include "build/audio/sfx/break.pcm.bin"
+endseg
+
+beginseg
+	name "sfxPlace"
+	flags RAW
+	include "build/audio/sfx/place.pcm.bin"
+endseg
+
 beginwave
 	name	"mine64-audio"
 	include	"program"
 	include	"musicTitle"
 	include	"musicGame"
+	include	"sfxPickup"
+	include	"sfxPunch"
+	include	"sfxBreak"
+	include	"sfxPlace"
 endwave

@@ -6,9 +6,14 @@
 #include "audio.h"
 #include "music_title_vadpcm.h"
 #include "music_game_vadpcm.h"
+#include "game_sfx.h"
 
 extern u8 _musicTitleSegmentRomStart[];
 extern u8 _musicGameSegmentRomStart[];
+extern u8 _sfxPickupSegmentRomStart[];
+extern u8 _sfxPunchSegmentRomStart[];
+extern u8 _sfxBreakSegmentRomStart[];
+extern u8 _sfxPlaceSegmentRomStart[];
 
 typedef struct {
   s32 order;
@@ -23,6 +28,12 @@ typedef struct {
   ALADPCMloop *loop;
 } MusicTrack;
 
+typedef struct {
+  ALWaveTable *wave;
+  ALSound *sound;
+  ALSndId id;
+} SoundEffectTrack;
+
 /*
  * Audio microcode requires coefficient books to be 8-byte aligned. Keep bank
  * objects separate and explicitly aligned instead of depending on incidental
@@ -32,6 +43,14 @@ static ALWaveTable title_wave __attribute__((aligned(8)));
 static ALWaveTable game_wave __attribute__((aligned(8)));
 static ALSound title_sound __attribute__((aligned(8)));
 static ALSound game_sound __attribute__((aligned(8)));
+static ALWaveTable sfx_pickup_wave __attribute__((aligned(8)));
+static ALWaveTable sfx_punch_wave __attribute__((aligned(8)));
+static ALWaveTable sfx_break_wave __attribute__((aligned(8)));
+static ALWaveTable sfx_place_wave __attribute__((aligned(8)));
+static ALSound sfx_pickup_sound __attribute__((aligned(8)));
+static ALSound sfx_punch_sound __attribute__((aligned(8)));
+static ALSound sfx_break_sound __attribute__((aligned(8)));
+static ALSound sfx_place_sound __attribute__((aligned(8)));
 static MusicBook title_book __attribute__((aligned(8))) = {
   MUSIC_TITLE_VADPCM_BOOK_ORDER,
   MUSIC_TITLE_VADPCM_BOOK_PREDICTORS,
@@ -56,12 +75,24 @@ static ALEnvelope music_envelope __attribute__((aligned(8))) = {
 static ALKeyMap music_keymap __attribute__((aligned(8))) = {
   0, 127, 0, 127, 60, 0
 };
+static ALEnvelope sfx_envelope __attribute__((aligned(8))) = {
+  0, 0, 0, AL_VOL_FULL, AL_VOL_FULL
+};
+static ALKeyMap sfx_keymap __attribute__((aligned(8))) = {
+  0, 127, 0, 127, 60, 0
+};
 
 static MusicTrack title_track = {
   &title_wave, &title_sound, (ALADPCMBook *)&title_book, &title_loop
 };
 static MusicTrack game_track = {
   &game_wave, &game_sound, (ALADPCMBook *)&game_book, &game_loop
+};
+static SoundEffectTrack sfx_tracks[] = {
+  { &sfx_pickup_wave, &sfx_pickup_sound, -1 },
+  { &sfx_punch_wave, &sfx_punch_sound, -1 },
+  { &sfx_break_wave, &sfx_break_sound, -1 },
+  { &sfx_place_wave, &sfx_place_sound, -1 }
 };
 
 static ALSndId active_music = -1;
@@ -86,6 +117,25 @@ static void prepareTrack(
   track->sound->samplePan = AL_PAN_CENTER;
   track->sound->sampleVolume = AL_VOL_FULL;
   track->sound->flags = 1;
+}
+
+static void prepareEffect(
+  SoundEffectTrack *track,
+  u8 *rom_start,
+  s32 data_bytes
+) {
+  track->wave->base = rom_start;
+  track->wave->len = data_bytes;
+  track->wave->type = AL_RAW16_WAVE;
+  track->wave->flags = 0;
+  track->wave->waveInfo.rawWave.loop = NULL;
+
+  track->sound->envelope = &sfx_envelope;
+  track->sound->keyMap = &sfx_keymap;
+  track->sound->wavetable = track->wave;
+  track->sound->samplePan = AL_PAN_CENTER;
+  track->sound->sampleVolume = AL_VOL_FULL;
+  track->sound->flags = 0;
 }
 
 static void playTrack(MusicTrack *track) {
@@ -126,7 +176,8 @@ void initAudio(void) {
   nuAuSynConfig.maxUpdates = 64;
   nuAuSynConfig.outputRate = MUSIC_TITLE_VADPCM_SAMPLE_RATE;
   nuAuSynConfig.fxType = AL_FX_NONE;
-  nuAuSndpConfig.maxSounds = 2;
+  /* One music voice and up to three brief effects can coexist. */
+  nuAuSndpConfig.maxSounds = 5;
   nuAuSndpConfig.maxEvents = 16;
   nuAuDmaBufNum = 32;
   nuAuDmaBufSize = 1024;
@@ -142,10 +193,45 @@ void initAudio(void) {
     _musicGameSegmentRomStart,
     MUSIC_GAME_VADPCM_DATA_BYTES
   );
+  prepareEffect(&sfx_tracks[SOUND_PICKUP], _sfxPickupSegmentRomStart,
+    SFX_PICKUP_DATA_BYTES);
+  prepareEffect(&sfx_tracks[SOUND_PUNCH], _sfxPunchSegmentRomStart,
+    SFX_PUNCH_DATA_BYTES);
+  prepareEffect(&sfx_tracks[SOUND_BREAK], _sfxBreakSegmentRomStart,
+    SFX_BREAK_DATA_BYTES);
+  prepareEffect(&sfx_tracks[SOUND_PLACE], _sfxPlaceSegmentRomStart,
+    SFX_PLACE_DATA_BYTES);
 
   nuAuMgrInit((void *)NU_AU_HEAP_ADDR, NU_AU_HEAP_SIZE, &nuAuSynConfig);
   nuAuSndPlayerInit(&nuAuSndpConfig);
   nuAuPreNMIFuncSet(nuAuPreNMIProc);
+}
+
+void playSound(enum SoundEffect effect) {
+  SoundEffectTrack *track;
+
+  if (effect < SOUND_PICKUP || effect > SOUND_PLACE) {
+    return;
+  }
+  track = &sfx_tracks[effect];
+
+  /* Reuse the effect's slot. This keeps rapid punches responsive without
+     leaking sound-player allocations after a clip has naturally ended. */
+  if (track->id != -1) {
+    alSndpSetSound(&nuAuSndPlayer, track->id);
+    alSndpStop(&nuAuSndPlayer);
+    alSndpDeallocate(&nuAuSndPlayer, track->id);
+    track->id = -1;
+  }
+  track->id = alSndpAllocate(&nuAuSndPlayer, track->sound);
+  if (track->id == -1) {
+    return;
+  }
+  alSndpSetSound(&nuAuSndPlayer, track->id);
+  alSndpSetPitch(&nuAuSndPlayer, 1.0f);
+  alSndpSetPan(&nuAuSndPlayer, AL_PAN_CENTER);
+  alSndpSetVol(&nuAuSndPlayer, 21000);
+  alSndpPlay(&nuAuSndPlayer);
 }
 
 void updateAudio(enum Screen screen) {

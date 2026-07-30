@@ -8,6 +8,8 @@ enum Screen {
   INFO,
   GENERATING,
   LOADING,
+  /* The world data is ready; keep it on screen briefly for the flyover. */
+  LOADING_PREVIEW,
   GAME,
   INVENTORY
 };
@@ -25,5 +27,8 @@ u32 charWidth(char chr);
 void menuDown();
 void menuUp();
 void menuAct();
+u8 menuPreviewRequested();
+void menuPreviewLoaded();
+u8 menuSelectedWorld();
 
 #endif /* MENU_H */

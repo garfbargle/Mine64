@@ -219,6 +219,20 @@ Music playback is intentionally not linked into the default ROM. Use the
 separate `AUDIO=1` ROM for hardware validation; a known-good silent build
 always remains available at `build/mine64.n64`.
 
+### Gameplay sound effects
+
+The audio ROM also includes four short original PCM effects: pickup, punch,
+block break, and block place. Generate ordinary WAV previews and the N64
+big-endian PCM inputs with:
+
+```sh
+make sfx
+```
+
+The files are written to `build/audio/sfx/`; `make AUDIO=1` runs this step
+automatically. The effects are generated deterministically by
+`tools/generate_sfx.py`, so their source remains small and portable.
+
 For the complete art-to-cartridge walkthrough, see
 [Custom texture workflow](docs/custom-textures.md).
 

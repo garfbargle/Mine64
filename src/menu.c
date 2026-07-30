@@ -10,28 +10,11 @@ u8 save_failed_message = 0;
 u8 player_two_joined_message = 0;
 
 static char *menu_text[] = {
-  "Mine64 v0.3",
-  "",
-  "",
-  "How to play",
-  "",
-  "New world",
-  "New world",
-  "New world"
-};
-
-static char *menu_text_no_saving[] = {
-  "Mine64 v0.3",
-  "",
-  "",
-  "How to play",
-  "",
-  "New world",
-  "",
-  "",
-  "WARNING",
-  "CANNOT SAVE GAME",
-  "ON THIS SYSTEM"
+  "MINE64",
+  "Choose a world",
+  "World 1",
+  "World 2",
+  "World 3"
 };
 
 static char *world_names[] = {
@@ -40,11 +23,11 @@ static char *world_names[] = {
   "World 3"
 };
 
-static u8 option_lines[] = {
-  3, 5, 6, 7
-};
+static u8 option_lines[] = {2, 3, 4};
 
 static u8 selected_option = 0;
+/* The renderer uses this to swap the live world behind the selector. */
+static u8 menu_preview_requested = TRUE;
 
 static char *info_text[] = {
   "Mine64 v0.3",
@@ -137,6 +120,48 @@ void drawChar(char chr, u32 x, u32 y) {
     1 << 10, 1 << 10);
 }
 
+static void drawLargeChar(char chr, u32 x, u32 y, u8 scale) {
+  u8 idx = chr - ' ';
+  u32 cx = idx % 16;
+  u32 cy = (idx / 16) + 2;
+
+  gSPTextureRectangle(dlp++,
+    x << 2, y << 2,
+    ((x + 8 * scale) << 2) - 2, ((y + 8 * scale) << 2) - 2,
+    G_TX_RENDERTILE,
+    (cx * 8) << 5, (cy * 8) << 5,
+    (1 << 10) / scale, (1 << 10) / scale);
+}
+
+static void drawLargeString(const char *text, u32 x, u32 y, u8 scale) {
+  while (*text) {
+    if (*text != ' ') {
+      drawLargeChar(*text, x, y, scale);
+    }
+    x += charWidth(*text) * scale;
+    text++;
+  }
+}
+
+static void drawMenuTitle() {
+  const char *title = "MINE64";
+  const char *version = "v0.3";
+  u32 width = 0;
+  u32 i = 0;
+
+  while (title[i]) {
+    width += charWidth(title[i]) * 3;
+    i++;
+  }
+  drawLargeString(title, (SCREEN_WD - width) / 2, 20, 3);
+
+  width = 0;
+  for (i = 0; version[i]; i++) {
+    width += charWidth(version[i]);
+  }
+  drawString(version, (SCREEN_WD - width) / 2, 51);
+}
+
 void drawString(const char *text, u32 x, u32 y) {
   while (*text) {
     if (*text != ' ') {
@@ -162,8 +187,9 @@ void drawMenu() {
 
   switch (current_screen) {
     case MENU:
-      text = saving_available? menu_text : menu_text_no_saving;
-      n_lines = saving_available? sizeof(menu_text) / sizeof(char *) : sizeof(menu_text_no_saving) / sizeof(char *);
+      text = menu_text;
+      n_lines = sizeof(menu_text) / sizeof(char *);
+      y_start = 170;
       break;
     case INFO:
       text = info_text;
@@ -178,6 +204,11 @@ void drawMenu() {
       text = loading_text;
       n_lines = sizeof(loading_text) / sizeof(char *);
       y_start = SCREEN_HT / 3;
+      break;
+    case LOADING_PREVIEW:
+      text = loading_text;
+      n_lines = sizeof(loading_text) / sizeof(char *);
+      y_start = 18;
       break;
     case GAME:
       if (save_failed_message > 0) {
@@ -219,10 +250,15 @@ void drawMenu() {
   beginText();
 
   for (i = 0; i < n_lines; i++) {
+    if (current_screen == MENU && i == 0) {
+      drawMenuTitle();
+      continue;
+    }
     if (current_screen == INVENTORY && i == 0) {
       text_line = inventory_player == 0 ? "P1 Inventory" : "P2 Inventory";
-    } else if (current_screen == MENU && i >= option_lines[1] && files_present[i - option_lines[1]]) {
-      text_line = world_names[i - option_lines[1]];
+    } else if (current_screen == MENU && i >= option_lines[0]) {
+      u8 world = i - option_lines[0];
+      text_line = files_present[world] ? world_names[world] : "New World";
     } else {
       text_line = text[i];
     }
@@ -278,37 +314,47 @@ void drawMenu() {
 
 void menuDown() {
   if (current_screen == MENU) {
-    if (selected_option == (saving_available? 3 : 1)) {
+    if (selected_option == 2) {
       selected_option = 0;
     } else {
       selected_option++;
     }
+    menu_preview_requested = TRUE;
   }
 }
 
 void menuUp() {
   if (current_screen == MENU) {
     if (selected_option == 0) {
-      selected_option = saving_available? 3 : 1;
+      selected_option = 2;
     } else {
       selected_option--;
     }
+    menu_preview_requested = TRUE;
   }
 }
 
 void menuAct() {
   if (current_screen == MENU) {
-    if (selected_option == 0) {
-      current_screen = INFO;
-    } else{
-      game_file_num = selected_option;
-      if (files_present[selected_option - 1]) {
-        current_screen = LOADING;
-      } else {
-        current_screen = GENERATING;
-      }
+    game_file_num = selected_option + 1;
+    if (files_present[selected_option]) {
+      current_screen = LOADING;
+    } else {
+      current_screen = GENERATING;
     }
   } else if (current_screen == INFO) {
     current_screen = MENU;
   }
+}
+
+u8 menuPreviewRequested() {
+  return menu_preview_requested;
+}
+
+void menuPreviewLoaded() {
+  menu_preview_requested = FALSE;
+}
+
+u8 menuSelectedWorld() {
+  return selected_option;
 }

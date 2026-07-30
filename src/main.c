@@ -23,7 +23,8 @@ void callbackGfx(int pendingGfx) {
     initGeometry();
     makeWorldDisplayLists();
 
-    current_screen = GAME;
+    beginLoadingPreview();
+    current_screen = LOADING_PREVIEW;
   }
 
   if (current_screen == LOADING) {
@@ -32,7 +33,30 @@ void callbackGfx(int pendingGfx) {
     initGeometry();
     makeWorldDisplayLists();
     
+    beginLoadingPreview();
+    current_screen = LOADING_PREVIEW;
+  }
+
+  if (current_screen == LOADING_PREVIEW && loadingPreviewFinished()) {
     current_screen = GAME;
+  }
+
+  /* The title menu is also a world picker.  Preparing the highlighted slot
+     here keeps menu input responsive and gives the renderer a real world to
+     orbit rather than a generic background image. */
+  if (current_screen == MENU && menuPreviewRequested()) {
+    game_file_num = menuSelectedWorld() + 1;
+    if (files_present[menuSelectedWorld()]) {
+      loadGame();
+    } else {
+      initWorld();
+      initPlayers();
+    }
+    initDroppedItems();
+    initGeometry();
+    makeWorldDisplayLists();
+    beginLoadingPreview();
+    menuPreviewLoaded();
   }
 
   updatePlayers();

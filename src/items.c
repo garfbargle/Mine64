@@ -4,6 +4,7 @@
 #include "math.h"
 #include "player.h"
 #include "world.h"
+#include "audio.h"
 
 #define ITEM_RADIUS 14.f
 #define ITEM_GRAVITY 0.45f
@@ -165,6 +166,7 @@ static void updatePickupAnimation(DroppedItem *drop, float delta) {
   if (added > 0) {
     pickup_item[drop->pickup_player] = drop->item;
     pickup_message[drop->pickup_player] = 60;
+    playSound(SOUND_PICKUP);
   }
   if (drop->count == 0) {
     drop->active = FALSE;

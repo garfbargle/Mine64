@@ -2,6 +2,7 @@
 #include "blocks.h"
 #include "noise.h"
 #include "math.h"
+#include "trees.h"
 
 u8 blocks[NUM_BLOCKS];
 
@@ -32,6 +33,7 @@ void trySpawnTree(int tx, int tz) {
   u8 block;
   int ty, height;
   int x, y, z;
+  u8 tree_index;
   int leaf_heightmap[25];
 
   for (ty = MAX_Y - 1; ty >= 0; ty--) {
@@ -46,6 +48,7 @@ void trySpawnTree(int tx, int tz) {
   blocks[tx * MAX_Z * MAX_Y + ty * MAX_Z + tz] = DIRT;
 
   height = random(3) + 3;
+  tree_index = createTree(tx, tz, ty, height);
   for (y = ty + 1; y < min(ty + height + 1, MAX_Y); y++) {
     blocks[tx * MAX_Z * MAX_Y + y * MAX_Z + tz] = WOOD;
   }
@@ -57,6 +60,7 @@ void trySpawnTree(int tx, int tz) {
       for (y = ty + height - 1; y < min(ty + height + leaf_heightmap[(x - tx + 2) * 5 + (z - tz + 2)] + 1, MAX_Y); y++) {
         if (!blocks[x * MAX_Z * MAX_Y + y * MAX_Z + z]) {
           blocks[x * MAX_Z * MAX_Y + y * MAX_Z + z] = LEAVES;
+          treeAddLeaf(tree_index, x, y, z);
         }
       }
     }
@@ -69,6 +73,7 @@ void initWorld() {
   u8 height, block, do_sand;
 
   seed = (u32) osGetTime();
+  initTrees();
 
   for (x = 0; x < MAX_X; x++) {
     for (z = 0; z < MAX_Z; z++) {

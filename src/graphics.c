@@ -3,6 +3,7 @@
 #include "graphics.h"
 #include "geometry.h"
 #include "items.h"
+#include "trees.h"
 #include "camera.h"
 #include "player.h"
 #include "menu.h"
@@ -41,6 +42,16 @@ static Mtx b_models[CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE];
 
 static Mtx dropped_item_translate[NUM_DISPLAY_LISTS][MAX_DROPPED_ITEMS];
 static Mtx dropped_item_rotate[NUM_DISPLAY_LISTS][MAX_DROPPED_ITEMS];
+
+#define FALLING_TREE_RENDER_SLOTS 4
+#define FALLING_TREE_BOXES 6
+
+/* A falling tree uses a few chunky volumes, not dozens of independently
+   transformed cubes.  Individual cube drops appear after it lands. */
+static Mtx falling_tree_translate[NUM_DISPLAY_LISTS][FALLING_TREE_RENDER_SLOTS];
+static Mtx falling_tree_rotate[NUM_DISPLAY_LISTS][FALLING_TREE_RENDER_SLOTS];
+static Mtx falling_tree_box_translate[NUM_DISPLAY_LISTS][FALLING_TREE_RENDER_SLOTS][FALLING_TREE_BOXES];
+static Mtx falling_tree_box_scale[NUM_DISPLAY_LISTS][FALLING_TREE_RENDER_SLOTS][FALLING_TREE_BOXES];
 
 #define ITEM_VERTEX(x, y, z, s, t) {x, y, z, 0, s, t, 255, 255, 255, 255}
 
@@ -506,18 +517,103 @@ static void drawDroppedItems() {
   gSPSetGeometryMode(dlp++, G_CULL_BACK);
 }
 
+static void drawFallingTreeBox(u8 slot, u8 box, u8 item, float x, float y,
+    float z, float sx, float sy, float sz) {
+  const float cube_scale = BLOCK_SIZE / 28.f;
+
+  loadTexture(preview_textures[item]);
+  guTranslate(&falling_tree_box_translate[dl_no][slot][box], x, y, z);
+  guScale(&falling_tree_box_scale[dl_no][slot][box], sx * cube_scale,
+    sy * cube_scale, sz * cube_scale);
+  gSPMatrix(dlp++, OS_K0_TO_PHYSICAL(&falling_tree_translate[dl_no][slot]),
+    G_MTX_MODELVIEW | G_MTX_LOAD | G_MTX_NOPUSH);
+  gSPMatrix(dlp++, OS_K0_TO_PHYSICAL(&falling_tree_rotate[dl_no][slot]),
+    G_MTX_MODELVIEW | G_MTX_MUL | G_MTX_NOPUSH);
+  gSPMatrix(dlp++, OS_K0_TO_PHYSICAL(&falling_tree_box_translate[dl_no][slot][box]),
+    G_MTX_MODELVIEW | G_MTX_MUL | G_MTX_NOPUSH);
+  gSPMatrix(dlp++, OS_K0_TO_PHYSICAL(&falling_tree_box_scale[dl_no][slot][box]),
+    G_MTX_MODELVIEW | G_MTX_MUL | G_MTX_NOPUSH);
+  gSPVertex(dlp++, dropped_item_verts, 8, 0);
+  gSPDisplayList(dlp++, dropped_item_display_list);
+}
+
+static void drawFallingTree(TreeRecord *tree, u8 slot) {
+  float progress = tree->fall_progress;
+  float eased = progress * progress * (3.f - 2.f * progress);
+  float angle = eased * 88.f + sinf(progress * 720.f * M_DTOR) *
+    (1.f - progress) * 3.f;
+  float pitch = 0;
+  float roll = 0;
+  float height = tree->canopy_y - tree->base_y + 1;
+  float canopy_y = (tree->canopy_y - tree->base_y) * BLOCK_SIZE;
+
+  if (tree->fall_direction == 0) {
+    roll = -angle;
+  } else if (tree->fall_direction == 1) {
+    pitch = angle;
+  } else if (tree->fall_direction == 2) {
+    roll = angle;
+  } else {
+    pitch = -angle;
+  }
+
+  guTranslate(&falling_tree_translate[dl_no][slot],
+    (tree->x + 0.5f) * BLOCK_SIZE, (tree->base_y + 1) * BLOCK_SIZE,
+    (tree->z + 0.5f) * BLOCK_SIZE);
+  guRotateRPY(&falling_tree_rotate[dl_no][slot], pitch, 0, roll);
+
+  drawFallingTreeBox(slot, 0, WOOD, 0, height * BLOCK_SIZE / 2.f, 0,
+    1, height, 1);
+  drawFallingTreeBox(slot, 1, LEAVES, 0, canopy_y + BLOCK_SIZE, 0,
+    3, 3, 3);
+  drawFallingTreeBox(slot, 2, LEAVES, 0, canopy_y + BLOCK_SIZE * 1.5f,
+    -BLOCK_SIZE * 1.8f, 3, 1, 1);
+  drawFallingTreeBox(slot, 3, LEAVES, 0, canopy_y + BLOCK_SIZE * 1.5f,
+    BLOCK_SIZE * 1.8f, 3, 1, 1);
+  drawFallingTreeBox(slot, 4, LEAVES, -BLOCK_SIZE * 1.8f,
+    canopy_y + BLOCK_SIZE * 1.5f, 0, 1, 1, 3);
+  drawFallingTreeBox(slot, 5, LEAVES, BLOCK_SIZE * 1.8f,
+    canopy_y + BLOCK_SIZE * 1.5f, 0, 1, 1, 3);
+}
+
+static void drawFallingTrees() {
+  u8 tree_index;
+  u8 slot = 0;
+
+  for (tree_index = 0; tree_index < MAX_TREES; tree_index++) {
+    if (trees[tree_index].state == TREE_STATE_FALLING) {
+      break;
+    }
+  }
+  if (tree_index == MAX_TREES) {
+    return;
+  }
+
+  gSPClearGeometryMode(dlp++, G_CULL_BACK);
+  for (; tree_index < MAX_TREES &&
+      slot < FALLING_TREE_RENDER_SLOTS; tree_index++) {
+    if (trees[tree_index].state == TREE_STATE_FALLING) {
+      drawFallingTree(&trees[tree_index], slot++);
+    }
+  }
+  gSPSetGeometryMode(dlp++, G_CULL_BACK);
+}
+
 void drawWorld() {
   u8 i, player_num;
+  u8 cinematic = current_screen == LOADING_PREVIEW || current_screen == MENU;
+  u8 viewer_count = cinematic ? 1 : active_player_count;
 
   dlp = &display_lists[dl_no][0];
 
   gSPDisplayList(dlp++, setup_display_list);
 
-  clearBuffers(GPACK_RGBA5551(158, 207, 255, 1));
+  clearBuffers(cinematic ?
+    GPACK_RGBA5551(42, 78, 130, 1) : GPACK_RGBA5551(158, 207, 255, 1));
 
-  for (player_num = 0; player_num < active_player_count; player_num++) {
+  for (player_num = 0; player_num < viewer_count; player_num++) {
     gSPDisplayList(dlp++, draw_setup_display_list);
-    if (active_player_count == 2) {
+    if (viewer_count == 2) {
       gSPViewport(dlp++, &coop_viewports[player_num]);
       gDPSetScissor(dlp++, G_SC_NON_INTERLACE, 0, player_num * (SCREEN_HT / 2), SCREEN_WD, (player_num + 1) * (SCREEN_HT / 2));
     } else {
@@ -529,9 +625,12 @@ void drawWorld() {
       loadTexture(textures[i]->texture);
       drawTextured(i, player_num);
     }
-    drawDroppedItems();
-    if (active_player_count == 2 ||
-        players[player_num].camera_mode == CAMERA_THIRD_PERSON) {
+    if (!cinematic) {
+      drawFallingTrees();
+      drawDroppedItems();
+    }
+    if (!cinematic && (active_player_count == 2 ||
+        players[player_num].camera_mode == CAMERA_THIRD_PERSON)) {
       drawOtherPlayers(player_num);
     }
   }
@@ -592,6 +691,30 @@ void drawWireframes() {
 }
 
 static void setHudFillColor(u8 r, u8 g, u8 b);
+
+static void drawLoadingOverlay() {
+  u32 progress = loadingPreviewProgress();
+  u32 filled = progress * 224 / 100;
+  u32 pulse = (progress / 8) % 3;
+
+  /* A compact framed status deck preserves nearly all of the flyover while
+     making the handoff feel intentional on a CRT. */
+  gDPPipeSync(dlp++);
+  gDPSetCycleType(dlp++, G_CYC_FILL);
+  gDPSetRenderMode(dlp++, G_RM_NOOP, G_RM_NOOP2);
+  setHudFillColor(9, 16, 30);
+  gDPFillRectangle(dlp++, 0, SCREEN_HT - 36, SCREEN_WD - 1, SCREEN_HT - 1);
+  setHudFillColor(71, 160, 196);
+  gDPFillRectangle(dlp++, 47, SCREEN_HT - 20, 272, SCREEN_HT - 14);
+  setHudFillColor(13, 35, 53);
+  gDPFillRectangle(dlp++, 49, SCREEN_HT - 18, 270, SCREEN_HT - 16);
+  if (filled > 0) {
+    setHudFillColor(100 + pulse * 24, 215, 192);
+    gDPFillRectangle(dlp++, 49, SCREEN_HT - 18, 48 + filled,
+      SCREEN_HT - 16);
+  }
+  gDPPipeSync(dlp++);
+}
 
 static void drawCrosshair(u32 x, u32 y, Player *player) {
   u8 red = 255;
@@ -937,8 +1060,15 @@ void drawHUD() {
 
   gSPDisplayList(dlp++, setup_display_list);
 
-  if (current_screen != GAME && current_screen != INVENTORY) {
+  if (current_screen != GAME && current_screen != INVENTORY &&
+      current_screen != LOADING_PREVIEW &&
+      !(current_screen == MENU && !menuPreviewRequested())) {
     clearBuffers(GPACK_RGBA5551(0, 0, 0, 1));
+  } else if (current_screen == LOADING_PREVIEW) {
+    drawLoadingOverlay();
+  } else if (current_screen == MENU) {
+    /* The carousel has its own text overlay; never let the inventory panel
+       fall through on top of its world preview. */
   } else if (current_screen == GAME) {
     loaded_texture = NULL;
     for (player_num = 0; player_num < active_player_count; player_num++) {
@@ -990,6 +1120,12 @@ void draw() {
 
     drawWorld();
     drawWireframes();
+  } else if (current_screen == LOADING_PREVIEW) {
+    updateLoadingCamera();
+    drawWorld();
+  } else if (current_screen == MENU && !menuPreviewRequested()) {
+    updateLoadingCamera();
+    drawWorld();
   }
   drawHUD();
 

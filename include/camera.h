@@ -14,4 +14,10 @@ void updateVisibleColumns(u8 player_num);
 void updateCameraMatrices(u8 player_num);
 void loadCameraMatrices(u8 player_num);
 
+/* A title-card camera used while a freshly prepared world is coming online. */
+void beginLoadingPreview();
+void updateLoadingCamera();
+u8 loadingPreviewFinished();
+u8 loadingPreviewProgress();
+
 #endif /* CAMERA_H */

@@ -6,6 +6,7 @@
 #include "graphics.h"
 #include "items.h"
 #include "player.h"
+#include "trees.h"
 #include "world.h"
 
 static FATFS fs;
@@ -14,7 +15,7 @@ static FATFS fs;
 #define MAGIC_NUM 0x4D493634
 #define LEGACY_HEADER_PAGE_SIZE 128
 #define BUFFER_LEN 256
-#define SAVE_VERSION 4
+#define SAVE_VERSION 6
 
 typedef struct {
   u32 magic_num;
@@ -47,6 +48,20 @@ typedef struct {
   u32 checksum;
   SavedPlayer player[MAX_PLAYERS];
 } Header;
+
+/* Save v5 introduced tree records.  Its compact layout pre-dates the falling
+   animation fields in v6, so v5 records are checksummed then reconstructed
+   from the saved world rather than being interpreted as current records. */
+typedef struct {
+  u8 x;
+  u8 z;
+  u8 base_y;
+  u8 trunk_mask;
+  u8 canopy_y;
+  u8 falling;
+  u8 debris_cursor;
+  u8 leaf_mask[13];
+} TreeRecordV5;
 
 /* v3 stored aggregate item counts rather than exact inventory slots. */
 typedef struct {
@@ -110,6 +125,10 @@ typedef struct {
 
 static u32 save_count = 0;
 
+typedef char TreeRecordV5MustBeCompact[
+  sizeof(TreeRecordV5) == 20 ? 1 : -1
+];
+
 typedef char HeaderMustFitBuffer[
   sizeof(Header) <= BUFFER_LEN ? 1 : -1
 ];
@@ -139,6 +158,16 @@ static u32 checksumSave(SavedPlayer *players_to_save, u32 player_count) {
 
   for (index = 0; index < NUM_BLOCKS; index++) {
     checksum = checksumByte(checksum, blocks[index]);
+  }
+  return checksum;
+}
+
+static u32 checksumTrees(u32 checksum) {
+  u8 *bytes = (u8 *) trees;
+  u32 index;
+
+  for (index = 0; index < sizeof(trees); index++) {
+    checksum = checksumByte(checksum, bytes[index]);
   }
   return checksum;
 }
@@ -381,6 +410,8 @@ u8 saveGame() {
   u8 had_previous_file;
   u8 *blocks_ptr;
   const u8 *blocks_end = blocks + NUM_BLOCKS;
+  u8 *trees_ptr;
+  const u8 *trees_end = (const u8 *) trees + sizeof(trees);
 
   if (!saving_available || game_file_num < 1 || game_file_num > 3) {
     return FALSE;
@@ -400,7 +431,8 @@ u8 saveGame() {
   header->player_count = active_player_count;
   savePlayerState(&header->player[0], &players[0]);
   savePlayerState(&header->player[1], &players[1]);
-  header->checksum = checksumSave(header->player, header->player_count);
+  header->checksum = checksumTrees(
+    checksumSave(header->player, header->player_count));
 
   cursor_pos = sizeof(Header);
   while (cursor_pos < BUFFER_LEN) {
@@ -415,6 +447,20 @@ u8 saveGame() {
     if (cursor_pos >= BUFFER_LEN) {
       write_ok = writePage(&file);
     }
+  }
+
+  for (trees_ptr = (u8 *) trees; write_ok && trees_ptr < trees_end;
+      trees_ptr++) {
+    file_buffer[cursor_pos++] = *trees_ptr;
+    if (cursor_pos >= BUFFER_LEN) {
+      write_ok = writePage(&file);
+    }
+  }
+  if (write_ok && cursor_pos > 0) {
+    while (cursor_pos < BUFFER_LEN) {
+      file_buffer[cursor_pos++] = 0;
+    }
+    write_ok = writePage(&file);
   }
 
   if (write_ok) {
@@ -465,7 +511,11 @@ void loadGame() {
   u32 expected_checksum = 0;
   u32 computed_checksum = 0;
   u8 full_inventory_saved = FALSE;
+  u8 tree_records_saved = FALSE;
+  u8 legacy_tree_records_saved = FALSE;
   u8 *blocks_ptr;
+  u8 *trees_ptr;
+  u32 tree_byte;
   const u8 *blocks_end = blocks + NUM_BLOCKS;
 
   if (game_file_num < 1 || game_file_num > 3) {
@@ -518,7 +568,7 @@ void loadGame() {
   players[1].break_progress = 0;
   active_player_count = 1;
 
-  if (legacy_header->version >= SAVE_VERSION) {
+  if (legacy_header->version >= 4) {
     expected_checksum = header->checksum;
     computed_checksum = checksumPlayers(header->player, header->player_count);
     restorePlayerState(&players[0], header->player[0].position,
@@ -531,6 +581,8 @@ void loadGame() {
       active_player_count = 2;
     }
     full_inventory_saved = TRUE;
+    tree_records_saved = legacy_header->version >= SAVE_VERSION;
+    legacy_tree_records_saved = legacy_header->version == 5;
     cursor_pos = BUFFER_LEN;
   } else if (legacy_header->version >= 3 && header_v3->player_count == 2) {
     restorePlayerState(&players[0], header_v3->player[0].position,
@@ -673,9 +725,39 @@ void loadGame() {
     }
   }
 
+  if (tree_records_saved) {
+    for (trees_ptr = (u8 *) trees; trees_ptr < (u8 *) trees + sizeof(trees);
+        trees_ptr++) {
+      if (cursor_pos >= buffer_bytes_read) {
+        if (!readPage(&file)) {
+          read_ok = FALSE;
+          break;
+        }
+      }
+      *trees_ptr = file_buffer[cursor_pos++];
+      computed_checksum = checksumByte(computed_checksum, *trees_ptr);
+    }
+  } else {
+    if (legacy_tree_records_saved) {
+      for (tree_byte = 0;
+          tree_byte < sizeof(TreeRecordV5) * MAX_TREES; tree_byte++) {
+        if (cursor_pos >= buffer_bytes_read) {
+          if (!readPage(&file)) {
+            read_ok = FALSE;
+            break;
+          }
+        }
+        computed_checksum = checksumByte(computed_checksum,
+          file_buffer[cursor_pos++]);
+      }
+    }
+    recoverTreesFromWorld();
+  }
+
   f_close(&file);
   if (!read_ok ||
-      (full_inventory_saved && computed_checksum != expected_checksum)) {
+      (full_inventory_saved && computed_checksum != expected_checksum) ||
+      (tree_records_saved && !treesValid())) {
     if (recoverBackup(game_file_num - 1)) {
       loadGame();
       return;

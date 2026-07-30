@@ -7,7 +7,9 @@
 #include "camera.h"
 #include "geometry.h"
 #include "items.h"
+#include "trees.h"
 #include "storage.h"
+#include "audio.h"
 
 #define START_X 32
 #define START_Z 48
@@ -551,6 +553,7 @@ static void placeBlock(u8 player_num, u8 x, u8 y, u8 z) {
   }
   regenerateBlock(x, y, z);
   makeDisplayListsAt(x, z);
+  playSound(SOUND_PLACE);
 }
 
 static u8 dropForBlock(u8 block, u8 tool, u8 *item) {
@@ -569,6 +572,11 @@ static u8 breakBlock(u8 x, u8 y, u8 z, u8 tool) {
   u8 block = blocks[x * MAX_Y * MAX_Z + y * MAX_Z + z];
   u8 item;
 
+  if (block == WOOD && beginTreeFelling(x, y, z)) {
+    playSound(SOUND_BREAK);
+    return TRUE;
+  }
+
   /* Every terrain block that has a valid harvest yields the same small cube
      that can later be placed.  If the item pool is full, preserve the block
      rather than silently destroying its resource. */
@@ -577,8 +585,10 @@ static u8 breakBlock(u8 x, u8 y, u8 z, u8 tool) {
     return FALSE;
   }
   blocks[x * MAX_Y * MAX_Z + y * MAX_Z + z] = AIR;
+  treeBlockDestroyed(x, y, z);
   regenerateBlock(x, y, z);
   makeDisplayListsAt(x, z);
+  playSound(SOUND_BREAK);
   return TRUE;
 }
 
@@ -641,6 +651,7 @@ static void updateBreaking(u8 player_num, float delta) {
     player->breaking_y = player->target_y;
     player->breaking_z = player->target_z;
     player->break_progress = 0;
+    playSound(SOUND_PUNCH);
   }
   player->break_time = break_time;
 
@@ -887,6 +898,12 @@ void updatePlayers() {
     return;
   }
 
+  if (current_screen == LOADING_PREVIEW) {
+    /* The flyover is deliberately non-interactive; do not let a held menu
+       button select another world while the current one is becoming ready. */
+    return;
+  }
+
   if (current_screen != GAME) {
     down_pressed = (cont_data[0].button & D_CBUTTONS) || cont_data[0].stick_y < -50;
     up_pressed = (cont_data[0].button & U_CBUTTONS) || cont_data[0].stick_y > 50;
@@ -919,6 +936,7 @@ void updatePlayers() {
   for (i = 0; i < active_player_count; i++) {
     updatePlayer(i, delta);
   }
+  updateTrees(delta);
   updateDroppedItems(delta);
 
   if (saving_available) {
