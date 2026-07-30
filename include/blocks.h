@@ -12,17 +12,19 @@
 #define PLANKS      8
 #define BRICKS      9
 #define CRAFTING_TABLE 10
-/* Water is terrain-only rather than an inventory item: IDs 11-14 are tools
-   and saplings, and the packed save format supports all four-bit IDs. */
+#define COAL_ORE    11
+#define IRON_ORE    12
+#define BEDROCK     13
+#define MOSSY_COBBLESTONE 14
 #define WATER       15
 
-/* Block IDs are also placeable item IDs.  The nine-slot hotbar starts with
-   the base blocks; crafted blocks can be moved into it from storage. */
+/* The packed world has exactly sixteen block IDs.  Inventory-only items live
+   above that namespace so all four remaining terrain IDs can deepen mining. */
 #define FIRST_PLACEABLE_BLOCK DIRT
 #define BLOCK_TYPE_COUNT      CRAFTING_TABLE
 #define MAX_BLOCK_ID          WATER
 
-#define BLOCK_IS_VALID(block) ((block) <= BLOCK_TYPE_COUNT || (block) == WATER)
+#define BLOCK_IS_VALID(block) ((block) <= MAX_BLOCK_ID)
 #define BLOCK_IS_SOLID(block) ((block) != AIR && (block) != WATER)
 
 #endif /* BLOCKS_H */

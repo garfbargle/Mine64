@@ -8,7 +8,7 @@
 /* A tree owns only the blocks it placed while generating.  The canopy mask is
    a packed 5 x 5 x 4 volume, so overlapping canopies and player-built logs
    never become part of the same tree. */
-#define MAX_TREES 96
+#define MAX_TREES 192
 #define TREE_INACTIVE_Y 255
 #define TREE_LEAF_MASK_BYTES 13
 

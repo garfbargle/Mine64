@@ -178,17 +178,17 @@ void recoverTreesFromWorld() {
         u8 tree_index;
         u8 local_x, local_y, local_z;
 
-        if (blocks[blockIndex(x, base_y, z)] != DIRT ||
-            blocks[blockIndex(x, base_y + 1, z)] != WOOD) {
+        if (blockGetIndex(blockIndex(x, base_y, z)) != DIRT ||
+            blockGetIndex(blockIndex(x, base_y + 1, z)) != WOOD) {
           continue;
         }
         while (height < TREE_TRUNK_PARTS && base_y + 1 + height < MAX_Y &&
-            blocks[blockIndex(x, base_y + 1 + height, z)] == WOOD) {
+            blockGetIndex(blockIndex(x, base_y + 1 + height, z)) == WOOD) {
           height++;
         }
         if (height < 3 || (height == TREE_TRUNK_PARTS &&
             base_y + 1 + height < MAX_Y &&
-            blocks[blockIndex(x, base_y + 1 + height, z)] == WOOD)) {
+            blockGetIndex(blockIndex(x, base_y + 1 + height, z)) == WOOD)) {
           continue;
         }
 
@@ -203,7 +203,7 @@ void recoverTreesFromWorld() {
             for (local_y = 0; local_y < TREE_LEAF_LAYERS; local_y++) {
               u8 leaf_y = base_y + height - 1 + local_y;
               if (leaf_y < MAX_Y &&
-                  blocks[blockIndex(leaf_x, leaf_y, leaf_z)] == LEAVES) {
+                  blockGetIndex(blockIndex(leaf_x, leaf_y, leaf_z)) == LEAVES) {
                 leaves++;
               }
             }
@@ -228,7 +228,7 @@ void recoverTreesFromWorld() {
             for (local_y = 0; local_y < TREE_LEAF_LAYERS; local_y++) {
               u8 leaf_y = base_y + height - 1 + local_y;
               if (leaf_y < MAX_Y &&
-                  blocks[blockIndex(leaf_x, leaf_y, leaf_z)] == LEAVES &&
+                  blockGetIndex(blockIndex(leaf_x, leaf_y, leaf_z)) == LEAVES &&
                   !leafOwnedByExistingTree(leaf_x, leaf_y, leaf_z)) {
                 treeAddLeaf(tree_index, leaf_x, leaf_y, leaf_z);
               }
@@ -246,7 +246,8 @@ static void discardMissingParts(TreeRecord *tree) {
 
   for (part = 0; part < TREE_TRUNK_PARTS; part++) {
     if ((tree->trunk_mask & (1 << part)) &&
-        blocks[blockIndex(tree->x, tree->base_y + 1 + part, tree->z)] != WOOD) {
+        blockGetIndex(blockIndex(tree->x, tree->base_y + 1 + part,
+          tree->z)) != WOOD) {
       tree->trunk_mask &= ~(1 << part);
     }
   }
@@ -258,7 +259,7 @@ static void discardMissingParts(TreeRecord *tree) {
       u8 x = tree->x + local_x - 2;
       u8 y = tree->canopy_y + local_y;
       u8 z = tree->z + local_z - 2;
-      if (blocks[blockIndex(x, y, z)] != LEAVES) {
+      if (blockGetIndex(blockIndex(x, y, z)) != LEAVES) {
         setLeafBit(tree, bit, FALSE);
       }
     }
@@ -287,7 +288,7 @@ static void removeTreeBlocks(TreeRecord *tree) {
   for (part = 0; part < TREE_TRUNK_PARTS; part++) {
     if (tree->trunk_mask & (1 << part)) {
       u8 y = tree->base_y + 1 + part;
-      blocks[blockIndex(tree->x, y, tree->z)] = AIR;
+      blockSetIndex(blockIndex(tree->x, y, tree->z), AIR);
       changed_columns[(tree->x / CHUNK_SIZE) * CHUNKS_Z + tree->z / CHUNK_SIZE] = TRUE;
     }
   }
@@ -299,7 +300,7 @@ static void removeTreeBlocks(TreeRecord *tree) {
       u8 x = tree->x + local_x - 2;
       u8 y = tree->canopy_y + local_y;
       u8 z = tree->z + local_z - 2;
-      blocks[blockIndex(x, y, z)] = AIR;
+      blockSetIndex(blockIndex(x, y, z), AIR);
       changed_columns[(x / CHUNK_SIZE) * CHUNKS_Z + z / CHUNK_SIZE] = TRUE;
     }
   }

@@ -5,7 +5,7 @@
 #include "math.h"
 #include "trees.h"
 
-u8 blocks[NUM_BLOCKS];
+u8 block_data[NUM_BLOCK_BYTES];
 
 #define SEA_LEVEL 8
 #define MIN_SURFACE_HEIGHT 6
@@ -23,6 +23,39 @@ static int clampHeight(int height) {
     return MAX_SURFACE_HEIGHT;
   }
   return height;
+}
+
+static u32 coordinateHash(int x, int y, int z) {
+  u32 value = (u32) x * 0x8DA6B343UL;
+  value ^= (u32) y * 0xD8163841UL;
+  value ^= (u32) z * 0xCB1AB31FUL;
+  value ^= value >> 13;
+  value *= 0x85EBCA6BUL;
+  return value ^ (value >> 16);
+}
+
+/*
+ * One hash per small cell yields compact, recognizable ore veins without
+ * paying for another octave-noise sample for every underground block.
+ */
+static u8 oreInCell(int x, int y, int z, int cell_size, u8 rarity) {
+  int cell_x = x / cell_size;
+  int cell_y = y / cell_size;
+  int cell_z = z / cell_size;
+  u32 hash = coordinateHash(cell_x, cell_y, cell_z);
+  int center_x;
+  int center_y;
+  int center_z;
+
+  if (hash % rarity != 0) {
+    return FALSE;
+  }
+  center_x = (hash >> 8) % cell_size;
+  center_y = (hash >> 13) % cell_size;
+  center_z = (hash >> 18) % cell_size;
+  return absolute((float) (x % cell_size - center_x)) +
+    absolute((float) (y % cell_size - center_y)) +
+    absolute((float) (z % cell_size - center_z)) <= 1.f;
 }
 
 static int terrainHeight(int x, int z) {
@@ -76,9 +109,8 @@ static int isRiver(int x, int z, int natural_height) {
     watershed > 0.58f && channel < 0.022f;
 }
 
-static int shapedSurfaceHeight(int x, int z, int *water_level) {
-  int natural_height = terrainHeight(x, z);
-
+static int shapedSurfaceHeight(int x, int z, int natural_height,
+    int *water_level) {
   *water_level = -1;
   if (natural_height <= SEA_LEVEL) {
     *water_level = SEA_LEVEL;
@@ -93,6 +125,19 @@ static int shapedSurfaceHeight(int x, int z, int *water_level) {
     return SEA_LEVEL - 1;
   }
   return natural_height;
+}
+
+static void fillTerrainHeightRow(u8 *row, int x) {
+  int z;
+
+  /*
+   * Keep a one-column halo at each edge.  Three rotating rows are enough for
+   * both axes of the slope test, avoiding four redundant multi-octave terrain
+   * samples per column without retaining a full second world-sized map.
+   */
+  for (z = -1; z <= MAX_Z; z++) {
+    row[z + 1] = terrainHeight(x, z);
+  }
 }
 
 static int isCave(int x, int y, int z, int surface_height) {
@@ -139,12 +184,12 @@ static void spawnTree(int tx, int ty, int tz) {
   u8 tree_index;
   int leaf_heightmap[25];
 
-  blocks[tx * MAX_Z * MAX_Y + ty * MAX_Z + tz] = DIRT;
+  blockSet(tx, ty, tz, DIRT);
 
   height = random(3) + 3;
   tree_index = createTree(tx, tz, ty, height);
   for (y = ty + 1; y < min(ty + height + 1, MAX_Y); y++) {
-    blocks[tx * MAX_Z * MAX_Y + y * MAX_Z + tz] = WOOD;
+    blockSet(tx, y, tz, WOOD);
   }
 
   generateLeafHeights(leaf_heightmap);
@@ -152,8 +197,8 @@ static void spawnTree(int tx, int ty, int tz) {
   for (x = max(tx - 2, 0); x < min(tx + 3, MAX_X); x++) {
     for (z = max(tz - 2, 0); z < min(tz + 3, MAX_Z); z++) {
       for (y = ty + height - 1; y < min(ty + height + leaf_heightmap[(x - tx + 2) * 5 + (z - tz + 2)] + 1, MAX_Y); y++) {
-        if (!blocks[x * MAX_Z * MAX_Y + y * MAX_Z + z]) {
-          blocks[x * MAX_Z * MAX_Y + y * MAX_Z + z] = LEAVES;
+        if (!blockGet(x, y, z)) {
+          blockSet(x, y, z, LEAVES);
           treeAddLeaf(tree_index, x, y, z);
         }
       }
@@ -166,7 +211,7 @@ void trySpawnTree(int tx, int tz) {
   int ty;
 
   for (ty = MAX_Y - 1; ty >= 0; ty--) {
-    block = blocks[tx * MAX_Z * MAX_Y + ty * MAX_Z + tz];
+    block = blockGet(tx, ty, tz);
     if (block == GRASS) {
       spawnTree(tx, ty, tz);
       return;
@@ -180,12 +225,12 @@ u8 tryPlantTree(u8 x, u8 y, u8 z) {
   u8 scan_y;
 
   if (x >= MAX_X || y == 0 || y >= MAX_Y || z >= MAX_Z ||
-      blocks[x * MAX_Y * MAX_Z + y * MAX_Z + z] != AIR ||
-      blocks[x * MAX_Y * MAX_Z + (y - 1) * MAX_Z + z] != GRASS) {
+      blockGet(x, y, z) != AIR ||
+      blockGet(x, y - 1, z) != GRASS) {
     return FALSE;
   }
   for (scan_y = y; scan_y < MAX_Y; scan_y++) {
-    if (blocks[x * MAX_Y * MAX_Z + scan_y * MAX_Z + z] != AIR) {
+    if (blockGet(x, scan_y, z) != AIR) {
       return FALSE;
     }
   }
@@ -193,7 +238,63 @@ u8 tryPlantTree(u8 x, u8 y, u8 z) {
   return TRUE;
 }
 
+static int exposedGrassY(int x, int z) {
+  int y;
+
+  if (x < 0 || z < 0 || x >= MAX_X || z >= MAX_Z) {
+    return -1;
+  }
+  for (y = MAX_Y - 2; y >= 0; y--) {
+    if (blockGet(x, y, z) == GRASS && blockGet(x, y + 1, z) == AIR) {
+      return y;
+    }
+    if (blockGet(x, y, z) != AIR) {
+      return -1;
+    }
+  }
+  return -1;
+}
+
+static void generateWaystones() {
+  u8 landmark;
+
+  /*
+   * Sparse mossy waystones give a large procedural world memorable bearings
+   * and imply history without storing a village simulation or structure map.
+   */
+  for (landmark = 0; landmark < 10; landmark++) {
+    u8 attempt;
+    for (attempt = 0; attempt < 32; attempt++) {
+      int x = 8 + random(MAX_X - 16);
+      int z = 8 + random(MAX_Z - 16);
+      int y = exposedGrassY(x, z);
+      int east_y = exposedGrassY(x + 2, z);
+      int south_y = exposedGrassY(x, z + 2);
+      int height;
+      int part;
+
+      if (y < SEA_LEVEL + 1 || east_y < 0 || south_y < 0 ||
+          absolute((float) (east_y - y)) > 1.f ||
+          absolute((float) (south_y - y)) > 1.f) {
+        continue;
+      }
+      height = 2 + random(4);
+      for (part = 1; part <= height && y + part < MAX_Y; part++) {
+        blockSet(x, y + part, z,
+          part == height || (part & 1) ? MOSSY_COBBLESTONE : COBBLESTONE);
+      }
+      blockSet(x + 2, east_y + 1, z, MOSSY_COBBLESTONE);
+      blockSet(x, south_y + 1, z + 2, MOSSY_COBBLESTONE);
+      break;
+    }
+  }
+}
+
 void initWorld() {
+  static u8 terrain_height_rows[3][MAX_Z + 2];
+  u8 *previous_heights = terrain_height_rows[0];
+  u8 *current_heights = terrain_height_rows[1];
+  u8 *next_heights = terrain_height_rows[2];
   int x, y, z;
   int height, dirt_depth, water_level;
   float biome, slope;
@@ -203,12 +304,18 @@ void initWorld() {
   setDayCycleWorldTicks(DAY_CYCLE_START_TICK);
   initTrees();
 
+  fillTerrainHeightRow(previous_heights, -1);
+  fillTerrainHeightRow(current_heights, 0);
+  fillTerrainHeightRow(next_heights, 1);
+
   for (x = 0; x < MAX_X; x++) {
     for (z = 0; z < MAX_Z; z++) {
-      height = shapedSurfaceHeight(x, z, &water_level);
+      height = shapedSurfaceHeight(x, z, current_heights[z + 1],
+        &water_level);
       biome = perlin2d(x + 883, z + 521, 0.025f, 3);
-      slope = absolute((float)(terrainHeight(x + 1, z) - terrainHeight(x - 1, z))) +
-              absolute((float)(terrainHeight(x, z + 1) - terrainHeight(x, z - 1)));
+      slope = absolute((float)(next_heights[z + 1] -
+        previous_heights[z + 1])) +
+        absolute((float)(current_heights[z + 2] - current_heights[z]));
       /* Sand belongs at shorelines and a few shallow lowland patches.  Do
        * not let a broad biome signal turn hills or mountain shoulders into
        * implausible vertical sand stacks. */
@@ -222,10 +329,18 @@ void initWorld() {
           block = WATER;
         } else if (y >= height)  {
           block = AIR;
+        } else if (y == 0) {
+          block = BEDROCK;
         } else if (isCave(x, y, z, height)) {
           block = AIR;
         } else if (y < height - dirt_depth) {
-          block = STONE;
+          if (y < 13 && oreInCell(x, y, z, 5, 7)) {
+            block = IRON_ORE;
+          } else if (y < 23 && oreInCell(x, y, z, 4, 5)) {
+            block = COAL_ORE;
+          } else {
+            block = STONE;
+          }
         } else if (do_sand) {
           block = SAND;
         } else if (exposed_stone && y >= height - 2) {
@@ -236,11 +351,21 @@ void initWorld() {
           block = DIRT;
         }
 
-        blocks[x * MAX_Z * MAX_Y + y * MAX_Z + z] = block;
+        blockSet(x, y, z, block);
       }
     }
+
+    if (x + 1 < MAX_X) {
+      u8 *old_previous = previous_heights;
+      previous_heights = current_heights;
+      current_heights = next_heights;
+      next_heights = old_previous;
+      fillTerrainHeightRow(next_heights, x + 2);
+    }
   }
-  
+
+  generateWaystones();
+
   for (x = 0; x < MAX_X; x++) {
     for (z = 0; z < MAX_Z; z++) {
       if (random(1000) < perlin2d(x, z, 0.02, 2) * 8 - 2) {

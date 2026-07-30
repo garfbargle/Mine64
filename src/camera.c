@@ -73,7 +73,7 @@ static u8 cameraPointSolid(Vector3 position) {
     return TRUE;
   }
   return y < MAX_Y &&
-    BLOCK_IS_SOLID(blocks[x * MAX_Y * MAX_Z + y * MAX_Z + z]);
+    BLOCK_IS_SOLID(blockGet(x, y, z));
 }
 
 static u8 cameraSpaceClear(Vector3 position) {
@@ -106,21 +106,22 @@ Vector3 playerCameraPosition(u8 player_num) {
   Vector3 forward = {0, 0, -1};
   u8 sample;
 
+  camera.y += player->camera_y_offset;
   if (player->camera_mode != CAMERA_THIRD_PERSON) {
     return camera;
   }
 
   forward = rotateX(forward, player->pitch);
   forward = rotateY(forward, -player->yaw);
-  desired = add(player->position, mul(forward, -THIRD_PERSON_DISTANCE));
+  desired = add(camera, mul(forward, -THIRD_PERSON_DISTANCE));
   desired.y += THIRD_PERSON_HEIGHT;
-  offset = add(desired, mul(player->position, -1.f));
+  offset = add(desired, mul(camera, -1.f));
 
   /* Pull the camera toward the player before it can enter a wall.  Twelve
      samples are plenty across a sub-three-block arm and cost far less than a
      second collision system. */
   for (sample = 1; sample <= THIRD_PERSON_SAMPLES; sample++) {
-    Vector3 candidate = add(player->position,
+    Vector3 candidate = add(camera,
       mul(offset, sample / (float) THIRD_PERSON_SAMPLES));
     if (!cameraSpaceClear(candidate)) {
       break;

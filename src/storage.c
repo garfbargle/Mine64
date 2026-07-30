@@ -18,7 +18,7 @@ static FATFS fs;
 #define LEGACY_COOP_HEADER_SIZE 256
 #define LEGACY_MAX_PLAYERS 2
 #define BUFFER_LEN 512
-#define SAVE_VERSION 9
+#define SAVE_VERSION 10
 
 typedef struct {
   u32 magic_num;
@@ -206,7 +206,7 @@ static u32 checksumSave(SavedPlayer *players_to_save, u32 player_count,
   u32 index;
 
   for (index = 0; index < NUM_BLOCKS; index++) {
-    checksum = checksumByte(checksum, blocks[index]);
+    checksum = checksumByte(checksum, blockGetIndex(index));
   }
   return checksum;
 }
@@ -235,27 +235,27 @@ u32 game_file_num;
 char world_names[3][WORLD_NAME_LENGTH + 1];
 
 static char *file_names[] = {
-  "mine64/world_112_1.m64",
-  "mine64/world_112_2.m64",
-  "mine64/world_112_3.m64"
+  "mine64/world_160_1.m64",
+  "mine64/world_160_2.m64",
+  "mine64/world_160_3.m64"
 };
 
 static char *temporary_file_names[] = {
-  "mine64/temp_112_1.tmp",
-  "mine64/temp_112_2.tmp",
-  "mine64/temp_112_3.tmp"
+  "mine64/temp_160_1.tmp",
+  "mine64/temp_160_2.tmp",
+  "mine64/temp_160_3.tmp"
 };
 
 static char *backup_file_names[] = {
-  "mine64/world_112_1.bak",
-  "mine64/world_112_2.bak",
-  "mine64/world_112_3.bak"
+  "mine64/world_160_1.bak",
+  "mine64/world_160_2.bak",
+  "mine64/world_160_3.bak"
 };
 
 static char *name_file_names[] = {
-  "mine64/world_112_1.name",
-  "mine64/world_112_2.name",
-  "mine64/world_112_3.name"
+  "mine64/world_160_1.name",
+  "mine64/world_160_2.name",
+  "mine64/world_160_3.name"
 };
 
 static void setDefaultWorldName(u8 slot) {
@@ -433,13 +433,18 @@ static void restorePlayerState(Player *player, Vector3 position, float pitch,
   player->body_yaw = yaw;
   player->walk_time = 0;
   player->walk_swing = 0;
+  player->vault_time = 0;
+  player->camera_y_offset = 0;
   player->knockback_velocity = (Vector3) {0, 0, 0};
   player->attack_time = 0;
   player->hurt_time = 0;
+  player->objective_stage = 0;
+  player->objective_time = 180.f;
   player->health = PLAYER_MAX_HEALTH;
   player->camera_mode = CAMERA_FIRST_PERSON;
   player->held_block = held_block;
   player->y_velocity = 0;
+  player->fall_distance = 0;
   player->active = TRUE;
   player->target_present = FALSE;
   player->breaking = FALSE;
@@ -544,12 +549,11 @@ u8 saveGame() {
   Header *header = (Header *) file_buffer;
   FRESULT result;
   u8 write_ok = TRUE;
-  u8 packed;
   u8 slot;
   u8 player_num;
   u8 had_previous_file;
   u8 *blocks_ptr;
-  const u8 *blocks_end = blocks + NUM_BLOCKS;
+  const u8 *blocks_end = block_data + NUM_BLOCK_BYTES;
   u8 *trees_ptr;
   const u8 *trees_end = (const u8 *) trees + sizeof(trees);
 
@@ -589,9 +593,11 @@ u8 saveGame() {
   }
   write_ok = writePage(&file);
 
-  for (blocks_ptr = blocks; write_ok && blocks_ptr < blocks_end; blocks_ptr += 2) {
-    packed = (blocks_ptr[0] << 4) | blocks_ptr[1];
-    file_buffer[cursor_pos++] = packed;
+  /* The live world is already nibble-packed, so saving can stream it without
+     a second full-world buffer or any expansion/compression pass. */
+  for (blocks_ptr = block_data; write_ok && blocks_ptr < blocks_end;
+      blocks_ptr++) {
+    file_buffer[cursor_pos++] = *blocks_ptr;
 
     if (cursor_pos >= BUFFER_LEN) {
       write_ok = writePage(&file);
@@ -668,8 +674,9 @@ void loadGame() {
   u8 *blocks_ptr;
   u8 *trees_ptr;
   u32 tree_byte;
+  u32 block_index;
   u8 player_num;
-  const u8 *blocks_end = blocks + NUM_BLOCKS;
+  const u8 *blocks_end = block_data + NUM_BLOCK_BYTES;
 
   if (game_file_num < 1 || game_file_num > 3) {
     initWorld();
@@ -919,7 +926,8 @@ void loadGame() {
     return;
   }
 
-  for (blocks_ptr = blocks; blocks_ptr < blocks_end; blocks_ptr += 2) {
+  block_index = 0;
+  for (blocks_ptr = block_data; blocks_ptr < blocks_end; blocks_ptr++) {
     if (cursor_pos >= buffer_bytes_read) {
       if (!readPage(&file)) {
         read_ok = FALSE;
@@ -928,17 +936,20 @@ void loadGame() {
     }
 
     packed = file_buffer[cursor_pos++];
-    blocks_ptr[0] = packed >> 4;
-    blocks_ptr[1] = packed & 0xF;
-    if (!BLOCK_IS_VALID(blocks_ptr[0])) {
-      blocks_ptr[0] = AIR;
+    if (!BLOCK_IS_VALID(packed >> 4)) {
+      packed &= 0x0F;
     }
-    if (!BLOCK_IS_VALID(blocks_ptr[1])) {
-      blocks_ptr[1] = AIR;
+    if (!BLOCK_IS_VALID(packed & 0x0F)) {
+      packed &= 0xF0;
     }
+    *blocks_ptr = packed;
     if (full_inventory_saved) {
-      computed_checksum = checksumByte(computed_checksum, blocks_ptr[0]);
-      computed_checksum = checksumByte(computed_checksum, blocks_ptr[1]);
+      computed_checksum = checksumByte(computed_checksum,
+        blockGetIndex(block_index++));
+      if (block_index < NUM_BLOCKS) {
+        computed_checksum = checksumByte(computed_checksum,
+          blockGetIndex(block_index++));
+      }
     }
   }
 

@@ -20,17 +20,40 @@ u8 pickup_message[MAX_PLAYERS];
 u8 pickup_item[MAX_PLAYERS];
 
 u8 itemMaxStack(u8 item) {
-  return (item == WOOD_SWORD || item == WOOD_PICKAXE) ? 1 : MAX_ITEM_STACK;
+  return itemIsTool(item) ? 1 : MAX_ITEM_STACK;
 }
 
 const char *itemName(u8 item) {
   static const char *names[] = {
     "Empty", "Dirt", "Stone", "Grass", "Cobblestone", "Sand", "Log",
     "Leaves", "Planks", "Bricks", "Crafting Table", "Stick",
-    "Wood Sword", "Wood Pickaxe", "Sapling", "Water", "Wool"
+    "Wood Sword", "Wood Pickaxe", "Sapling", "Wool", "Coal",
+    "Iron Chunk", "Stone Sword", "Stone Pickaxe", "Wood Axe",
+    "Stone Axe", "Apple", "Raw Mutton", "Raw Pork", "Slime Gel",
+    "Iron Sword", "Iron Pickaxe", "Iron Axe"
   };
 
-  return ITEM_IS_VALID(item) ? names[item] : "Unknown";
+  if (item <= CRAFTING_TABLE) {
+    return names[item];
+  }
+  return ITEM_IS_VALID(item) ? names[item - 5] : "Unknown";
+}
+
+u8 itemIsSword(u8 item) {
+  return item == WOOD_SWORD || item == STONE_SWORD || item == IRON_SWORD;
+}
+
+u8 itemIsPickaxe(u8 item) {
+  return item == WOOD_PICKAXE || item == STONE_PICKAXE ||
+    item == IRON_PICKAXE;
+}
+
+u8 itemIsAxe(u8 item) {
+  return item == WOOD_AXE || item == STONE_AXE || item == IRON_AXE;
+}
+
+u8 itemIsTool(u8 item) {
+  return itemIsSword(item) || itemIsPickaxe(item) || itemIsAxe(item);
 }
 
 u8 rollLeafDrop(u8 *item) {
@@ -39,6 +62,10 @@ u8 rollLeafDrop(u8 *item) {
      from flooding the 16-slot pickup pool. */
   if (random(10) == 0) {
     *item = SAPLING;
+    return TRUE;
+  }
+  if (random(24) == 0) {
+    *item = APPLE;
     return TRUE;
   }
   if (random(2) == 0) {
@@ -101,7 +128,7 @@ static u8 solidBlockAt(float x, float y, float z) {
   if (by >= MAX_Y) {
     return FALSE;
   }
-  return BLOCK_IS_SOLID(blocks[bx * MAX_Y * MAX_Z + by * MAX_Z + bz]);
+  return BLOCK_IS_SOLID(blockGet(bx, by, bz));
 }
 
 static void updateDropPhysics(DroppedItem *drop, float delta) {

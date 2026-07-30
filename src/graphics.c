@@ -27,8 +27,8 @@
 #define MOON_SIZE 360.f
 #define DROPPED_ITEM_RENDER_DISTANCE (BLOCK_SIZE * 36.f)
 #define PLAYER_RENDER_DISTANCE (BLOCK_SIZE * 64.f)
-#define SHEEP_RENDER_DISTANCE (BLOCK_SIZE * 30.f)
-#define MAX_VISIBLE_SHEEP 3
+#define MOB_RENDER_DISTANCE (BLOCK_SIZE * 30.f)
+#define MAX_VISIBLE_MOBS 4
 
 Gfx *dlp;
 u32 dl_no = 0;
@@ -128,16 +128,17 @@ static Mtx steve_rotate[NUM_DISPLAY_LISTS][MAX_PLAYERS][STEVE_PART_COUNT];
 static Mtx first_person_sword_translate[NUM_DISPLAY_LISTS][MAX_PLAYERS];
 static Mtx first_person_sword_rotate[NUM_DISPLAY_LISTS][MAX_PLAYERS];
 
-#define SHEEP_BODY 0
-#define SHEEP_HEAD 1
-#define SHEEP_FRONT_LEFT_LEG 2
-#define SHEEP_FRONT_RIGHT_LEG 3
-#define SHEEP_BACK_LEFT_LEG 4
-#define SHEEP_BACK_RIGHT_LEG 5
-#define SHEEP_PART_COUNT 6
+#define MOB_BODY 0
+#define MOB_HEAD 1
+#define MOB_FRONT_LEFT_LEG 2
+#define MOB_FRONT_RIGHT_LEG 3
+#define MOB_BACK_LEFT_LEG 4
+#define MOB_BACK_RIGHT_LEG 5
+#define MOB_SNOUT 6
+#define MOB_PART_COUNT 7
 
-static Mtx sheep_translate[NUM_DISPLAY_LISTS][MAX_SHEEP][SHEEP_PART_COUNT];
-static Mtx sheep_rotate[NUM_DISPLAY_LISTS][MAX_SHEEP][SHEEP_PART_COUNT];
+static Mtx mob_translate[NUM_DISPLAY_LISTS][MAX_MOBS][MOB_PART_COUNT];
+static Mtx mob_rotate[NUM_DISPLAY_LISTS][MAX_MOBS][MOB_PART_COUNT];
 
 #define STEVE_VERTEX(x, y, z, r, g, b) {x, y, z, 0, 0, 0, r, g, b, 255}
 
@@ -194,6 +195,55 @@ static Vtx sheep_leg_verts[] = {
   STEVE_VERTEX(-6, -18, -6, 76, 70, 62), STEVE_VERTEX(6, -18, -6, 76, 70, 62)
 };
 
+static Vtx pig_body_verts[] = {
+  STEVE_VERTEX(-27, 16, 18, 224, 145, 151), STEVE_VERTEX(27, 16, 18, 224, 145, 151),
+  STEVE_VERTEX(27, -16, 18, 224, 145, 151), STEVE_VERTEX(-27, -16, 18, 224, 145, 151),
+  STEVE_VERTEX(27, 16, -18, 177, 104, 113), STEVE_VERTEX(-27, 16, -18, 177, 104, 113),
+  STEVE_VERTEX(-27, -16, -18, 177, 104, 113), STEVE_VERTEX(27, -16, -18, 177, 104, 113)
+};
+
+static Vtx pig_head_verts[] = {
+  STEVE_VERTEX(-16, 15, 15, 232, 155, 160), STEVE_VERTEX(16, 15, 15, 232, 155, 160),
+  STEVE_VERTEX(16, -15, 15, 232, 155, 160), STEVE_VERTEX(-16, -15, 15, 232, 155, 160),
+  STEVE_VERTEX(16, 15, -15, 184, 111, 120), STEVE_VERTEX(-16, 15, -15, 184, 111, 120),
+  STEVE_VERTEX(-16, -15, -15, 184, 111, 120), STEVE_VERTEX(16, -15, -15, 184, 111, 120)
+};
+
+static Vtx pig_leg_verts[] = {
+  STEVE_VERTEX(-6, 17, 6, 197, 123, 132), STEVE_VERTEX(6, 17, 6, 197, 123, 132),
+  STEVE_VERTEX(6, -17, 6, 197, 123, 132), STEVE_VERTEX(-6, -17, 6, 197, 123, 132),
+  STEVE_VERTEX(6, 17, -6, 144, 80, 91), STEVE_VERTEX(-6, 17, -6, 144, 80, 91),
+  STEVE_VERTEX(-6, -17, -6, 144, 80, 91), STEVE_VERTEX(6, -17, -6, 144, 80, 91)
+};
+
+static Vtx pig_snout_verts[] = {
+  STEVE_VERTEX(-10, 7, 5, 238, 171, 170), STEVE_VERTEX(10, 7, 5, 238, 171, 170),
+  STEVE_VERTEX(10, -7, 5, 238, 171, 170), STEVE_VERTEX(-10, -7, 5, 238, 171, 170),
+  STEVE_VERTEX(10, 7, -5, 162, 91, 101), STEVE_VERTEX(-10, 7, -5, 162, 91, 101),
+  STEVE_VERTEX(-10, -7, -5, 162, 91, 101), STEVE_VERTEX(10, -7, -5, 162, 91, 101)
+};
+
+static Vtx slime_body_verts[] = {
+  STEVE_VERTEX(-22, 21, 20, 91, 194, 83), STEVE_VERTEX(22, 21, 20, 91, 194, 83),
+  STEVE_VERTEX(22, -21, 20, 91, 194, 83), STEVE_VERTEX(-22, -21, 20, 91, 194, 83),
+  STEVE_VERTEX(22, 21, -20, 47, 125, 58), STEVE_VERTEX(-22, 21, -20, 47, 125, 58),
+  STEVE_VERTEX(-22, -21, -20, 47, 125, 58), STEVE_VERTEX(22, -21, -20, 47, 125, 58)
+};
+
+static Vtx slime_eye_verts[] = {
+  STEVE_VERTEX(-4, 5, 3, 16, 25, 20), STEVE_VERTEX(4, 5, 3, 16, 25, 20),
+  STEVE_VERTEX(4, -5, 3, 16, 25, 20), STEVE_VERTEX(-4, -5, 3, 16, 25, 20),
+  STEVE_VERTEX(4, 5, -3, 7, 12, 9), STEVE_VERTEX(-4, 5, -3, 7, 12, 9),
+  STEVE_VERTEX(-4, -5, -3, 7, 12, 9), STEVE_VERTEX(4, -5, -3, 7, 12, 9)
+};
+
+static Vtx slime_gel_verts[] = {
+  STEVE_VERTEX(-10, 9, 9, 105, 211, 96), STEVE_VERTEX(10, 9, 9, 105, 211, 96),
+  STEVE_VERTEX(10, -9, 9, 105, 211, 96), STEVE_VERTEX(-10, -9, 9, 105, 211, 96),
+  STEVE_VERTEX(10, 9, -9, 48, 136, 60), STEVE_VERTEX(-10, 9, -9, 48, 136, 60),
+  STEVE_VERTEX(-10, -9, -9, 48, 136, 60), STEVE_VERTEX(10, -9, -9, 48, 136, 60)
+};
+
 /* Two blue eye quads on the local -Z face make it obvious where Steve is
    looking, even without a character texture. */
 static Vtx steve_eye_verts[] = {
@@ -213,11 +263,91 @@ static Vtx steve_sword_blade_verts[] = {
   STEVE_VERTEX(-4, -42, -3, 165, 165, 154), STEVE_VERTEX(4, -42, -3, 165, 165, 154)
 };
 
+static Vtx wood_sword_blade_verts[] = {
+  STEVE_VERTEX(-4, 4, 3, 151, 103, 53), STEVE_VERTEX(4, 4, 3, 151, 103, 53),
+  STEVE_VERTEX(4, -42, 3, 151, 103, 53), STEVE_VERTEX(-4, -42, 3, 151, 103, 53),
+  STEVE_VERTEX(4, 4, -3, 105, 66, 31), STEVE_VERTEX(-4, 4, -3, 105, 66, 31),
+  STEVE_VERTEX(-4, -42, -3, 105, 66, 31), STEVE_VERTEX(4, -42, -3, 105, 66, 31)
+};
+
+static Vtx stone_sword_blade_verts[] = {
+  STEVE_VERTEX(-4, 4, 3, 151, 157, 154), STEVE_VERTEX(4, 4, 3, 151, 157, 154),
+  STEVE_VERTEX(4, -42, 3, 151, 157, 154), STEVE_VERTEX(-4, -42, 3, 151, 157, 154),
+  STEVE_VERTEX(4, 4, -3, 94, 100, 98), STEVE_VERTEX(-4, 4, -3, 94, 100, 98),
+  STEVE_VERTEX(-4, -42, -3, 94, 100, 98), STEVE_VERTEX(4, -42, -3, 94, 100, 98)
+};
+
 static Vtx steve_sword_hilt_verts[] = {
   STEVE_VERTEX(-12, 7, 5, 142, 83, 38), STEVE_VERTEX(12, 7, 5, 142, 83, 38),
   STEVE_VERTEX(12, 1, 5, 142, 83, 38), STEVE_VERTEX(-12, 1, 5, 142, 83, 38),
   STEVE_VERTEX(12, 7, -5, 104, 58, 27), STEVE_VERTEX(-12, 7, -5, 104, 58, 27),
   STEVE_VERTEX(-12, 1, -5, 104, 58, 27), STEVE_VERTEX(12, 1, -5, 104, 58, 27)
+};
+
+/* Pickaxes and axes share one low-poly handle, but keep distinct heads so
+   every tool reads immediately both in first person and while spinning as a
+   pickup.  Wood and stone tiers use different shaded head geometry. */
+static Vtx tool_handle_verts[] = {
+  STEVE_VERTEX(-3, 8, 3, 145, 91, 43), STEVE_VERTEX(3, 8, 3, 145, 91, 43),
+  STEVE_VERTEX(3, -38, 3, 145, 91, 43), STEVE_VERTEX(-3, -38, 3, 145, 91, 43),
+  STEVE_VERTEX(3, 8, -3, 99, 57, 26), STEVE_VERTEX(-3, 8, -3, 99, 57, 26),
+  STEVE_VERTEX(-3, -38, -3, 99, 57, 26), STEVE_VERTEX(3, -38, -3, 99, 57, 26)
+};
+
+#define TOOL_HEAD_VERTS(name, left, right, top, bottom, r1, g1, b1, r2, g2, b2) \
+static Vtx name[] = { \
+  STEVE_VERTEX(left, top, 4, r1, g1, b1), STEVE_VERTEX(right, top, 4, r1, g1, b1), \
+  STEVE_VERTEX(right, bottom, 4, r1, g1, b1), STEVE_VERTEX(left, bottom, 4, r1, g1, b1), \
+  STEVE_VERTEX(right, top, -4, r2, g2, b2), STEVE_VERTEX(left, top, -4, r2, g2, b2), \
+  STEVE_VERTEX(left, bottom, -4, r2, g2, b2), STEVE_VERTEX(right, bottom, -4, r2, g2, b2) \
+}
+
+TOOL_HEAD_VERTS(wood_pick_head_verts, -21, 21, 11, 3,
+  165, 111, 59, 109, 68, 32);
+TOOL_HEAD_VERTS(stone_pick_head_verts, -21, 21, 11, 3,
+  177, 181, 176, 111, 116, 113);
+TOOL_HEAD_VERTS(iron_pick_head_verts, -21, 21, 11, 3,
+  220, 223, 216, 156, 163, 160);
+TOOL_HEAD_VERTS(wood_axe_head_verts, -17, 9, 13, -3,
+  165, 111, 59, 109, 68, 32);
+TOOL_HEAD_VERTS(stone_axe_head_verts, -17, 9, 13, -3,
+  177, 181, 176, 111, 116, 113);
+TOOL_HEAD_VERTS(iron_axe_head_verts, -17, 9, 13, -3,
+  220, 223, 216, 156, 163, 160);
+
+static Vtx coal_chunk_verts[] = {
+  STEVE_VERTEX(-10, 10, 9, 47, 50, 51), STEVE_VERTEX(10, 10, 9, 47, 50, 51),
+  STEVE_VERTEX(10, -10, 9, 47, 50, 51), STEVE_VERTEX(-10, -10, 9, 47, 50, 51),
+  STEVE_VERTEX(10, 10, -9, 24, 26, 27), STEVE_VERTEX(-10, 10, -9, 24, 26, 27),
+  STEVE_VERTEX(-10, -10, -9, 24, 26, 27), STEVE_VERTEX(10, -10, -9, 24, 26, 27)
+};
+
+static Vtx iron_chunk_verts[] = {
+  STEVE_VERTEX(-11, 9, 8, 198, 145, 99), STEVE_VERTEX(11, 9, 8, 198, 145, 99),
+  STEVE_VERTEX(11, -9, 8, 198, 145, 99), STEVE_VERTEX(-11, -9, 8, 198, 145, 99),
+  STEVE_VERTEX(11, 9, -8, 129, 90, 64), STEVE_VERTEX(-11, 9, -8, 129, 90, 64),
+  STEVE_VERTEX(-11, -9, -8, 129, 90, 64), STEVE_VERTEX(11, -9, -8, 129, 90, 64)
+};
+
+static Vtx apple_body_verts[] = {
+  STEVE_VERTEX(-11, 10, 10, 218, 49, 42), STEVE_VERTEX(11, 10, 10, 218, 49, 42),
+  STEVE_VERTEX(11, -10, 10, 218, 49, 42), STEVE_VERTEX(-11, -10, 10, 218, 49, 42),
+  STEVE_VERTEX(11, 10, -10, 139, 25, 24), STEVE_VERTEX(-11, 10, -10, 139, 25, 24),
+  STEVE_VERTEX(-11, -10, -10, 139, 25, 24), STEVE_VERTEX(11, -10, -10, 139, 25, 24)
+};
+
+static Vtx apple_stem_verts[] = {
+  STEVE_VERTEX(-2, 17, 2, 83, 57, 28), STEVE_VERTEX(2, 17, 2, 83, 57, 28),
+  STEVE_VERTEX(2, 9, 2, 83, 57, 28), STEVE_VERTEX(-2, 9, 2, 83, 57, 28),
+  STEVE_VERTEX(2, 17, -2, 47, 86, 35), STEVE_VERTEX(-2, 17, -2, 47, 86, 35),
+  STEVE_VERTEX(-2, 9, -2, 47, 86, 35), STEVE_VERTEX(2, 9, -2, 47, 86, 35)
+};
+
+static Vtx mutton_verts[] = {
+  STEVE_VERTEX(-13, 8, 7, 172, 75, 67), STEVE_VERTEX(12, 8, 7, 172, 75, 67),
+  STEVE_VERTEX(8, -9, 7, 172, 75, 67), STEVE_VERTEX(-10, -9, 7, 172, 75, 67),
+  STEVE_VERTEX(12, 8, -7, 112, 48, 44), STEVE_VERTEX(-13, 8, -7, 112, 48, 44),
+  STEVE_VERTEX(-10, -9, -7, 112, 48, 44), STEVE_VERTEX(8, -9, -7, 112, 48, 44)
 };
 
 /* First person needs the forearm as well as the blade; otherwise a floating
@@ -561,19 +691,29 @@ static void beginColumnArenaBuild(u8 arena) {
   column_display_list_full = FALSE;
 }
 
-void makeQuadDL(u16 chunk, u8 bx, u8 by, u8 bz, u8 width, u8 height,
-    u8 face, u8 is_water) {
+static void makeQuadDL(u16 chunk, u8 bx, u8 by, u8 bz, u8 width, u8 height,
+    u8 face, u8 is_water, u8 *chunk_matrix_loaded) {
   u32 b = bx * CHUNK_SIZE * CHUNK_SIZE + by * CHUNK_SIZE + bz;
+  u8 commands = *chunk_matrix_loaded ? 3 : 4;
 
   /* Reserve one final command for the column's EndDisplayList.  A maximally
      fragmented player-built chunk can exceed the normal greedy-mesh budget;
      dropping only excess faces is far safer than overwriting adjacent RAM. */
-  if (columnArenaFree() < 6) {
+  if (columnArenaFree() < commands + 1) {
     column_display_list_full = TRUE;
     return;
   }
-  gSPMatrix(column_dlp++,OS_K0_TO_PHYSICAL(c_models + chunk),
-    G_MTX_MODELVIEW|G_MTX_LOAD|G_MTX_NOPUSH);
+  /*
+   * All faces of this texture in the chunk share its world transform.  Load
+   * that matrix once, then change only the small block-local translation for
+   * each greedy quad. This removes one RSP command from every additional face
+   * in the group and materially stretches the fixed terrain arena.
+   */
+  if (!*chunk_matrix_loaded) {
+    gSPMatrix(column_dlp++,OS_K0_TO_PHYSICAL(c_models + chunk),
+      G_MTX_MODELVIEW|G_MTX_LOAD|G_MTX_NOPUSH);
+    *chunk_matrix_loaded = TRUE;
+  }
   gSPMatrix(column_dlp++,OS_K0_TO_PHYSICAL(b_models + b),
     G_MTX_MODELVIEW|G_MTX_MUL|G_MTX_NOPUSH);
   gSPVertex(column_dlp++, is_water && face == TOP ?
@@ -581,22 +721,26 @@ void makeQuadDL(u16 chunk, u8 bx, u8 by, u8 bz, u8 width, u8 height,
   gSP1Quadrangle(column_dlp++, 3, 2, 1, 0, 0);
 }
 
-void makeQuadDLRST(u16 chunk, u8 br, u8 bs, u8 bt, u8 axes, u8 width,
-    u8 height, u8 face, u8 is_water) {
+static void makeQuadDLRST(u16 chunk, u8 br, u8 bs, u8 bt, u8 axes, u8 width,
+    u8 height, u8 face, u8 is_water, u8 *chunk_matrix_loaded) {
   if (face == NONE) {
     return;
   }
 
   if (axes == ZXY) {
-    makeQuadDL(chunk, bs, bt, br, width, height, face, is_water);
+    makeQuadDL(chunk, bs, bt, br, width, height, face, is_water,
+      chunk_matrix_loaded);
   } else if (axes == XZY) {
-    makeQuadDL(chunk, br, bt, bs, width, height, face, is_water);
+    makeQuadDL(chunk, br, bt, bs, width, height, face, is_water,
+      chunk_matrix_loaded);
   } else if (axes == YXZ) {
-    makeQuadDL(chunk, bs, br, bt, width, height, face, is_water);
+    makeQuadDL(chunk, bs, br, bt, width, height, face, is_water,
+      chunk_matrix_loaded);
   }
 }
 
-void makeChunkAxisDL(DualQuadList *axis_quads, u16 chunk, u8 axes, u8 face1, u8 face2, u8 block) {
+static void makeChunkAxisDL(DualQuadList *axis_quads, u16 chunk, u8 axes,
+    u8 face1, u8 face2, u8 block, u8 *chunk_matrix_loaded) {
   u8 br, i;
   DualQuadList *both_quads;
   for (br = 0; br < CHUNK_SIZE; br++) {
@@ -605,7 +749,8 @@ void makeChunkAxisDL(DualQuadList *axis_quads, u16 chunk, u8 axes, u8 face1, u8 
       if (both_quads->quads[i].block == block) {
         makeQuadDLRST(chunk, br, both_quads->quads[i].bs, both_quads->quads[i].bt, axes,
           both_quads->quads[i].width, both_quads->quads[i].height,
-          i < both_quads->n_front ? face1 : face2, block == WATER);
+          i < both_quads->n_front ? face1 : face2, block == WATER,
+          chunk_matrix_loaded);
       }
     }
   }
@@ -614,6 +759,7 @@ void makeChunkAxisDL(DualQuadList *axis_quads, u16 chunk, u8 axes, u8 face1, u8 
 void makeColumnDL(u8 cx, u8 cz, u8 texture) {
   u8 cy, i;
   u16 chunk;
+  Gfx *column_start;
   ChunkQuads *c_quads;
   FaceSpec *faces = textures[texture]->faces;
 
@@ -624,25 +770,39 @@ void makeColumnDL(u8 cx, u8 cz, u8 texture) {
       empty_column_display_list;
     return;
   }
-  column_starts[column_build_arena][texture][cx * CHUNKS_Z + cz] = column_dlp;
+  column_start = column_dlp;
+  column_starts[column_build_arena][texture][cx * CHUNKS_Z + cz] =
+    column_start;
 
   for (cy = 0; cy < CHUNKS_Y; cy++) {
+    u8 chunk_matrix_loaded = FALSE;
     chunk = cx * CHUNKS_Y * CHUNKS_Z + cy * CHUNKS_Z + cz;
     c_quads = &column_quads[cy];
 
     for (i = 0; i < textures[texture]->n_faces; i++) {
       if (faces[i].sides) {
-        makeChunkAxisDL(c_quads->z_quads, chunk, ZXY, FRONT, BACK, faces[i].block);
-        makeChunkAxisDL(c_quads->x_quads, chunk, XZY, RIGHT, LEFT, faces[i].block);
+        makeChunkAxisDL(c_quads->z_quads, chunk, ZXY, FRONT, BACK,
+          faces[i].block, &chunk_matrix_loaded);
+        makeChunkAxisDL(c_quads->x_quads, chunk, XZY, RIGHT, LEFT,
+          faces[i].block, &chunk_matrix_loaded);
       }
 
       if (faces[i].top || faces[i].bottom) {
-        makeChunkAxisDL(c_quads->y_quads, chunk, YXZ, faces[i].top? TOP : NONE, faces[i].bottom? BOTTOM : NONE, faces[i].block);
+        makeChunkAxisDL(c_quads->y_quads, chunk, YXZ,
+          faces[i].top ? TOP : NONE, faces[i].bottom ? BOTTOM : NONE,
+          faces[i].block, &chunk_matrix_loaded);
       }
     }
   }
 
-  gSPEndDisplayList(column_dlp++);
+  if (column_dlp == column_start) {
+    /* Empty texture/column pairs share one immutable EndDisplayList instead
+       of consuming thousands of commands in a large sparse world. */
+    column_starts[column_build_arena][texture][cx * CHUNKS_Z + cz] =
+      empty_column_display_list;
+  } else {
+    gSPEndDisplayList(column_dlp++);
+  }
 }
 
 static void makeColumnDisplayLists(u8 cx, u8 cz) {
@@ -812,10 +972,10 @@ static void setStevePartTransform(u8 player_num, u8 part, Vector3 local_offset,
   guRotateRPY(&steve_rotate[dl_no][player_num][part], pitch, yaw, 0);
 }
 
-static u8 playerHoldingSword(Player *player) {
+static u8 playerHeldItem(Player *player) {
   ItemStack *held = &player->inventory[INVENTORY_HOTBAR_START +
     player->selected_hotbar_slot];
-  return held->count > 0 && held->item == WOOD_SWORD;
+  return held->count > 0 ? held->item : AIR;
 }
 
 static float swordSwingAngle(Player *player) {
@@ -834,8 +994,20 @@ static void makeStevePose(u8 player_num) {
   float head_pitch = player->pitch > 180 ? player->pitch - 360 : player->pitch;
   float swing = sinf(player->walk_time) * 28 * player->walk_swing;
   float right_arm_pitch = -swing + swordSwingAngle(player);
+  float left_arm_pitch = swing;
+  float left_leg_pitch = -swing;
+  float right_leg_pitch = swing;
   float hurt_bob = player->hurt_time > 0 ?
     sinf((PLAYER_ATTACK_DURATION - player->hurt_time) * 180.f * M_DTOR) * 7.f : 0;
+
+  if (player->vault_time > 0) {
+    float phase = 1.f - player->vault_time / PLAYER_VAULT_DURATION;
+    float tuck = sinf(phase * 180.f * M_DTOR);
+    left_arm_pitch = -55.f * tuck;
+    right_arm_pitch = -65.f * tuck + swordSwingAngle(player);
+    left_leg_pitch = 48.f * tuck;
+    right_leg_pitch = -35.f * tuck;
+  }
 
   /* Gameplay yaw rotates direction vectors clockwise around Y, whereas
      guRotateRPY's Y angle rotates model geometry counter-clockwise.  A model
@@ -847,7 +1019,7 @@ static void makeStevePose(u8 player_num) {
   setStevePartTransform(player_num, STEVE_HEAD, (Vector3) {hurt_bob, 8, 0},
     head_pitch, player->yaw);
   setStevePartTransform(player_num, STEVE_LEFT_ARM, (Vector3) {-25 + hurt_bob, -8, 0},
-    swing, player->body_yaw);
+    left_arm_pitch, player->body_yaw);
   setStevePartTransform(player_num, STEVE_RIGHT_ARM, (Vector3) {25 + hurt_bob, -8, 0},
     right_arm_pitch, player->body_yaw);
   /* The sword's origin is the right hand, and it shares the arm's pitch so
@@ -855,9 +1027,40 @@ static void makeStevePose(u8 player_num) {
   setStevePartTransform(player_num, STEVE_SWORD, (Vector3) {25 + hurt_bob, -52, 0},
     right_arm_pitch, player->body_yaw);
   setStevePartTransform(player_num, STEVE_LEFT_LEG, (Vector3) {-10 + hurt_bob, -52, 0},
-    -swing, player->body_yaw);
+    left_leg_pitch, player->body_yaw);
   setStevePartTransform(player_num, STEVE_RIGHT_LEG, (Vector3) {10 + hurt_bob, -52, 0},
-    swing, player->body_yaw);
+    right_leg_pitch, player->body_yaw);
+}
+
+static Vtx *toolHeadVertices(u8 item) {
+  if (item == WOOD_PICKAXE) return wood_pick_head_verts;
+  if (item == STONE_PICKAXE) return stone_pick_head_verts;
+  if (item == IRON_PICKAXE) return iron_pick_head_verts;
+  if (item == WOOD_AXE) return wood_axe_head_verts;
+  if (item == STONE_AXE) return stone_axe_head_verts;
+  if (item == IRON_AXE) return iron_axe_head_verts;
+  return NULL;
+}
+
+static void drawToolGeometry(u8 item) {
+  Vtx *head;
+
+  if (itemIsSword(item)) {
+    gSPVertex(dlp++, item == IRON_SWORD ? steve_sword_blade_verts :
+      (item == STONE_SWORD ? stone_sword_blade_verts :
+      wood_sword_blade_verts), 8, 0);
+    gSPDisplayList(dlp++, steve_box_display_list);
+    gSPVertex(dlp++, steve_sword_hilt_verts, 8, 0);
+    gSPDisplayList(dlp++, steve_box_display_list);
+    return;
+  }
+  head = toolHeadVertices(item);
+  if (head != NULL) {
+    gSPVertex(dlp++, tool_handle_verts, 8, 0);
+    gSPDisplayList(dlp++, steve_box_display_list);
+    gSPVertex(dlp++, head, 8, 0);
+    gSPDisplayList(dlp++, steve_box_display_list);
+  }
 }
 
 static void drawStevePart(u8 player_num, u8 part, Vtx *verts, Gfx *part_dl) {
@@ -875,11 +1078,15 @@ static void drawSteve(u8 player_num) {
   drawStevePart(player_num, STEVE_BODY, steve_body_verts, steve_box_display_list);
   drawStevePart(player_num, STEVE_LEFT_ARM, steve_arm_verts, steve_box_display_list);
   drawStevePart(player_num, STEVE_RIGHT_ARM, steve_arm_verts, steve_box_display_list);
-  if (playerHoldingSword(&players[player_num])) {
-    drawStevePart(player_num, STEVE_SWORD, steve_sword_blade_verts,
-      steve_box_display_list);
-    drawStevePart(player_num, STEVE_SWORD, steve_sword_hilt_verts,
-      steve_box_display_list);
+  if (itemIsTool(playerHeldItem(&players[player_num]))) {
+    u8 item = playerHeldItem(&players[player_num]);
+    gSPMatrix(dlp++, OS_K0_TO_PHYSICAL(
+      &steve_translate[dl_no][player_num][STEVE_SWORD]),
+      G_MTX_MODELVIEW | G_MTX_LOAD | G_MTX_NOPUSH);
+    gSPMatrix(dlp++, OS_K0_TO_PHYSICAL(
+      &steve_rotate[dl_no][player_num][STEVE_SWORD]),
+      G_MTX_MODELVIEW | G_MTX_MUL | G_MTX_NOPUSH);
+    drawToolGeometry(item);
   }
   drawStevePart(player_num, STEVE_LEFT_LEG, steve_leg_verts, steve_box_display_list);
   drawStevePart(player_num, STEVE_RIGHT_LEG, steve_leg_verts, steve_box_display_list);
@@ -890,14 +1097,15 @@ static void drawSteve(u8 player_num) {
   drawStevePart(player_num, STEVE_HEAD, steve_eye_verts, steve_eyes_display_list);
 }
 
-static void drawFirstPersonSword(u8 player_num) {
+static void drawFirstPersonTool(u8 player_num) {
   Player *player = &players[player_num];
+  u8 item = playerHeldItem(player);
   Vector3 forward = {0, 0, -1};
   Vector3 right = {1, 0, 0};
   Vector3 position;
   float swing;
 
-  if (player->camera_mode != CAMERA_FIRST_PERSON || !playerHoldingSword(player)) {
+  if (player->camera_mode != CAMERA_FIRST_PERSON || !itemIsTool(item)) {
     return;
   }
   forward = rotateX(forward, player->pitch);
@@ -907,6 +1115,9 @@ static void drawFirstPersonSword(u8 player_num) {
   position = add(position, mul(right, 34.f));
   position.y -= 36.f;
   swing = swordSwingAngle(player);
+  if (player->breaking && player->break_time > 0) {
+    swing += sinf(player->break_progress * 32.f * M_DTOR) * 28.f;
+  }
   guTranslate(&first_person_sword_translate[dl_no][player_num], position.x,
     position.y, position.z);
   guRotateRPY(&first_person_sword_rotate[dl_no][player_num],
@@ -918,10 +1129,7 @@ static void drawFirstPersonSword(u8 player_num) {
     G_MTX_MODELVIEW | G_MTX_MUL | G_MTX_NOPUSH);
   gSPVertex(dlp++, first_person_arm_verts, 8, 0);
   gSPDisplayList(dlp++, steve_box_display_list);
-  gSPVertex(dlp++, steve_sword_blade_verts, 8, 0);
-  gSPDisplayList(dlp++, steve_box_display_list);
-  gSPVertex(dlp++, steve_sword_hilt_verts, 8, 0);
-  gSPDisplayList(dlp++, steve_box_display_list);
+  drawToolGeometry(item);
   gSPSetGeometryMode(dlp++, G_CULL_BACK);
 }
 
@@ -938,63 +1146,89 @@ static u8 pointVisibleToPlayer(u8 viewer_num, Vector3 point,
     visible_columns[viewer_num][cx * CHUNKS_Z + cz];
 }
 
-static void setSheepPartTransform(u8 sheep_num, u8 part,
+static void setMobPartTransform(u8 mob_num, u8 part,
     Vector3 local_offset) {
-  Sheep *mob = &sheep[sheep_num];
+  Mob *mob = &mobs[mob_num];
   Vector3 offset = rotateY(local_offset, -mob->yaw);
 
-  guTranslate(&sheep_translate[dl_no][sheep_num][part],
+  guTranslate(&mob_translate[dl_no][mob_num][part],
     mob->position.x + offset.x, mob->position.y + offset.y,
     mob->position.z + offset.z);
-  guRotateRPY(&sheep_rotate[dl_no][sheep_num][part], 0, -mob->yaw, 0);
+  guRotateRPY(&mob_rotate[dl_no][mob_num][part], 0, -mob->yaw, 0);
 }
 
-static void drawSheepPart(u8 sheep_num, u8 part, Vtx *verts) {
-  gSPMatrix(dlp++, OS_K0_TO_PHYSICAL(&sheep_translate[dl_no][sheep_num][part]),
+static void drawMobPart(u8 mob_num, u8 part, Vtx *verts) {
+  gSPMatrix(dlp++, OS_K0_TO_PHYSICAL(&mob_translate[dl_no][mob_num][part]),
     G_MTX_MODELVIEW | G_MTX_LOAD | G_MTX_NOPUSH);
-  gSPMatrix(dlp++, OS_K0_TO_PHYSICAL(&sheep_rotate[dl_no][sheep_num][part]),
+  gSPMatrix(dlp++, OS_K0_TO_PHYSICAL(&mob_rotate[dl_no][mob_num][part]),
     G_MTX_MODELVIEW | G_MTX_MUL | G_MTX_NOPUSH);
   gSPVertex(dlp++, verts, 8, 0);
   gSPDisplayList(dlp++, steve_box_display_list);
 }
 
-static void drawSheep(u8 sheep_num) {
-  Sheep *mob = &sheep[sheep_num];
+static void drawMob(u8 mob_num) {
+  Mob *mob = &mobs[mob_num];
+  Vtx *body = mob->type == MOB_PIG ? pig_body_verts : sheep_body_verts;
+  Vtx *head = mob->type == MOB_PIG ? pig_head_verts : sheep_head_verts;
+  Vtx *leg = mob->type == MOB_PIG ? pig_leg_verts : sheep_leg_verts;
   float step = sinf(mob->walk_time) * 4.f;
   float hurt = mob->hurt_time > 0 ?
     sinf((PLAYER_ATTACK_DURATION - mob->hurt_time) * 180.f * M_DTOR) * 4.f : 0;
+  float graze = mob->state == MOB_IDLE ?
+    sinf(mob->walk_time * .35f) * 3.f - 4.f : 0;
 
-  setSheepPartTransform(sheep_num, SHEEP_BODY, (Vector3) {hurt, 43, 0});
-  setSheepPartTransform(sheep_num, SHEEP_HEAD, (Vector3) {hurt, 43, -29});
-  setSheepPartTransform(sheep_num, SHEEP_FRONT_LEFT_LEG,
+  if (mob->type == MOB_SLIME) {
+    float bounce = sinf(mob->walk_time);
+    if (bounce < 0) bounce = -bounce;
+    setMobPartTransform(mob_num, MOB_BODY,
+      (Vector3) {hurt, 21 + bounce * 8.f, 0});
+    setMobPartTransform(mob_num, MOB_HEAD,
+      (Vector3) {-9 + hurt, 27 + bounce * 8.f, -21});
+    setMobPartTransform(mob_num, MOB_SNOUT,
+      (Vector3) {9 + hurt, 27 + bounce * 8.f, -21});
+    drawMobPart(mob_num, MOB_BODY, slime_body_verts);
+    drawMobPart(mob_num, MOB_HEAD, slime_eye_verts);
+    drawMobPart(mob_num, MOB_SNOUT, slime_eye_verts);
+    return;
+  }
+
+  setMobPartTransform(mob_num, MOB_BODY, (Vector3) {hurt, 43, 0});
+  setMobPartTransform(mob_num, MOB_HEAD,
+    (Vector3) {hurt, 43 + graze, -29});
+  setMobPartTransform(mob_num, MOB_FRONT_LEFT_LEG,
     (Vector3) {-18 + hurt, 18 + step, -13});
-  setSheepPartTransform(sheep_num, SHEEP_FRONT_RIGHT_LEG,
+  setMobPartTransform(mob_num, MOB_FRONT_RIGHT_LEG,
     (Vector3) {18 + hurt, 18 - step, -13});
-  setSheepPartTransform(sheep_num, SHEEP_BACK_LEFT_LEG,
+  setMobPartTransform(mob_num, MOB_BACK_LEFT_LEG,
     (Vector3) {-18 + hurt, 18 - step, 13});
-  setSheepPartTransform(sheep_num, SHEEP_BACK_RIGHT_LEG,
+  setMobPartTransform(mob_num, MOB_BACK_RIGHT_LEG,
     (Vector3) {18 + hurt, 18 + step, 13});
 
-  drawSheepPart(sheep_num, SHEEP_BODY, sheep_body_verts);
-  drawSheepPart(sheep_num, SHEEP_HEAD, sheep_head_verts);
-  drawSheepPart(sheep_num, SHEEP_FRONT_LEFT_LEG, sheep_leg_verts);
-  drawSheepPart(sheep_num, SHEEP_FRONT_RIGHT_LEG, sheep_leg_verts);
-  drawSheepPart(sheep_num, SHEEP_BACK_LEFT_LEG, sheep_leg_verts);
-  drawSheepPart(sheep_num, SHEEP_BACK_RIGHT_LEG, sheep_leg_verts);
+  drawMobPart(mob_num, MOB_BODY, body);
+  drawMobPart(mob_num, MOB_HEAD, head);
+  drawMobPart(mob_num, MOB_FRONT_LEFT_LEG, leg);
+  drawMobPart(mob_num, MOB_FRONT_RIGHT_LEG, leg);
+  drawMobPart(mob_num, MOB_BACK_LEFT_LEG, leg);
+  drawMobPart(mob_num, MOB_BACK_RIGHT_LEG, leg);
+  if (mob->type == MOB_PIG) {
+    setMobPartTransform(mob_num, MOB_SNOUT,
+      (Vector3) {hurt, 39 + graze, -46});
+    drawMobPart(mob_num, MOB_SNOUT, pig_snout_verts);
+  }
 }
 
-static void drawSheepForPlayer(u8 viewer_num) {
-  u8 sheep_num;
+static void drawMobsForPlayer(u8 viewer_num) {
+  u8 mob_num;
   u8 visible = 0;
 
   gSPTexture(dlp++, 0, 0, 0, G_TX_RENDERTILE, G_OFF);
   gDPSetCombineMode(dlp++, G_CC_SHADE, G_CC_SHADE);
   gSPClearGeometryMode(dlp++, G_CULL_BACK);
-  for (sheep_num = 0; sheep_num < MAX_SHEEP && visible < MAX_VISIBLE_SHEEP;
-      sheep_num++) {
-    if (sheep[sheep_num].active && pointVisibleToPlayer(viewer_num,
-        sheep[sheep_num].position, SHEEP_RENDER_DISTANCE)) {
-      drawSheep(sheep_num);
+  for (mob_num = 0; mob_num < MAX_MOBS && visible < MAX_VISIBLE_MOBS;
+      mob_num++) {
+    if (mobs[mob_num].active && pointVisibleToPlayer(viewer_num,
+        mobs[mob_num].position, MOB_RENDER_DISTANCE)) {
+      drawMob(mob_num);
       visible++;
     }
   }
@@ -1022,6 +1256,34 @@ static void drawOtherPlayers(u8 viewer_num) {
   gSPSetGeometryMode(dlp++, G_CULL_BACK);
 }
 
+static void drawLooseItemGeometry(u8 item) {
+  Vtx *body = NULL;
+
+  if (itemIsTool(item)) {
+    drawToolGeometry(item);
+    return;
+  }
+  if (item == STICK) {
+    body = tool_handle_verts;
+  } else if (item == COAL) {
+    body = coal_chunk_verts;
+  } else if (item == IRON_CHUNK) {
+    body = iron_chunk_verts;
+  } else if (item == APPLE) {
+    gSPVertex(dlp++, apple_body_verts, 8, 0);
+    gSPDisplayList(dlp++, steve_box_display_list);
+    body = apple_stem_verts;
+  } else if (item == RAW_MUTTON || item == RAW_PORK) {
+    body = mutton_verts;
+  } else if (item == SLIME_GEL) {
+    body = slime_gel_verts;
+  }
+  if (body != NULL) {
+    gSPVertex(dlp++, body, 8, 0);
+    gSPDisplayList(dlp++, steve_box_display_list);
+  }
+}
+
 static void drawDroppedItems(u8 viewer_num) {
   u8 i;
 
@@ -1042,13 +1304,22 @@ static void drawDroppedItems(u8 viewer_num) {
       drop->position.y + sinf(drop->rotation * M_DTOR) * 3.f,
       drop->position.z);
     guRotateRPY(&dropped_item_rotate[dl_no][i], 0, drop->rotation, 0);
-    loadTexture(preview_textures[drop->item]);
     gSPMatrix(dlp++, OS_K0_TO_PHYSICAL(&dropped_item_translate[dl_no][i]),
       G_MTX_MODELVIEW | G_MTX_LOAD | G_MTX_NOPUSH);
     gSPMatrix(dlp++, OS_K0_TO_PHYSICAL(&dropped_item_rotate[dl_no][i]),
       G_MTX_MODELVIEW | G_MTX_MUL | G_MTX_NOPUSH);
-    gSPVertex(dlp++, dropped_item_verts, 8, 0);
-    gSPDisplayList(dlp++, dropped_item_display_list);
+    if (ITEM_IS_VALID(drop->item) && preview_textures[drop->item] != NULL) {
+      gSPTexture(dlp++, 0x8000, 0x8000, 0, G_TX_RENDERTILE, G_ON);
+      gDPSetCombineMode(dlp++, G_CC_MODULATERGB, G_CC_MODULATERGB);
+      loadTexture(preview_textures[drop->item]);
+      gSPVertex(dlp++, dropped_item_verts, 8, 0);
+      gSPDisplayList(dlp++, dropped_item_display_list);
+    } else {
+      gSPTexture(dlp++, 0, 0, 0, G_TX_RENDERTILE, G_OFF);
+      gDPSetCombineMode(dlp++, G_CC_SHADE, G_CC_SHADE);
+      drawLooseItemGeometry(drop->item);
+      loaded_texture = NULL;
+    }
   }
   gSPSetGeometryMode(dlp++, G_CULL_BACK);
 }
@@ -1199,14 +1470,14 @@ void drawWorld() {
       gSPClearGeometryMode(dlp++, G_LIGHTING);
       drawFallingTrees(player_num);
       drawDroppedItems(player_num);
-      drawSheepForPlayer(player_num);
+      drawMobsForPlayer(player_num);
     }
     if (!cinematic && (active_player_count > 1 ||
         players[player_num].camera_mode == CAMERA_THIRD_PERSON)) {
       drawOtherPlayers(player_num);
     }
     if (!cinematic) {
-      drawFirstPersonSword(player_num);
+      drawFirstPersonTool(player_num);
     }
   }
 
@@ -1360,6 +1631,86 @@ static void drawHealth(u8 player_num) {
   gDPSetTextureLUT(dlp++, G_TT_RGBA16);
 }
 
+static void drawObjectivePanel(Player *player) {
+  u8 expanded = player->objective_time > 0;
+  u32 left = expanded ? 174 : 190;
+  u32 top = 7;
+  u32 right = 313;
+  u32 bottom = expanded ? 43 : 22;
+  u8 segment;
+
+  /* The beveled charcoal card borrows the reference shot's Rare-era
+     hierarchy, then collapses once the player has read each new goal. */
+  gDPPipeSync(dlp++);
+  gDPSetCycleType(dlp++, G_CYC_FILL);
+  gDPSetRenderMode(dlp++, G_RM_NOOP, G_RM_NOOP2);
+  setHudFillColor(8, 10, 13);
+  gDPFillRectangle(dlp++, left, top, right, bottom);
+  setHudFillColor(131, 137, 139);
+  gDPFillRectangle(dlp++, left + 2, top + 2, right - 2, bottom - 2);
+  setHudFillColor(24, 29, 34);
+  gDPFillRectangle(dlp++, left + 4, top + 4, right - 4, bottom - 4);
+  if (expanded) {
+    for (segment = 0; segment < PLAYER_OBJECTIVE_COUNT; segment++) {
+      u32 x = left + 7 + segment * 15;
+      u8 complete = segment < player->objective_stage;
+      setHudFillColor(complete ? 102 : 48, complete ? 196 : 55,
+        complete ? 121 : 61);
+      gDPFillRectangle(dlp++, x, bottom - 8, x + 11, bottom - 6);
+    }
+  }
+  gDPPipeSync(dlp++);
+}
+
+static void drawCompass() {
+  gDPPipeSync(dlp++);
+  gDPSetCycleType(dlp++, G_CYC_FILL);
+  gDPSetRenderMode(dlp++, G_RM_NOOP, G_RM_NOOP2);
+  setHudFillColor(7, 10, 13);
+  gDPFillRectangle(dlp++, 126, 6, 171, 20);
+  setHudFillColor(111, 118, 121);
+  gDPFillRectangle(dlp++, 128, 8, 169, 18);
+  setHudFillColor(25, 31, 35);
+  gDPFillRectangle(dlp++, 130, 9, 167, 17);
+  setHudFillColor(238, 194, 67);
+  gDPFillRectangle(dlp++, 148, 16, 149, 19);
+  gDPPipeSync(dlp++);
+}
+
+static void drawCButtonGuide(Player *player) {
+  u8 expanded = player->objective_time > 0;
+  u32 right = expanded ? 103 : 33;
+
+  /*
+   * The controller itself is the legend: a tiny persistent C cluster expands
+   * into labels alongside a newly revealed objective, then leaves only the
+   * familiar diamond once the player has read it.
+   */
+  gDPPipeSync(dlp++);
+  gDPSetCycleType(dlp++, G_CYC_FILL);
+  gDPSetRenderMode(dlp++, G_RM_NOOP, G_RM_NOOP2);
+  setHudFillColor(8, 10, 13);
+  gDPFillRectangle(dlp++, 5, 157, right, 196);
+  setHudFillColor(131, 137, 139);
+  gDPFillRectangle(dlp++, 7, 159, right - 2, 194);
+  setHudFillColor(24, 29, 34);
+  gDPFillRectangle(dlp++, 9, 161, right - 4, 192);
+
+  setHudFillColor(225, 174, 42);
+  gDPFillRectangle(dlp++, 18, 163, 23, 168);
+  gDPFillRectangle(dlp++, 11, 171, 16, 176);
+  gDPFillRectangle(dlp++, 25, 171, 30, 176);
+  gDPFillRectangle(dlp++, 18, 179, 23, 184);
+  gDPPipeSync(dlp++);
+}
+
+static const char *playerHeading(Player *player) {
+  if (player->yaw >= 45.f && player->yaw < 135.f) return "W";
+  if (player->yaw >= 135.f && player->yaw < 225.f) return "S";
+  if (player->yaw >= 225.f && player->yaw < 315.f) return "E";
+  return "N";
+}
+
 /* A compact, deliberately chunky version of the Minecraft hotbar.  It uses
    the existing 16x16 block previews, keeping the HUD cheap enough for both
    split-screen players without introducing another texture atlas. */
@@ -1379,17 +1730,68 @@ static void drawItemIcon(u8 item, u32 x, u32 y, u32 size) {
   if (item == STICK) {
     setHudFillColor(142, 83, 38);
     gDPFillRectangle(dlp++, x + size / 2 - 1, y + 2, x + size / 2 + 1, y + size - 3);
-  } else if (item == WOOD_SWORD) {
-    setHudFillColor(188, 188, 178);
+  } else if (itemIsSword(item)) {
+    if (item == IRON_SWORD) {
+      setHudFillColor(225, 225, 218);
+    } else if (item == STONE_SWORD) {
+      setHudFillColor(188, 188, 178);
+    } else {
+      setHudFillColor(174, 117, 61);
+    }
     gDPFillRectangle(dlp++, x + size / 2 - 1, y + 1, x + size / 2 + 1, y + size - 6);
     setHudFillColor(142, 83, 38);
     gDPFillRectangle(dlp++, x + size / 2 - 3, y + size - 6, x + size / 2 + 3, y + size - 4);
     gDPFillRectangle(dlp++, x + size / 2 - 1, y + size - 3, x + size / 2 + 1, y + size - 1);
-  } else if (item == WOOD_PICKAXE) {
-    setHudFillColor(188, 188, 178);
+  } else if (itemIsPickaxe(item)) {
+    if (item == IRON_PICKAXE) {
+      setHudFillColor(225, 225, 218);
+    } else if (item == STONE_PICKAXE) {
+      setHudFillColor(188, 188, 178);
+    } else {
+      setHudFillColor(174, 117, 61);
+    }
     gDPFillRectangle(dlp++, x + 1, y + 2, x + size - 2, y + 4);
     setHudFillColor(142, 83, 38);
     gDPFillRectangle(dlp++, x + size / 2 - 1, y + 4, x + size / 2 + 1, y + size - 1);
+  } else if (itemIsAxe(item)) {
+    if (item == IRON_AXE) {
+      setHudFillColor(225, 225, 218);
+    } else if (item == STONE_AXE) {
+      setHudFillColor(188, 188, 178);
+    } else {
+      setHudFillColor(174, 117, 61);
+    }
+    gDPFillRectangle(dlp++, x + 2, y + 2, x + size / 2 + 2,
+      y + size / 2);
+    setHudFillColor(142, 83, 38);
+    gDPFillRectangle(dlp++, x + size / 2, y + 4, x + size / 2 + 2,
+      y + size - 1);
+  } else if (item == COAL) {
+    setHudFillColor(39, 42, 43);
+    gDPFillRectangle(dlp++, x + 3, y + 3, x + size - 3, y + size - 3);
+    setHudFillColor(77, 80, 78);
+    gDPFillRectangle(dlp++, x + 4, y + 3, x + size - 5, y + 4);
+  } else if (item == IRON_CHUNK) {
+    setHudFillColor(185, 128, 86);
+    gDPFillRectangle(dlp++, x + 2, y + 4, x + size - 3, y + size - 3);
+    setHudFillColor(224, 168, 114);
+    gDPFillRectangle(dlp++, x + 4, y + 3, x + size - 5, y + 5);
+  } else if (item == APPLE) {
+    setHudFillColor(210, 43, 37);
+    gDPFillRectangle(dlp++, x + 3, y + 4, x + size - 3, y + size - 2);
+    setHudFillColor(55, 116, 47);
+    gDPFillRectangle(dlp++, x + size / 2, y + 1, x + size / 2 + 3, y + 4);
+  } else if (item == RAW_MUTTON || item == RAW_PORK) {
+    setHudFillColor(item == RAW_PORK ? 207 : 172,
+      item == RAW_PORK ? 111 : 75, item == RAW_PORK ? 112 : 67);
+    gDPFillRectangle(dlp++, x + 2, y + 4, x + size - 3, y + size - 3);
+    setHudFillColor(232, 181, 164);
+    gDPFillRectangle(dlp++, x + 4, y + 4, x + size - 5, y + 5);
+  } else if (item == SLIME_GEL) {
+    setHudFillColor(75, 174, 72);
+    gDPFillRectangle(dlp++, x + 3, y + 3, x + size - 3, y + size - 3);
+    setHudFillColor(132, 226, 119);
+    gDPFillRectangle(dlp++, x + 4, y + 3, x + size - 5, y + 5);
   }
   gDPPipeSync(dlp++);
   gDPSetCycleType(dlp++, G_CYC_1CYCLE);
@@ -1666,6 +2068,19 @@ static void drawGameText() {
         drawChar('+', 6, y_offset + 16);
         drawString(itemName(pickup_item[player_num]), 13, y_offset + 16);
       }
+      if (active_player_count == 1) {
+        drawString(playerHeading(&players[player_num]), 145, 10);
+        drawString(playerObjectiveTitle(&players[player_num]),
+          players[player_num].objective_time > 0 ? 181 : 197, 12);
+        if (players[player_num].objective_time > 0) {
+          drawString(playerObjectiveHint(&players[player_num]), 181, 23);
+          drawString("UP VIEW", 39, 163);
+          drawString("LR ITEMS", 39, 173);
+          drawString("DN PACK", 39, 183);
+        } else {
+          drawChar('C', 18, 171);
+        }
+      }
     }
     for (slot = 0; slot < HOTBAR_SLOT_COUNT; slot++) {
       ItemStack *stack = &players[player_num].inventory[
@@ -1708,6 +2123,11 @@ void drawHUD() {
       drawBreakProgress(crosshair_x, crosshair_y, &players[player_num]);
       drawHotbar(player_num);
       drawHealth(player_num);
+      if (active_player_count == 1) {
+        drawCompass();
+        drawObjectivePanel(&players[player_num]);
+        drawCButtonGuide(&players[player_num]);
+      }
     }
     if (active_player_count > 1) {
       gDPSetCycleType(dlp++, G_CYC_FILL);

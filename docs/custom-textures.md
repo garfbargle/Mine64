@@ -1,7 +1,9 @@
 # Custom texture workflow
 
-Mine64 uses twelve 16×16 CI4 texture tiles. Each tile gets its own palette of
-up to 16 colours, so the source art can be richer than a single shared palette.
+Mine64's editable atlas contains twelve 16×16 CI4 texture tiles. Each tile gets
+its own palette of up to 16 colours, so the source art can be richer than a
+single shared palette. The build also generates four companion terrain tiles
+for coal ore, iron ore, bedrock, and mossy cobblestone.
 
 ## 1. Start with the exported atlas
 
@@ -32,6 +34,10 @@ All twelve cells are read left-to-right, top-to-bottom:
 Keep important details broad enough to survive at 16×16. Fine one-pixel noise
 can shimmer on a CRT. The importer automatically reduces each tile to no more
 than 16 opaque RGB colours.
+
+The four companion tiles are derived from the built-in palettes after the
+custom atlas is imported. This preserves the small 4×3 authoring surface while
+ensuring every terrain ID still has valid N64 texture data.
 
 ## 3. Import and build
 
