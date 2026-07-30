@@ -9,27 +9,26 @@
 
 #define FOV_Y 60
 #define FOV_Y_COOP 40
-#define FOV_Y_LOADING 52
+#define FOV_Y_LOADING 44
 #define FOV_RATIO ((float) SCREEN_WD / (float) SCREEN_HT)
 #define COOP_FOV_RATIO ((float) SCREEN_WD / (float) (SCREEN_HT / 2))
 #define FOUR_PLAYER_FOV_RATIO ((float) (SCREEN_WD / 2) / (float) (SCREEN_HT / 2))
 #define NUM_CULL_LINES 4
 #define ALL_ACCEPT ((1 << NUM_CULL_LINES) - 1)
-#define SOLO_MAX_VISIBLE_COLUMNS 128
+#define SOLO_MAX_VISIBLE_COLUMNS 96
 #define COOP_MAX_VISIBLE_COLUMNS 24
 #define FOUR_PLAYER_MAX_VISIBLE_COLUMNS 8
-#define LOADING_MAX_VISIBLE_COLUMNS 96
+#define LOADING_MAX_VISIBLE_COLUMNS 24
 #define THIRD_PERSON_DISTANCE 176.f
 #define THIRD_PERSON_HEIGHT 24.f
 #define THIRD_PERSON_SAMPLES 12
 #define THIRD_PERSON_AVATAR_MIN_DISTANCE 40.f
-#define LOADING_PREVIEW_FRAMES 180
-#define LOADING_ORBIT_DEGREES_PER_FRAME .62f
-#define MENU_ORBIT_DEGREES_PER_FRAME .28f
-#define LOADING_ORBIT_RADIUS 3900.f
-#define LOADING_CAMERA_HEIGHT 2450.f
-#define LOADING_CAMERA_BOB 120.f
-#define LOADING_WORLD_CENTER (MAX_X * BLOCK_SIZE / 2.f)
+#define LOADING_PREVIEW_FRAMES 90
+#define LOADING_ORBIT_DEGREES_PER_FRAME .24f
+#define MENU_ORBIT_DEGREES_PER_FRAME .16f
+#define LOADING_ORBIT_RADIUS 3000.f
+#define LOADING_CAMERA_HEIGHT 2050.f
+#define LOADING_CAMERA_BOB 80.f
 
 typedef struct {
   float a;
@@ -233,9 +232,10 @@ static void updateVisibleColumnsFor(u8 player_num, Player *player,
     }
   }
 
-  /* The loading orbit has no interaction radius to protect, so its smaller
-     cap trades the most distant terrain for steadier frame pacing.  It still
-     leaves a broad foreground and a full-width landmark horizon. */
+  /* The loading orbit is an attract-mode transition, not a gameplay camera.
+     On hardware it must leave enough RSP/RDP time for the loading card and
+     the next task; use the same 24-column ceiling as split-screen instead of
+     risking a large scenic view starving the video pipeline. */
   while (visible_count > max_visible_columns) {
     farthest_distance = -1;
     for (cx = 0; cx < CHUNKS_X; cx++) {
@@ -310,9 +310,9 @@ void updateLoadingCamera() {
   /* This is a terrain showcase rather than a map view. Keeping the camera
      close enough for the block textures to resolve avoids the moire grid
      that the old high, distant orbit produced on a CRT. */
-  loading_camera.position.x = LOADING_WORLD_CENTER +
+  loading_camera.position.x = players[0].position.x +
     sinf(angle * M_DTOR) * LOADING_ORBIT_RADIUS;
-  loading_camera.position.z = LOADING_WORLD_CENTER +
+  loading_camera.position.z = players[0].position.z +
     cosf(angle * M_DTOR) * LOADING_ORBIT_RADIUS;
   loading_camera.position.y = LOADING_CAMERA_HEIGHT +
     low_orbit * LOADING_CAMERA_BOB;
@@ -320,7 +320,7 @@ void updateLoadingCamera() {
   /* Aim into the near/middle terrain rather than across the whole map. This
      crops the square world boundary out of the composition and gives ridges
      a stronger silhouette above the status deck. */
-  loading_camera.pitch = -36.f;
+  loading_camera.pitch = -38.f;
   loading_camera.camera_mode = CAMERA_FIRST_PERSON;
   camera_position = loading_camera.position;
 

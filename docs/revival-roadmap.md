@@ -26,6 +26,8 @@ This pass establishes the systems that later content can share:
   guide designed for 320×240 output.
 * Three-row terrain-height sampling, incremental mesh repair, render-distance
   caps, and fixed entity visibility budgets.
+* Camera-following resident geometry: the whole packed world remains live,
+  while dual display-list arenas contain only the nearby column neighbourhood.
 
 ## Hardware contract
 
@@ -33,7 +35,8 @@ The engine is deliberately built around predictable ceilings:
 
 * No gameplay heap and no unbounded entity or pickup creation.
 * Two fixed terrain display-list arenas permit safe incremental rebuilding
-  while the RSP may still be reading the previous arena.
+  while the RSP may still be reading the previous arena. Only a bounded
+  camera-following column set is resident; no arena scales with world area.
 * World access stays packed; there is no expanded byte-per-block mirror.
 * Solo can spend more on atmosphere and guidance. Split-screen reduces view
   and visible-entity budgets before duplicating expensive render work.
@@ -87,13 +90,15 @@ state and reuse the same timing in first- and third-person. Two or three
 excellent key poses with strong easing will read better on N64 than dense,
 float-heavy skeletal animation.
 
-### 6. Beyond the current horizon
+### 6. Beyond the current world data
 
-If 160×160 stops feeling large, move to deterministic sector streaming rather
-than another permanent world-array increase. Keep a compact edited-sector
-journal and rebuild distant geometry opportunistically. This is a separate
-architecture milestone: it should not be attempted until generation time,
-save size, mesh churn, and worst-case player edits have hardware measurements.
+Render geometry now streams independently of the packed 160×160 terrain. If
+the world data itself later needs to grow beyond that boundary, move to
+deterministic terrain-sector streaming rather than another permanent array
+increase. Keep a compact edited-sector journal and reuse the resident mesh
+layer already established here. This remains a separate milestone: it should
+not be attempted until generation time, save size, mesh churn, and worst-case
+player edits have hardware measurements.
 
 ## Definition of “more”
 

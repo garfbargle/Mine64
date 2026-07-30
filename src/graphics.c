@@ -34,25 +34,31 @@ Gfx *dlp;
 u32 dl_no = 0;
 Gfx frame_display_lists[NUM_DISPLAY_LISTS][FRAME_DISPLAY_LIST_SIZE];
 
-/* Keep a complete, immutable mesh arena on screen while a replacement is
- * compacted incrementally into the other arena.  This eliminates the old
- * gameplay-time RSP wait and full-world rebuild when append-only updates ran
- * low on space. */
+/* Keep one bounded, immutable resident mesh on screen while the next camera
+ * neighbourhood is compiled incrementally into the other arena. The packed
+ * world remains complete; only nearby render geometry consumes RSP commands. */
 #define NUM_COLUMN_ARENAS 2
-#define MESH_REBUILD_BUDGET 1
+#define TOTAL_COLUMNS (CHUNKS_X * CHUNKS_Z)
+#define MESH_REBUILD_BUDGET 2
 #define MESH_COMPACTION_RESERVE (DISPLAY_LIST_SIZE / 10)
+#define SOLO_RESIDENT_RADIUS 6
+#define COOP_RESIDENT_RADIUS 2
 static Gfx column_display_lists[NUM_COLUMN_ARENAS][DISPLAY_LIST_SIZE];
 Gfx *column_dlp;
 static Gfx *column_starts[NUM_COLUMN_ARENAS][NUM_TEXTURES]
-  [CHUNKS_X * CHUNKS_Z];
+  [TOTAL_COLUMNS];
 static Gfx *column_arena_ends[NUM_COLUMN_ARENAS];
+static u8 resident_columns[NUM_COLUMN_ARENAS][TOTAL_COLUMNS];
+static u8 desired_columns[TOTAL_COLUMNS];
+static u8 compaction_target_columns[TOTAL_COLUMNS];
 static u8 active_column_arena;
 static u8 column_build_arena;
 static u8 column_display_list_full;
-static u8 dirty_columns[CHUNKS_X * CHUNKS_Z];
-static u8 dirty_column_cursor;
+static u8 dirty_columns[TOTAL_COLUMNS];
+static u16 dirty_column_cursor;
 static u8 compacting_columns;
 static u16 compaction_column_cursor;
+static u8 solo_resident_radius = SOLO_RESIDENT_RADIUS;
 
 static Gfx empty_column_display_list[] = {
   gsSPEndDisplayList()
@@ -691,6 +697,19 @@ static void beginColumnArenaBuild(u8 arena) {
   column_display_list_full = FALSE;
 }
 
+static void resetColumnArenaBuild(u8 arena) {
+  u16 column;
+  u8 texture;
+
+  beginColumnArenaBuild(arena);
+  for (column = 0; column < TOTAL_COLUMNS; column++) {
+    resident_columns[arena][column] = FALSE;
+    for (texture = 0; texture < NUM_TEXTURES; texture++) {
+      column_starts[arena][texture][column] = empty_column_display_list;
+    }
+  }
+}
+
 static void makeQuadDL(u16 chunk, u8 bx, u8 by, u8 bz, u8 width, u8 height,
     u8 face, u8 is_water) {
   u32 b = bx * CHUNK_SIZE * CHUNK_SIZE + by * CHUNK_SIZE + bz;
@@ -792,35 +811,80 @@ void makeColumnDL(u8 cx, u8 cz, u8 texture) {
   }
 }
 
-static void makeColumnDisplayLists(u8 cx, u8 cz) {
+static u8 makeColumnDisplayLists(u8 cx, u8 cz) {
   u8 texture;
+  u16 column = cx * CHUNKS_Z + cz;
 
   makeColumnGeometry(cx, cz);
   for (texture = 0; texture < NUM_TEXTURES; texture++) {
     makeColumnDL(cx, cz, texture);
   }
+  if (column_display_list_full) {
+    /* A partially written column is never made resident. Its commands remain
+       unreachable until this inactive arena is reset. */
+    resident_columns[column_build_arena][column] = FALSE;
+    for (texture = 0; texture < NUM_TEXTURES; texture++) {
+      column_starts[column_build_arena][texture][column] =
+        empty_column_display_list;
+    }
+    return FALSE;
+  }
+  resident_columns[column_build_arena][column] = TRUE;
+  return TRUE;
+}
+
+static void markResidentRadius(u8 player_num, u8 radius) {
+  int center_x = players[player_num].position.x /
+    (BLOCK_SIZE * CHUNK_SIZE);
+  int center_z = players[player_num].position.z /
+    (BLOCK_SIZE * CHUNK_SIZE);
+  int cx, cz;
+
+  for (cx = 0; cx < CHUNKS_X; cx++) {
+    for (cz = 0; cz < CHUNKS_Z; cz++) {
+      int dx = cx - center_x;
+      int dz = cz - center_z;
+      if (dx * dx + dz * dz <= radius * radius) {
+        desired_columns[cx * CHUNKS_Z + cz] = TRUE;
+      }
+    }
+  }
 }
 
 void makeWorldDisplayLists() {
-  u8 cx, cz;
+  s8 radius;
   u16 column;
+  u8 complete = FALSE;
 
-  /* This is a complete mesh rebuild, not an incremental block edit.  World
-     previews can rebuild several slots back-to-back, so start from the
-     beginning of the fixed command arena after the RSP is done with it. */
+  /* Build only a safe ring around the restored spawn. The preview and normal
+     cameras refine that set through the inactive arena after rendering starts. */
   nuGfxTaskAllEndWait();
   active_column_arena = 0;
   compacting_columns = FALSE;
   dirty_column_cursor = 0;
-  for (column = 0; column < CHUNKS_X * CHUNKS_Z; column++) {
+  for (column = 0; column < TOTAL_COLUMNS; column++) {
     dirty_columns[column] = FALSE;
+    desired_columns[column] = FALSE;
   }
-  beginColumnArenaBuild(active_column_arena);
-  for (cx = 0; cx < CHUNKS_X; cx++) {
-    for (cz = 0; cz < CHUNKS_Z; cz++) {
-      makeColumnDisplayLists(cx, cz);
+  /* Procedural caves can make one seed denser than another. Fall back by one
+     ring at a time if a worst-case neighbourhood cannot fit, never exposing a
+     partial arena or writing beyond its hard command limit. */
+  for (radius = SOLO_RESIDENT_RADIUS; radius >= 2 && !complete; radius--) {
+    for (column = 0; column < TOTAL_COLUMNS; column++) {
+      desired_columns[column] = FALSE;
+    }
+    markResidentRadius(0, radius);
+    resetColumnArenaBuild(active_column_arena);
+    complete = TRUE;
+    for (column = 0; column < TOTAL_COLUMNS; column++) {
+      if (desired_columns[column] &&
+          !makeColumnDisplayLists(column / CHUNKS_Z, column % CHUNKS_Z)) {
+        complete = FALSE;
+        break;
+      }
     }
   }
+  solo_resident_radius = complete ? radius + 1 : 2;
   column_arena_ends[active_column_arena] = column_dlp;
 }
 
@@ -840,23 +904,70 @@ void makeDisplayListsAt(u8 x, u8 z) {
   markColumnDirty(cx, cz);
   if (x % CHUNK_SIZE == 0 && cx > 0) {
     markColumnDirty(cx - 1, cz);
+  } else if (x % CHUNK_SIZE == CHUNK_SIZE - 1 && cx + 1 < CHUNKS_X) {
+    markColumnDirty(cx + 1, cz);
   }
   if (z % CHUNK_SIZE == 0 && cz > 0) {
     markColumnDirty(cx, cz - 1);
+  } else if (z % CHUNK_SIZE == CHUNK_SIZE - 1 && cz + 1 < CHUNKS_Z) {
+    markColumnDirty(cx, cz + 1);
   }
 }
 
 static u8 takeDirtyColumn(u8 *cx, u8 *cz) {
   u16 offset;
-  u16 count = CHUNKS_X * CHUNKS_Z;
 
-  for (offset = 0; offset < count; offset++) {
-    u16 index = (dirty_column_cursor + offset) % count;
+  for (offset = 0; offset < TOTAL_COLUMNS; offset++) {
+    u16 index = (dirty_column_cursor + offset) % TOTAL_COLUMNS;
     if (dirty_columns[index]) {
       dirty_columns[index] = FALSE;
-      dirty_column_cursor = (index + 1) % count;
+      dirty_column_cursor = (index + 1) % TOTAL_COLUMNS;
+      if (!resident_columns[active_column_arena][index]) {
+        /* Packed terrain is authoritative. A distant edit needs no mesh until
+           that column enters a future resident set. */
+        continue;
+      }
       *cx = index / CHUNKS_Z;
       *cz = index % CHUNKS_Z;
+      return TRUE;
+    }
+  }
+  return FALSE;
+}
+
+static void updateDesiredColumns() {
+  u8 viewer;
+  u16 column;
+
+  for (column = 0; column < TOTAL_COLUMNS; column++) {
+    desired_columns[column] = FALSE;
+  }
+
+  if (current_screen != GAME || active_player_count == 1) {
+    /* Preview and solo residency are camera-independent. Looking around is
+       free; crossing into a new chunk is what advances the streamed ring. */
+    markResidentRadius(0, solo_resident_radius);
+    return;
+  }
+
+  /* Split-screen already has strict per-view visibility caps. Keep their
+     union, plus a small position ring so a player never outruns an arena
+     rebuild while sprinting in a different direction. */
+  for (viewer = 0; viewer < active_player_count; viewer++) {
+    for (column = 0; column < TOTAL_COLUMNS; column++) {
+      if (visible_columns[viewer][column]) {
+        desired_columns[column] = TRUE;
+      }
+    }
+    markResidentRadius(viewer, COOP_RESIDENT_RADIUS);
+  }
+}
+
+static u8 desiredColumnsDiffer() {
+  u16 column;
+  for (column = 0; column < TOTAL_COLUMNS; column++) {
+    if (desired_columns[column] !=
+        resident_columns[active_column_arena][column]) {
       return TRUE;
     }
   }
@@ -866,30 +977,45 @@ static u8 takeDirtyColumn(u8 *cx, u8 *cz) {
 static void startColumnCompaction(void) {
   u16 index;
 
-  /* Existing dirty marks are already represented in the world array.  The
-   * inactive arena is built from that latest state; only edits arriving while
-   * compaction is in progress need a later incremental replacement. */
-  for (index = 0; index < CHUNKS_X * CHUNKS_Z; index++) {
+  /* Snapshot the desired neighbourhood. Edits arriving after this point stay
+     dirty and are appended once the complete inactive arena becomes active. */
+  for (index = 0; index < TOTAL_COLUMNS; index++) {
+    compaction_target_columns[index] = desired_columns[index];
     dirty_columns[index] = FALSE;
   }
   dirty_column_cursor = 0;
   compaction_column_cursor = 0;
   compacting_columns = TRUE;
-  beginColumnArenaBuild(active_column_arena ^ 1);
+  resetColumnArenaBuild(active_column_arena ^ 1);
 }
 
 static void processColumnDisplayListUpdates(int can_reclaim_mesh_arena) {
   u8 budget;
 
+  updateDesiredColumns();
   if (compacting_columns) {
-    for (budget = 0; budget < MESH_REBUILD_BUDGET &&
-        compaction_column_cursor < CHUNKS_X * CHUNKS_Z; budget++) {
-      u8 cx = compaction_column_cursor / CHUNKS_Z;
-      u8 cz = compaction_column_cursor % CHUNKS_Z;
-      makeColumnDisplayLists(cx, cz);
+    budget = 0;
+    while (budget < MESH_REBUILD_BUDGET &&
+        compaction_column_cursor < TOTAL_COLUMNS) {
+      u16 column = compaction_column_cursor;
       compaction_column_cursor++;
+      if (!compaction_target_columns[column]) {
+        continue;
+      }
+      if (!makeColumnDisplayLists(column / CHUNKS_Z,
+          column % CHUNKS_Z)) {
+        /* The current resident arena remains valid. Discard an inactive build
+           that cannot fit instead of exposing partial terrain. */
+        if ((current_screen != GAME || active_player_count == 1) &&
+            solo_resident_radius > 2) {
+          solo_resident_radius--;
+        }
+        compacting_columns = FALSE;
+        return;
+      }
+      budget++;
     }
-    if (compaction_column_cursor == CHUNKS_X * CHUNKS_Z) {
+    if (compaction_column_cursor == TOTAL_COLUMNS) {
       column_arena_ends[column_build_arena] = column_dlp;
       active_column_arena = column_build_arena;
       compacting_columns = FALSE;
@@ -900,7 +1026,8 @@ static void processColumnDisplayListUpdates(int can_reclaim_mesh_arena) {
   column_build_arena = active_column_arena;
   column_dlp = column_arena_ends[active_column_arena];
   column_display_list_full = FALSE;
-  if (columnArenaFree() < MESH_COMPACTION_RESERVE) {
+  if (desiredColumnsDiffer() ||
+      columnArenaFree() < MESH_COMPACTION_RESERVE) {
     /* The old arena can become the inactive build target only after every
      * submitted RSP task has finished reading it. */
     if (can_reclaim_mesh_arena) {
@@ -926,9 +1053,11 @@ void drawTextured(u8 texture, u8 player_num) {
   u8 cx, cz;
   for (cx = 0; cx < CHUNKS_X; cx++) {
     for (cz = 0; cz < CHUNKS_Z; cz++) {
-      if (visible_columns[player_num][cx * CHUNKS_Z + cz]) {
+      u16 column = cx * CHUNKS_Z + cz;
+      if (visible_columns[player_num][column] &&
+          resident_columns[active_column_arena][column]) {
         gSPDisplayList(dlp++, column_starts[active_column_arena][texture]
-          [cx * CHUNKS_Z + cz]);
+          [column]);
       }
     }
   }

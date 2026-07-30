@@ -316,13 +316,13 @@ For the complete art-to-cartridge walkthrough, see
 
 ## Hardware notes
 
-Mine64 renders the same world mesh for every camera rather than duplicating the
-world. In co-op it also submits one small, untextured Steve-style model per
-viewport. The split-screen viewports share the original framebuffer, and the
-explicit co-op visibility cap keeps the main per-frame display list inside its
-fixed hardware budget, including third-person avatars and pickups. All
-per-frame display lists and referenced matrices are double-buffered so their
-memory stays immutable until the RSP finishes.
+Mine64 keeps the complete packed world in RAM but meshes only a bounded
+neighbourhood around the player. Two resident display-list arenas let the CPU
+compile the next neighbourhood incrementally while the RSP continues reading
+the complete current one; the arenas swap only when the replacement is ready.
+Split-screen combines its small per-player visible sets instead of duplicating
+the world mesh. All per-frame display lists and referenced matrices are
+double-buffered so their memory stays immutable until the RSP finishes.
 
 The linked release program remains below the stock console's 4 MiB RDRAM
 ceiling, including its packed world, geometry cache, NuSystem task buffers,
@@ -340,12 +340,15 @@ The technical direction and staged follow-up work are recorded in
 * For each chunk a greedy scanning algorithm merges adjacent block faces with the same texture,
 to reduce the number of quads that need to be rendered.
 * Greedy geometry is held only for the four chunks in the column currently
-being compiled. The resulting display lists persist, while the scratch mesh is
-reused for the next column and for edited columns.
+being compiled. Resulting display lists persist only while their columns are
+inside the bounded resident neighbourhood; the packed terrain remains
+authoritative outside it.
 * `quads.h` contains the vertex data for all possible shapes and orientations of merged quad.
 These quads are translated into place for rendering.
-* Display lists for each column are recomputed every time a block changes in the column.
-* Columns outside the camera view are culled by excluding their display lists from the main display list.
+* Resident column display lists are recomputed after local block changes.
+  Distant edits require no mesh work until their column streams back in.
+* Columns outside the camera view are culled from the frame list, while columns
+  outside the resident neighbourhood consume no terrain display-list commands.
 
 ## Acknowledgements
 
