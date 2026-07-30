@@ -24,17 +24,32 @@
 #define CELESTIAL_DISTANCE_COOP 7000.f
 #define SUN_SIZE 430.f
 #define MOON_SIZE 360.f
+#define DROPPED_ITEM_RENDER_DISTANCE (BLOCK_SIZE * 36.f)
+#define PLAYER_RENDER_DISTANCE (BLOCK_SIZE * 64.f)
 
 Gfx *dlp;
 u32 dl_no = 0;
-Gfx display_lists[NUM_DISPLAY_LISTS][WORLD_DISPLAY_LIST_SIZE];
-Gfx line_display_lists[NUM_DISPLAY_LISTS][LINE_DISPLAY_LIST_SIZE];
-Gfx hud_display_lists[NUM_DISPLAY_LISTS][HUD_DISPLAY_LIST_SIZE];
+Gfx frame_display_lists[NUM_DISPLAY_LISTS][FRAME_DISPLAY_LIST_SIZE];
 
-Gfx column_display_list[DISPLAY_LIST_SIZE];
+/* Keep a complete, immutable mesh arena on screen while a replacement is
+ * compacted incrementally into the other arena.  This eliminates the old
+ * gameplay-time RSP wait and full-world rebuild when append-only updates ran
+ * low on space. */
+#define NUM_COLUMN_ARENAS 2
+#define MESH_REBUILD_BUDGET 1
+#define MESH_COMPACTION_RESERVE (DISPLAY_LIST_SIZE / 10)
+static Gfx column_display_lists[NUM_COLUMN_ARENAS][DISPLAY_LIST_SIZE];
 Gfx *column_dlp;
-Gfx *column_starts[NUM_TEXTURES][CHUNKS_X * CHUNKS_Z];
+static Gfx *column_starts[NUM_COLUMN_ARENAS][NUM_TEXTURES]
+  [CHUNKS_X * CHUNKS_Z];
+static Gfx *column_arena_ends[NUM_COLUMN_ARENAS];
+static u8 active_column_arena;
+static u8 column_build_arena;
 static u8 column_display_list_full;
+static u8 dirty_columns[CHUNKS_X * CHUNKS_Z];
+static u8 dirty_column_cursor;
+static u8 compacting_columns;
+static u16 compaction_column_cursor;
 
 static Gfx empty_column_display_list[] = {
   gsSPEndDisplayList()
@@ -371,7 +386,7 @@ static Gfx setup_display_list[] = {
 
 static Gfx draw_setup_display_list[] = {
   gsDPSetCycleType(G_CYC_1CYCLE),
-  gsDPSetRenderMode(G_RM_AA_ZB_OPA_SURF, G_RM_AA_ZB_OPA_SURF2),
+  gsDPSetRenderMode(G_RM_ZB_OPA_SURF, G_RM_ZB_OPA_SURF2),
   gsSPClearGeometryMode(0xFFFFFFFF),
   gsSPSetGeometryMode(G_ZBUFFER | G_CULL_BACK | G_SHADE | G_SHADING_SMOOTH),
   
@@ -384,7 +399,7 @@ static Gfx draw_setup_display_list[] = {
 
 static Gfx wireframe_setup_display_list[] = {
   gsDPSetCycleType(G_CYC_1CYCLE),
-  gsDPSetRenderMode(G_RM_AA_ZB_OPA_SURF, G_RM_AA_ZB_OPA_SURF2),
+  gsDPSetRenderMode(G_RM_ZB_OPA_SURF, G_RM_ZB_OPA_SURF2),
   gsSPClearGeometryMode(0xFFFFFFFF),
   gsSPSetGeometryMode(G_ZBUFFER | G_CULL_BACK | G_SHADE | G_SHADING_SMOOTH),
   gsSPEndDisplayList()
@@ -490,6 +505,20 @@ void loadTexture(Texture *texture) {
   }
 }
 
+static Gfx *columnArenaStart(void) {
+  return column_display_lists[column_build_arena];
+}
+
+static u32 columnArenaFree(void) {
+  return columnArenaStart() + DISPLAY_LIST_SIZE - column_dlp;
+}
+
+static void beginColumnArenaBuild(u8 arena) {
+  column_build_arena = arena;
+  column_dlp = column_display_lists[arena];
+  column_display_list_full = FALSE;
+}
+
 void makeQuadDL(u16 chunk, u8 bx, u8 by, u8 bz, u8 width, u8 height,
     u8 face, u8 is_water) {
   u32 b = bx * CHUNK_SIZE * CHUNK_SIZE + by * CHUNK_SIZE + bz;
@@ -497,7 +526,7 @@ void makeQuadDL(u16 chunk, u8 bx, u8 by, u8 bz, u8 width, u8 height,
   /* Reserve one final command for the column's EndDisplayList.  A maximally
      fragmented player-built chunk can exceed the normal greedy-mesh budget;
      dropping only excess faces is far safer than overwriting adjacent RAM. */
-  if (column_display_list + DISPLAY_LIST_SIZE - column_dlp < 6) {
+  if (columnArenaFree() < 6) {
     column_display_list_full = TRUE;
     return;
   }
@@ -547,13 +576,13 @@ void makeColumnDL(u8 cx, u8 cz, u8 texture) {
   FaceSpec *faces = textures[texture]->faces;
 
   if (column_display_list_full ||
-      column_display_list + DISPLAY_LIST_SIZE - column_dlp < 1) {
+      columnArenaFree() < 1) {
     column_display_list_full = TRUE;
-    column_starts[texture][cx * CHUNKS_Z + cz] =
+    column_starts[column_build_arena][texture][cx * CHUNKS_Z + cz] =
       empty_column_display_list;
     return;
   }
-  column_starts[texture][cx * CHUNKS_Z + cz] = column_dlp;
+  column_starts[column_build_arena][texture][cx * CHUNKS_Z + cz] = column_dlp;
 
   for (cy = 0; cy < CHUNKS_Y; cy++) {
     chunk = cx * CHUNKS_Y * CHUNKS_Z + cy * CHUNKS_Z + cz;
@@ -585,17 +614,30 @@ static void makeColumnDisplayLists(u8 cx, u8 cz) {
 
 void makeWorldDisplayLists() {
   u8 cx, cz;
+  u16 column;
 
   /* This is a complete mesh rebuild, not an incremental block edit.  World
      previews can rebuild several slots back-to-back, so start from the
      beginning of the fixed command arena after the RSP is done with it. */
   nuGfxTaskAllEndWait();
-  column_dlp = column_display_list;
-  column_display_list_full = FALSE;
+  active_column_arena = 0;
+  compacting_columns = FALSE;
+  dirty_column_cursor = 0;
+  for (column = 0; column < CHUNKS_X * CHUNKS_Z; column++) {
+    dirty_columns[column] = FALSE;
+  }
+  beginColumnArenaBuild(active_column_arena);
   for (cx = 0; cx < CHUNKS_X; cx++) {
     for (cz = 0; cz < CHUNKS_Z; cz++) {
       makeColumnDisplayLists(cx, cz);
     }
+  }
+  column_arena_ends[active_column_arena] = column_dlp;
+}
+
+static void markColumnDirty(u8 cx, u8 cz) {
+  if (cx < CHUNKS_X && cz < CHUNKS_Z) {
+    dirty_columns[cx * CHUNKS_Z + cz] = TRUE;
   }
 }
 
@@ -603,23 +645,90 @@ void makeDisplayListsAt(u8 x, u8 z) {
   u8 cx = x / CHUNK_SIZE;
   u8 cz = z / CHUNK_SIZE;
 
-  if ((column_display_list + DISPLAY_LIST_SIZE - column_dlp) < (DISPLAY_LIST_SIZE) / 10) {
-    /*
-     * Normal edits append replacement column lists, so an in-flight RSP task
-     * can safely keep reading the old commands.  Compaction is the one time
-     * this arena is overwritten; wait for all submitted tasks before doing it.
-     */
-    nuGfxTaskAllEndWait();
-    column_dlp = column_display_list;
-    column_display_list_full = FALSE;
-    makeWorldDisplayLists();
-  } else {
-    makeColumnDisplayLists(cx, cz);
-    if (x % CHUNK_SIZE == 0 && cx > 0) {
-      makeColumnDisplayLists(cx - 1, cz);
+  /* Block edits are cheap to mark now.  A later graphics callback bakes a
+     bounded amount of geometry, so mining and tree felling cannot monopolize
+     a gameplay frame. */
+  markColumnDirty(cx, cz);
+  if (x % CHUNK_SIZE == 0 && cx > 0) {
+    markColumnDirty(cx - 1, cz);
+  }
+  if (z % CHUNK_SIZE == 0 && cz > 0) {
+    markColumnDirty(cx, cz - 1);
+  }
+}
+
+static u8 takeDirtyColumn(u8 *cx, u8 *cz) {
+  u16 offset;
+  u16 count = CHUNKS_X * CHUNKS_Z;
+
+  for (offset = 0; offset < count; offset++) {
+    u16 index = (dirty_column_cursor + offset) % count;
+    if (dirty_columns[index]) {
+      dirty_columns[index] = FALSE;
+      dirty_column_cursor = (index + 1) % count;
+      *cx = index / CHUNKS_Z;
+      *cz = index % CHUNKS_Z;
+      return TRUE;
     }
-    if (z % CHUNK_SIZE == 0 && cz > 0) {
-      makeColumnDisplayLists(cx, cz - 1);
+  }
+  return FALSE;
+}
+
+static void startColumnCompaction(void) {
+  u16 index;
+
+  /* Existing dirty marks are already represented in the world array.  The
+   * inactive arena is built from that latest state; only edits arriving while
+   * compaction is in progress need a later incremental replacement. */
+  for (index = 0; index < CHUNKS_X * CHUNKS_Z; index++) {
+    dirty_columns[index] = FALSE;
+  }
+  dirty_column_cursor = 0;
+  compaction_column_cursor = 0;
+  compacting_columns = TRUE;
+  beginColumnArenaBuild(active_column_arena ^ 1);
+}
+
+static void processColumnDisplayListUpdates(int can_reclaim_mesh_arena) {
+  u8 budget;
+
+  if (compacting_columns) {
+    for (budget = 0; budget < MESH_REBUILD_BUDGET &&
+        compaction_column_cursor < CHUNKS_X * CHUNKS_Z; budget++) {
+      u8 cx = compaction_column_cursor / CHUNKS_Z;
+      u8 cz = compaction_column_cursor % CHUNKS_Z;
+      makeColumnDisplayLists(cx, cz);
+      compaction_column_cursor++;
+    }
+    if (compaction_column_cursor == CHUNKS_X * CHUNKS_Z) {
+      column_arena_ends[column_build_arena] = column_dlp;
+      active_column_arena = column_build_arena;
+      compacting_columns = FALSE;
+    }
+    return;
+  }
+
+  column_build_arena = active_column_arena;
+  column_dlp = column_arena_ends[active_column_arena];
+  column_display_list_full = FALSE;
+  if (columnArenaFree() < MESH_COMPACTION_RESERVE) {
+    /* The old arena can become the inactive build target only after every
+     * submitted RSP task has finished reading it. */
+    if (can_reclaim_mesh_arena) {
+      startColumnCompaction();
+    }
+    return;
+  }
+
+  for (budget = 0; budget < MESH_REBUILD_BUDGET; budget++) {
+    u8 cx, cz;
+    if (!takeDirtyColumn(&cx, &cz)) {
+      break;
+    }
+    makeColumnDisplayLists(cx, cz);
+    column_arena_ends[active_column_arena] = column_dlp;
+    if (column_display_list_full || columnArenaFree() < MESH_COMPACTION_RESERVE) {
+      break;
     }
   }
 }
@@ -629,7 +738,8 @@ void drawTextured(u8 texture, u8 player_num) {
   for (cx = 0; cx < CHUNKS_X; cx++) {
     for (cz = 0; cz < CHUNKS_Z; cz++) {
       if (visible_columns[player_num][cx * CHUNKS_Z + cz]) {
-        gSPDisplayList(dlp++, column_starts[texture][cx * CHUNKS_Z + cz]);
+        gSPDisplayList(dlp++, column_starts[active_column_arena][texture]
+          [cx * CHUNKS_Z + cz]);
       }
     }
   }
@@ -769,6 +879,19 @@ static void drawFirstPersonSword(u8 player_num) {
   gSPSetGeometryMode(dlp++, G_CULL_BACK);
 }
 
+static u8 pointVisibleToPlayer(u8 viewer_num, Vector3 point,
+    float max_distance) {
+  Vector3 offset = add(point, mul(players[viewer_num].position, -1.f));
+  int cx = point.x / (BLOCK_SIZE * CHUNK_SIZE);
+  int cz = point.z / (BLOCK_SIZE * CHUNK_SIZE);
+
+  if (dot(offset, offset) > max_distance * max_distance) {
+    return FALSE;
+  }
+  return cx >= 0 && cx < CHUNKS_X && cz >= 0 && cz < CHUNKS_Z &&
+    visible_columns[viewer_num][cx * CHUNKS_Z + cz];
+}
+
 static void drawOtherPlayers(u8 viewer_num) {
   u8 player_num;
 
@@ -781,14 +904,16 @@ static void drawOtherPlayers(u8 viewer_num) {
     if (players[player_num].active &&
         (player_num != viewer_num ||
          (players[viewer_num].camera_mode == CAMERA_THIRD_PERSON &&
-          third_person_avatar_visible[viewer_num]))) {
+          third_person_avatar_visible[viewer_num])) &&
+        pointVisibleToPlayer(viewer_num, players[player_num].position,
+          PLAYER_RENDER_DISTANCE)) {
       drawSteve(player_num);
     }
   }
   gSPSetGeometryMode(dlp++, G_CULL_BACK);
 }
 
-static void drawDroppedItems() {
+static void drawDroppedItems(u8 viewer_num) {
   u8 i;
 
   /* Small cubes are particularly sensitive to winding/culling mistakes on
@@ -797,6 +922,10 @@ static void drawDroppedItems() {
   for (i = 0; i < MAX_DROPPED_ITEMS; i++) {
     DroppedItem *drop = &dropped_items[i];
     if (!drop->active) {
+      continue;
+    }
+    if (!pointVisibleToPlayer(viewer_num, drop->position,
+        DROPPED_ITEM_RENDER_DISTANCE)) {
       continue;
     }
 
@@ -874,12 +1003,16 @@ static void drawFallingTree(TreeRecord *tree, u8 slot) {
     canopy_y + BLOCK_SIZE * 1.5f, 0, 1, 1, 3);
 }
 
-static void drawFallingTrees() {
+static void drawFallingTrees(u8 viewer_num) {
   u8 tree_index;
   u8 slot = 0;
 
   for (tree_index = 0; tree_index < MAX_TREES; tree_index++) {
-    if (trees[tree_index].state == TREE_STATE_FALLING) {
+    Vector3 position = {(trees[tree_index].x + .5f) * BLOCK_SIZE,
+      (trees[tree_index].base_y + 1) * BLOCK_SIZE,
+      (trees[tree_index].z + .5f) * BLOCK_SIZE};
+    if (trees[tree_index].state == TREE_STATE_FALLING &&
+        pointVisibleToPlayer(viewer_num, position, DROPPED_ITEM_RENDER_DISTANCE)) {
       break;
     }
   }
@@ -890,7 +1023,11 @@ static void drawFallingTrees() {
   gSPClearGeometryMode(dlp++, G_CULL_BACK);
   for (; tree_index < MAX_TREES &&
       slot < FALLING_TREE_RENDER_SLOTS; tree_index++) {
-    if (trees[tree_index].state == TREE_STATE_FALLING) {
+    Vector3 position = {(trees[tree_index].x + .5f) * BLOCK_SIZE,
+      (trees[tree_index].base_y + 1) * BLOCK_SIZE,
+      (trees[tree_index].z + .5f) * BLOCK_SIZE};
+    if (trees[tree_index].state == TREE_STATE_FALLING &&
+        pointVisibleToPlayer(viewer_num, position, DROPPED_ITEM_RENDER_DISTANCE)) {
       drawFallingTree(&trees[tree_index], slot++);
     }
   }
@@ -903,15 +1040,13 @@ void drawWorld() {
     current_screen == WORLD_NAMING;
   u8 viewer_count = cinematic ? 1 : active_player_count;
 
-  dlp = &display_lists[dl_no][0];
-
-  gSPDisplayList(dlp++, setup_display_list);
-
   if (cinematic) {
     clearBuffers(GPACK_RGBA5551(42, 78, 130, 1));
   } else {
-    SkyColor zenith = dayCycleSkyColor(0);
-    clearBuffers(GPACK_RGBA5551(zenith.r, zenith.g, zenith.b, 1));
+    /* A single time-varying clear is much cheaper than the former banded
+     * gradient while retaining a daylight/nightfall sky behind the terrain. */
+    SkyColor sky = dayCycleSkyColor(255);
+    clearBuffers(GPACK_RGBA5551(sky.r, sky.g, sky.b, 1));
   }
 
   for (player_num = 0; player_num < viewer_count; player_num++) {
@@ -925,6 +1060,9 @@ void drawWorld() {
     loadCameraMatrices(player_num);
     if (!cinematic) {
       drawCelestialBodies(player_num);
+      /* Celestial sprites use AA texture-edge mode.  Terrain must explicitly
+       * restore its opaque no-read render mode afterwards. */
+      gDPSetRenderMode(dlp++, G_RM_ZB_OPA_SURF, G_RM_ZB_OPA_SURF2);
     }
     gSPSetGeometryMode(dlp++, G_CULL_BACK | G_LIGHTING);
     gDPSetCombineMode(dlp++, G_CC_MODULATERGB, G_CC_MODULATERGB);
@@ -948,8 +1086,8 @@ void drawWorld() {
     }
     if (!cinematic) {
       gSPClearGeometryMode(dlp++, G_LIGHTING);
-      drawFallingTrees();
-      drawDroppedItems();
+      drawFallingTrees(player_num);
+      drawDroppedItems(player_num);
     }
     if (!cinematic && (active_player_count > 1 ||
         players[player_num].camera_mode == CAMERA_THIRD_PERSON)) {
@@ -960,22 +1098,10 @@ void drawWorld() {
     }
   }
 
-  gDPFullSync(dlp++);
-  gSPEndDisplayList(dlp++);
-
-  nuGfxTaskStart(&display_lists[dl_no][0],
-		(s32)(dlp - display_lists[dl_no]) * sizeof (Gfx),
-		NU_GFX_UCODE_F3DEX,
-    NU_SC_NOSWAPBUFFER
-  );
 }
 
 void drawWireframes() {
   u8 player_num;
-  Gfx *line_display_list = line_display_lists[dl_no];
-  dlp = line_display_list;
-
-  gSPDisplayList(dlp++, setup_display_list);
 
   for (player_num = 0; player_num < active_player_count; player_num++) {
     if (!players[player_num].target_present) continue;
@@ -1004,14 +1130,6 @@ void drawWireframes() {
     }
   }
 
-  gDPFullSync(dlp++);
-  gSPEndDisplayList(dlp++);
-
-  nuGfxTaskStart(line_display_list,
-		(s32)(dlp - line_display_list) * sizeof (Gfx),
-		NU_GFX_UCODE_L3DEX,
-    NU_SC_NOSWAPBUFFER
-  );
 }
 
 static void setHudFillColor(u8 r, u8 g, u8 b);
@@ -1426,10 +1544,6 @@ static void drawGameText() {
 
 void drawHUD() {
   u8 player_num;
-  Gfx *hud_display_list = hud_display_lists[dl_no];
-  dlp = hud_display_list;
-
-  gSPDisplayList(dlp++, setup_display_list);
 
   if (current_screen != GAME && current_screen != INVENTORY &&
       current_screen != LOADING_PREVIEW &&
@@ -1462,6 +1576,10 @@ void drawHUD() {
     }
     gDPPipeSync(dlp++);
   } else {
+    /* Inventory input pauses movement, so redrawing the 3D world beneath a
+     * mostly opaque panel only burns RSP/RDP time.  A stable dark backdrop is
+     * also safe with NuSystem's rotating triple framebuffer. */
+    clearBuffers(GPACK_RGBA5551(10, 16, 28, 1));
     loaded_texture = NULL;
     drawInventory();
     gDPPipeSync(dlp++);
@@ -1473,37 +1591,40 @@ void drawHUD() {
     drawInventoryStackCounts();
   }
 
-  gDPFullSync(dlp++);
-  gSPEndDisplayList(dlp++);
-
-  nuGfxTaskStart(hud_display_list,
-		(s32)(dlp - hud_display_list) * sizeof (Gfx),
-		NU_GFX_UCODE_S2DEX,
-    NU_SC_SWAPBUFFER
-  );
 }
 
-void draw() {
+void draw(int can_reclaim_mesh_arena) {
   loaded_texture = NULL;
+  dlp = &frame_display_lists[dl_no][0];
+  gSPDisplayList(dlp++, setup_display_list);
 
-  if (current_screen == GAME || current_screen == INVENTORY) {
+  if (current_screen == GAME) {
     u8 player_num;
     for (player_num = 0; player_num < active_player_count; player_num++) {
       updateVisibleColumns(player_num);
       updateCameraMatrices(player_num);
     }
-
+    processColumnDisplayListUpdates(can_reclaim_mesh_arena);
     drawWorld();
     drawWireframes();
   } else if (current_screen == LOADING_PREVIEW) {
     updateLoadingCamera();
+    processColumnDisplayListUpdates(can_reclaim_mesh_arena);
     drawWorld();
   } else if ((current_screen == MENU || current_screen == WORLD_NAMING) &&
       !menuPreviewRequested()) {
     updateLoadingCamera();
+    processColumnDisplayListUpdates(can_reclaim_mesh_arena);
     drawWorld();
   }
   drawHUD();
+
+  gDPFullSync(dlp++);
+  gSPEndDisplayList(dlp++);
+  assert(dlp - frame_display_lists[dl_no] <= FRAME_DISPLAY_LIST_SIZE);
+  nuGfxTaskStart(frame_display_lists[dl_no],
+    (s32)(dlp - frame_display_lists[dl_no]) * sizeof (Gfx),
+    NU_GFX_UCODE_F3DEX, NU_SC_SWAPBUFFER);
 
   /* Switch display list buffers */
   dl_no ^= 1;
@@ -1547,6 +1668,8 @@ void initGraphics() {
     }
   }
 
-  column_dlp = column_display_list;
-  column_display_list_full = FALSE;
+  active_column_arena = 0;
+  compacting_columns = FALSE;
+  beginColumnArenaBuild(active_column_arena);
+  column_arena_ends[active_column_arena] = column_dlp;
 }

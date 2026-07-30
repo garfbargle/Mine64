@@ -57,7 +57,9 @@ OBJECT_DIR := $(OBJDIR)/$(BUILD_VARIANT)
 APP := $(OBJDIR)/$(TARGET).out
 ROM := $(OBJDIR)/$(TARGET).n64
 CODEFILES := $(wildcard $(SRCDIR)/*.c) $(wildcard $(SRCDIR)/ff/*.c)
-CODEOBJECTS := $(patsubst $(SRCDIR)/%.c,$(OBJECT_DIR)/%.o,$(CODEFILES)) $(NUSYSLIBDIR)/nusys$(SDK_VARIANT).o
+APP_OBJECTS := $(patsubst $(SRCDIR)/%.c,$(OBJECT_DIR)/%.o,$(CODEFILES))
+CODEOBJECTS := $(APP_OBJECTS) $(NUSYSLIBDIR)/nusys$(SDK_VARIANT).o
+DEPFILES := $(APP_OBJECTS:.o=.d)
 ifeq ($(AUDIO),1)
 CODESEGMENT := $(OBJDIR)/audio-codesegment.o
 else
@@ -66,28 +68,24 @@ endif
 BASE_ASSETS := $(ASSDIR)/texture_data.h $(ASSDIR)/font.h
 CUSTOM_TEXTURE_SOURCE := $(wildcard art/custom-textures.png)
 
-# The original WAVs are local artist assets, while these generated files are
-# compact ROM inputs. Override MUSIC_SOURCE_DIR when building elsewhere.
-AUDIO_BUILD_DIR := $(OBJDIR)/audio
-MUSIC_SOURCE_DIR ?= /Users/codi/Downloads
-MUSIC_TITLE_SOURCE ?= $(MUSIC_SOURCE_DIR)/Softstone\ Sunset.wav
-MUSIC_GAME_SOURCE ?= $(MUSIC_SOURCE_DIR)/Still\ Exploring.wav
+# Encoded audio is versioned with the source tree.  The original WAV masters
+# are only needed for the explicit `make music MUSIC_SOURCE_DIR=/path` import.
+AUDIO_ASSET_DIR := $(ASSDIR)/audio
+AUDIO_IMPORT_DIR := $(OBJDIR)/audio-import
+MUSIC_SOURCE_DIR ?=
 MUSIC_RATE ?= 22050
 MUSIC_EFFECTS ?= highpass 30 lowpass 10000 gain -n -3
-MUSIC_TITLE_PCM := $(AUDIO_BUILD_DIR)/music-title-$(MUSIC_RATE)-mono.wav
-MUSIC_GAME_PCM := $(AUDIO_BUILD_DIR)/music-game-$(MUSIC_RATE)-mono.wav
-MUSIC_TITLE_AIFC := $(AUDIO_BUILD_DIR)/music-title.vadpcm.aifc
-MUSIC_GAME_AIFC := $(AUDIO_BUILD_DIR)/music-game.vadpcm.aifc
-MUSIC_TITLE_BIN := $(AUDIO_BUILD_DIR)/music-title.vadpcm.bin
-MUSIC_GAME_BIN := $(AUDIO_BUILD_DIR)/music-game.vadpcm.bin
+MUSIC_TITLE_PCM := $(AUDIO_IMPORT_DIR)/music-title-$(MUSIC_RATE)-mono.wav
+MUSIC_GAME_PCM := $(AUDIO_IMPORT_DIR)/music-game-$(MUSIC_RATE)-mono.wav
+MUSIC_TITLE_AIFC := $(AUDIO_IMPORT_DIR)/music-title.vadpcm.aifc
+MUSIC_GAME_AIFC := $(AUDIO_IMPORT_DIR)/music-game.vadpcm.aifc
+MUSIC_TITLE_BIN := $(AUDIO_ASSET_DIR)/music-title.vadpcm.bin
+MUSIC_GAME_BIN := $(AUDIO_ASSET_DIR)/music-game.vadpcm.bin
 MUSIC_TITLE_HEADER := $(ASSDIR)/music_title_vadpcm.h
 MUSIC_GAME_HEADER := $(ASSDIR)/music_game_vadpcm.h
-MUSIC_TITLE_INFO := $(AUDIO_BUILD_DIR)/music-title.json
-MUSIC_GAME_INFO := $(AUDIO_BUILD_DIR)/music-game.json
 MUSIC_ASSETS := $(MUSIC_TITLE_BIN) $(MUSIC_GAME_BIN) $(MUSIC_TITLE_HEADER) $(MUSIC_GAME_HEADER)
-SFX_DIR := $(AUDIO_BUILD_DIR)/sfx
+SFX_DIR := $(AUDIO_ASSET_DIR)/sfx
 SFX_HEADER := $(ASSDIR)/game_sfx.h
-SFX_STAMP := $(SFX_DIR)/.generated
 SFX_ASSETS := $(SFX_HEADER) $(SFX_DIR)/pickup.pcm.bin $(SFX_DIR)/punch.pcm.bin \
 	$(SFX_DIR)/break.pcm.bin $(SFX_DIR)/place.pcm.bin
 ifeq ($(AUDIO),1)
@@ -99,59 +97,27 @@ SOX ?= sox
 VADPCM ?= vadpcm
 
 .DEFAULT_GOAL := default
-.PHONY: default audio clean music music-info sfx FORCE_CODESEGMENT FORCE_ROM
+.PHONY: default audio clean music sfx FORCE_CODESEGMENT FORCE_ROM
 
 default: $(ROM)
 
 audio:
 	$(MAKE) AUDIO=1
 
-# Run this inside the project Docker image. The encoder accepts mono 16-bit
-# PCM only, so SoX supplies the deterministic resample/downmix stage first.
-music: $(MUSIC_ASSETS) $(MUSIC_TITLE_INFO) $(MUSIC_GAME_INFO)
+# Run this inside the project Docker image when replacing the versioned music
+# payloads. The regular audio build never reads artist masters from Downloads.
+music:
+	@test -n "$(MUSIC_SOURCE_DIR)" || (echo "Set MUSIC_SOURCE_DIR to the directory holding the WAV masters." >&2; exit 2)
+	@mkdir -p $(AUDIO_IMPORT_DIR) $(AUDIO_ASSET_DIR)
+	$(SOX) "$(MUSIC_SOURCE_DIR)/Softstone Sunset.wav" -r $(MUSIC_RATE) -c 1 -b 16 -e signed-integer $(MUSIC_TITLE_PCM) remix - $(MUSIC_EFFECTS)
+	$(VADPCM) encode --predictors 4 $(MUSIC_TITLE_PCM) $(MUSIC_TITLE_AIFC)
+	python3 tools/audio_codegen.py $(MUSIC_TITLE_AIFC) $(MUSIC_TITLE_BIN) $(MUSIC_TITLE_HEADER) MUSIC_TITLE
+	$(SOX) "$(MUSIC_SOURCE_DIR)/Still Exploring.wav" -r $(MUSIC_RATE) -c 1 -b 16 -e signed-integer $(MUSIC_GAME_PCM) remix - $(MUSIC_EFFECTS)
+	$(VADPCM) encode --predictors 4 $(MUSIC_GAME_PCM) $(MUSIC_GAME_AIFC)
+	python3 tools/audio_codegen.py $(MUSIC_GAME_AIFC) $(MUSIC_GAME_BIN) $(MUSIC_GAME_HEADER) MUSIC_GAME
 
-music-info: $(MUSIC_TITLE_INFO) $(MUSIC_GAME_INFO)
-
-sfx: $(SFX_ASSETS)
-
-$(MUSIC_TITLE_PCM): $(MUSIC_TITLE_SOURCE)
-	@mkdir -p $(dir $@)
-	$(SOX) "$<" -r $(MUSIC_RATE) -c 1 -b 16 -e signed-integer $@ remix - $(MUSIC_EFFECTS)
-
-$(MUSIC_GAME_PCM): $(MUSIC_GAME_SOURCE)
-	@mkdir -p $(dir $@)
-	$(SOX) "$<" -r $(MUSIC_RATE) -c 1 -b 16 -e signed-integer $@ remix - $(MUSIC_EFFECTS)
-
-$(MUSIC_TITLE_AIFC): $(MUSIC_TITLE_PCM)
-	$(VADPCM) encode --predictors 4 $< $@
-
-$(MUSIC_GAME_AIFC): $(MUSIC_GAME_PCM)
-	$(VADPCM) encode --predictors 4 $< $@
-
-$(MUSIC_TITLE_HEADER): $(MUSIC_TITLE_AIFC) tools/audio_codegen.py
-	python3 tools/audio_codegen.py $< $(MUSIC_TITLE_BIN) $@ MUSIC_TITLE
-
-$(MUSIC_GAME_HEADER): $(MUSIC_GAME_AIFC) tools/audio_codegen.py
-	python3 tools/audio_codegen.py $< $(MUSIC_GAME_BIN) $@ MUSIC_GAME
-
-$(MUSIC_TITLE_BIN): $(MUSIC_TITLE_HEADER)
-	@test -f $@
-
-$(MUSIC_GAME_BIN): $(MUSIC_GAME_HEADER)
-	@test -f $@
-
-$(MUSIC_TITLE_INFO): $(MUSIC_TITLE_AIFC) tools/audio_manifest.py
-	python3 tools/audio_manifest.py $< $@
-
-$(MUSIC_GAME_INFO): $(MUSIC_GAME_AIFC) tools/audio_manifest.py
-	python3 tools/audio_manifest.py $< $@
-
-$(SFX_STAMP): tools/generate_sfx.py
-	python3 $<
-	@touch $@
-
-$(SFX_ASSETS): $(SFX_STAMP)
-	@test -f $@
+sfx:
+	python3 tools/generate_sfx.py
 
 $(BASE_ASSETS): generate_assets.py tools/import_textures.py $(CUSTOM_TEXTURE_SOURCE)
 	python3 generate_assets.py
@@ -163,7 +129,9 @@ endif
 
 $(OBJECT_DIR)/%.o: $(SRCDIR)/%.c $(ASSETS)
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) $< -o $@
+	$(CC) $(CFLAGS) -MMD -MP -MF $(@:.o=.d) $< -o $@
+
+-include $(DEPFILES)
 
 $(CODESEGMENT): FORCE_CODESEGMENT $(CODEOBJECTS) Makefile
 	$(LD) -o $@ -r $(CODEOBJECTS) $(LDFLAGS)

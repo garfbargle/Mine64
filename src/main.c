@@ -10,11 +10,11 @@
 #include "storage.h"
 #include "day_cycle.h"
 
-void draw(void);
-
 void callbackGfx(int pendingGfx) {
   if(pendingGfx < 2) {
-    draw();
+    /* A mesh arena can only be recycled when no submitted task can still
+       reference its display lists. */
+    draw(pendingGfx == 0);
   }
 
   if (current_screen == GENERATING) {

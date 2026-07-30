@@ -1,6 +1,13 @@
 /.vscode
 /build
-/assets
+/assets/*
+!/assets/audio/
+!/assets/audio/**
+!/assets/game_sfx.h
+!/assets/music_game_vadpcm.h
+!/assets/music_title_vadpcm.h
+/assets/audio/sfx/*.wav
+/assets/audio/**/*.o
 /mine64-audio.out
 __pycache__/
 *.sh

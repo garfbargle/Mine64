@@ -202,10 +202,14 @@ each tile to its own N64 palette.
 
 ### Music asset pipeline
 
-The repository can prepare `Softstone Sunset.wav` and `Still Exploring.wav`
-for a future hardware-tested music implementation. Keep the original WAVs in
-one private local directory (the default is `/Users/codi/Downloads`) and create
-N64-ready assets inside the same Docker environment used for ROM builds:
+The audio ROM consumes versioned, N64-ready assets in `assets/audio/`; it does
+not require private WAV masters or any user-specific path. The tracked payloads
+are VADPCM music plus big-endian PCM effects, with the matching decoder
+metadata headers in `assets/`.
+
+To deliberately replace the two music tracks, keep the private WAV masters in
+any local directory and re-import them inside the same Docker environment used
+for ROM builds:
 
 ```sh
 docker run --rm --platform linux/amd64 \
@@ -213,19 +217,20 @@ docker run --rm --platform linux/amd64 \
   mine64-nusys-build:local make music MUSIC_SOURCE_DIR=/music
 ```
 
-The pipeline downmixes each track to mono, resamples to 22,050 Hz, removes inaudible
-sub-bass/ultrasonic content, normalizes peaks to -3 dBFS, and encodes the
-result as N64 VADPCM. Outputs are written to `build/audio/`:
-`music-*-22050-mono.wav` files are review copies, `music-*.vadpcm.aifc` files
-are the compact encoded assets, and `music-*.json` files record exact size,
-rate, duration, and codebook information.
+The pipeline downmixes each track to mono, resamples to 22,050 Hz, removes
+inaudible sub-bass/ultrasonic content, normalizes peaks to -3 dBFS, and
+encodes the result as N64 VADPCM. It replaces the checked-in payloads and
+metadata headers; intermediate WAV and AIFF-C files remain under
+`build/audio-import/`.
 
 VADPCM uses roughly 28% of the space of 16-bit PCM.  The default 22,050 Hz
 mono asset is a strong quality/ROM-size balance for background music. To
 prefer a smaller or clearer asset, set `MUSIC_RATE`, for example
 `make music MUSIC_RATE=16000` or `make music MUSIC_RATE=32000`. To use a
 different private source folder, set `MUSIC_SOURCE_DIR=/path/to/music`. To
-keep the input's level and EQ unchanged, set `MUSIC_EFFECTS=`.
+keep the input's level and EQ unchanged, set `MUSIC_EFFECTS=`. Review and
+commit the resulting encoded assets whenever the masters or import settings
+change.
 
 Music playback is intentionally not linked into the default ROM. Use the
 separate `AUDIO=1` ROM for hardware validation; a known-good silent build
@@ -241,9 +246,10 @@ big-endian PCM inputs with:
 make sfx
 ```
 
-The files are written to `build/audio/sfx/`; `make AUDIO=1` runs this step
-automatically. The effects are generated deterministically by
-`tools/generate_sfx.py`, so their source remains small and portable.
+The encoded inputs are written to `assets/audio/sfx/`, while local WAV previews
+there are ignored. The effects are generated deterministically by
+`tools/generate_sfx.py`; review and commit the PCM inputs and metadata header
+after regenerating them.
 
 For the complete art-to-cartridge walkthrough, see
 [Custom texture workflow](docs/custom-textures.md).

@@ -91,7 +91,7 @@ def write_wav(path: Path, values: list[int]) -> None:
 
 def main() -> None:
     project = Path(__file__).resolve().parent.parent
-    output_dir = project / "build" / "audio" / "sfx"
+    output_dir = project / "assets" / "audio" / "sfx"
     header = project / "assets" / "game_sfx.h"
     output_dir.mkdir(parents=True, exist_ok=True)
     header.parent.mkdir(parents=True, exist_ok=True)
