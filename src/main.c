@@ -7,6 +7,7 @@
 #include "geometry.h"
 #include "graphics.h"
 #include "items.h"
+#include "mobs.h"
 #include "storage.h"
 #include "day_cycle.h"
 
@@ -21,6 +22,7 @@ void callbackGfx(int pendingGfx) {
     initWorld();
     initPlayers();
     initDroppedItems();
+    initMobs();
     initGeometry();
     makeWorldDisplayLists();
     /* A named world becomes a real slot immediately when the flashcart
@@ -37,6 +39,7 @@ void callbackGfx(int pendingGfx) {
   if (current_screen == LOADING) {
     loadGame();
     initDroppedItems();
+    initMobs();
     initGeometry();
     makeWorldDisplayLists();
     
@@ -60,6 +63,7 @@ void callbackGfx(int pendingGfx) {
       initPlayers();
     }
     initDroppedItems();
+    initMobs();
     initGeometry();
     makeWorldDisplayLists();
     beginLoadingPreview();

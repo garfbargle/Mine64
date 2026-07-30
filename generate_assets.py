@@ -115,6 +115,11 @@ def tile(kind, x, y):
         if y % 4 == 0 or shifted_x % 8 == 0:
             return 1
         return 2 + ((shifted_x // 4 + y // 4) & 1)
+    if kind == "wool":
+        # Broad, offset tufts read as fleece instead of TV-static on a CRT.
+        if (x + (y // 4) * 3) % 8 == 0 or y % 5 == 0:
+            return 1
+        return 2 + ((x // 4 + y // 5) & 1)
     if kind == "sun":
         # A subtle cross-shaped corona reads clearly at N64 resolution without
         # shimmering like a noisy radial gradient.
@@ -158,6 +163,7 @@ PALETTES = {
     "leaves": [(24, 62, 30), (35, 84, 39), (48, 105, 47), (68, 126, 57)],
     "planks": [(91, 55, 27), (120, 75, 36), (152, 99, 50), (184, 127, 69)],
     "bricks": [(93, 43, 34), (126, 57, 45), (157, 73, 57), (188, 92, 72)],
+    "wool": [(142, 144, 145), (188, 190, 188), (224, 224, 216), (248, 246, 232)],
     "water": [(22, 62, 112), (31, 88, 148), (47, 116, 178), (72, 145, 201)],
     "sun": [(255, 175, 56), (255, 207, 76), (255, 239, 139)],
     "moon_0": [(0, 0, 0, 0), (121, 137, 166), (186, 200, 218), (226, 231, 236)],

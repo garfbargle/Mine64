@@ -3,6 +3,7 @@
 #include "graphics.h"
 #include "geometry.h"
 #include "items.h"
+#include "mobs.h"
 #include "trees.h"
 #include "camera.h"
 #include "player.h"
@@ -26,6 +27,8 @@
 #define MOON_SIZE 360.f
 #define DROPPED_ITEM_RENDER_DISTANCE (BLOCK_SIZE * 36.f)
 #define PLAYER_RENDER_DISTANCE (BLOCK_SIZE * 64.f)
+#define SHEEP_RENDER_DISTANCE (BLOCK_SIZE * 30.f)
+#define MAX_VISIBLE_SHEEP 3
 
 Gfx *dlp;
 u32 dl_no = 0;
@@ -125,6 +128,17 @@ static Mtx steve_rotate[NUM_DISPLAY_LISTS][MAX_PLAYERS][STEVE_PART_COUNT];
 static Mtx first_person_sword_translate[NUM_DISPLAY_LISTS][MAX_PLAYERS];
 static Mtx first_person_sword_rotate[NUM_DISPLAY_LISTS][MAX_PLAYERS];
 
+#define SHEEP_BODY 0
+#define SHEEP_HEAD 1
+#define SHEEP_FRONT_LEFT_LEG 2
+#define SHEEP_FRONT_RIGHT_LEG 3
+#define SHEEP_BACK_LEFT_LEG 4
+#define SHEEP_BACK_RIGHT_LEG 5
+#define SHEEP_PART_COUNT 6
+
+static Mtx sheep_translate[NUM_DISPLAY_LISTS][MAX_SHEEP][SHEEP_PART_COUNT];
+static Mtx sheep_rotate[NUM_DISPLAY_LISTS][MAX_SHEEP][SHEEP_PART_COUNT];
+
 #define STEVE_VERTEX(x, y, z, r, g, b) {x, y, z, 0, 0, 0, r, g, b, 255}
 
 /* Head, torso, arms, and legs.  Limbs start at y = 0 so their rotation has a
@@ -155,6 +169,29 @@ static Vtx steve_leg_verts[] = {
   STEVE_VERTEX(8, -44, 8, 55, 70, 150), STEVE_VERTEX(-8, -44, 8, 55, 70, 150),
   STEVE_VERTEX(8, 0, -8, 55, 70, 150), STEVE_VERTEX(-8, 0, -8, 55, 70, 150),
   STEVE_VERTEX(-8, -44, -8, 55, 70, 150), STEVE_VERTEX(8, -44, -8, 55, 70, 150)
+};
+
+/* The sheep is all chunky shaded geometry, matching Steve's inexpensive
+   renderer.  Its fleece therefore needs no new character atlas or UV work. */
+static Vtx sheep_body_verts[] = {
+  STEVE_VERTEX(-27, 17, 18, 236, 234, 218), STEVE_VERTEX(27, 17, 18, 236, 234, 218),
+  STEVE_VERTEX(27, -17, 18, 236, 234, 218), STEVE_VERTEX(-27, -17, 18, 236, 234, 218),
+  STEVE_VERTEX(27, 17, -18, 204, 204, 194), STEVE_VERTEX(-27, 17, -18, 204, 204, 194),
+  STEVE_VERTEX(-27, -17, -18, 204, 204, 194), STEVE_VERTEX(27, -17, -18, 204, 204, 194)
+};
+
+static Vtx sheep_head_verts[] = {
+  STEVE_VERTEX(-15, 14, 14, 190, 188, 176), STEVE_VERTEX(15, 14, 14, 190, 188, 176),
+  STEVE_VERTEX(15, -14, 14, 190, 188, 176), STEVE_VERTEX(-15, -14, 14, 190, 188, 176),
+  STEVE_VERTEX(15, 14, -14, 150, 148, 140), STEVE_VERTEX(-15, 14, -14, 150, 148, 140),
+  STEVE_VERTEX(-15, -14, -14, 150, 148, 140), STEVE_VERTEX(15, -14, -14, 150, 148, 140)
+};
+
+static Vtx sheep_leg_verts[] = {
+  STEVE_VERTEX(-6, 18, 6, 104, 96, 82), STEVE_VERTEX(6, 18, 6, 104, 96, 82),
+  STEVE_VERTEX(6, -18, 6, 104, 96, 82), STEVE_VERTEX(-6, -18, 6, 104, 96, 82),
+  STEVE_VERTEX(6, 18, -6, 76, 70, 62), STEVE_VERTEX(-6, 18, -6, 76, 70, 62),
+  STEVE_VERTEX(-6, -18, -6, 76, 70, 62), STEVE_VERTEX(6, -18, -6, 76, 70, 62)
 };
 
 /* Two blue eye quads on the local -Z face make it obvious where Steve is
@@ -892,6 +929,69 @@ static u8 pointVisibleToPlayer(u8 viewer_num, Vector3 point,
     visible_columns[viewer_num][cx * CHUNKS_Z + cz];
 }
 
+static void setSheepPartTransform(u8 sheep_num, u8 part,
+    Vector3 local_offset) {
+  Sheep *mob = &sheep[sheep_num];
+  Vector3 offset = rotateY(local_offset, -mob->yaw);
+
+  guTranslate(&sheep_translate[dl_no][sheep_num][part],
+    mob->position.x + offset.x, mob->position.y + offset.y,
+    mob->position.z + offset.z);
+  guRotateRPY(&sheep_rotate[dl_no][sheep_num][part], 0, -mob->yaw, 0);
+}
+
+static void drawSheepPart(u8 sheep_num, u8 part, Vtx *verts) {
+  gSPMatrix(dlp++, OS_K0_TO_PHYSICAL(&sheep_translate[dl_no][sheep_num][part]),
+    G_MTX_MODELVIEW | G_MTX_LOAD | G_MTX_NOPUSH);
+  gSPMatrix(dlp++, OS_K0_TO_PHYSICAL(&sheep_rotate[dl_no][sheep_num][part]),
+    G_MTX_MODELVIEW | G_MTX_MUL | G_MTX_NOPUSH);
+  gSPVertex(dlp++, verts, 8, 0);
+  gSPDisplayList(dlp++, steve_box_display_list);
+}
+
+static void drawSheep(u8 sheep_num) {
+  Sheep *mob = &sheep[sheep_num];
+  float step = sinf(mob->walk_time) * 4.f;
+  float hurt = mob->hurt_time > 0 ?
+    sinf((PLAYER_ATTACK_DURATION - mob->hurt_time) * 180.f * M_DTOR) * 4.f : 0;
+
+  setSheepPartTransform(sheep_num, SHEEP_BODY, (Vector3) {hurt, 43, 0});
+  setSheepPartTransform(sheep_num, SHEEP_HEAD, (Vector3) {hurt, 43, -29});
+  setSheepPartTransform(sheep_num, SHEEP_FRONT_LEFT_LEG,
+    (Vector3) {-18 + hurt, 18 + step, -13});
+  setSheepPartTransform(sheep_num, SHEEP_FRONT_RIGHT_LEG,
+    (Vector3) {18 + hurt, 18 - step, -13});
+  setSheepPartTransform(sheep_num, SHEEP_BACK_LEFT_LEG,
+    (Vector3) {-18 + hurt, 18 - step, 13});
+  setSheepPartTransform(sheep_num, SHEEP_BACK_RIGHT_LEG,
+    (Vector3) {18 + hurt, 18 + step, 13});
+
+  drawSheepPart(sheep_num, SHEEP_BODY, sheep_body_verts);
+  drawSheepPart(sheep_num, SHEEP_HEAD, sheep_head_verts);
+  drawSheepPart(sheep_num, SHEEP_FRONT_LEFT_LEG, sheep_leg_verts);
+  drawSheepPart(sheep_num, SHEEP_FRONT_RIGHT_LEG, sheep_leg_verts);
+  drawSheepPart(sheep_num, SHEEP_BACK_LEFT_LEG, sheep_leg_verts);
+  drawSheepPart(sheep_num, SHEEP_BACK_RIGHT_LEG, sheep_leg_verts);
+}
+
+static void drawSheepForPlayer(u8 viewer_num) {
+  u8 sheep_num;
+  u8 visible = 0;
+
+  gSPTexture(dlp++, 0, 0, 0, G_TX_RENDERTILE, G_OFF);
+  gDPSetCombineMode(dlp++, G_CC_SHADE, G_CC_SHADE);
+  gSPClearGeometryMode(dlp++, G_CULL_BACK);
+  for (sheep_num = 0; sheep_num < MAX_SHEEP && visible < MAX_VISIBLE_SHEEP;
+      sheep_num++) {
+    if (sheep[sheep_num].active && pointVisibleToPlayer(viewer_num,
+        sheep[sheep_num].position, SHEEP_RENDER_DISTANCE)) {
+      drawSheep(sheep_num);
+      visible++;
+    }
+  }
+  gSPSetGeometryMode(dlp++, G_CULL_BACK);
+}
+
 static void drawOtherPlayers(u8 viewer_num) {
   u8 player_num;
 
@@ -1088,6 +1188,7 @@ void drawWorld() {
       gSPClearGeometryMode(dlp++, G_LIGHTING);
       drawFallingTrees(player_num);
       drawDroppedItems(player_num);
+      drawSheepForPlayer(player_num);
     }
     if (!cinematic && (active_player_count > 1 ||
         players[player_num].camera_mode == CAMERA_THIRD_PERSON)) {
@@ -1252,7 +1353,7 @@ static void drawHealth(u8 player_num) {
    the existing 16x16 block previews, keeping the HUD cheap enough for both
    split-screen players without introducing another texture atlas. */
 static void drawItemIcon(u8 item, u32 x, u32 y, u32 size) {
-  if ((item <= BLOCK_TYPE_COUNT || item == SAPLING) &&
+  if (ITEM_IS_VALID(item) &&
       preview_textures[item] != NULL) {
     loadTexture(preview_textures[item]);
     gSPTextureRectangle(dlp++, x << 2, y << 2,
@@ -1394,6 +1495,22 @@ static void drawInventoryFocus(u32 x, u32 y) {
     x + INVENTORY_SLOT_SIZE - 1, y + INVENTORY_SLOT_SIZE - 3);
 }
 
+/* While crafting, the last inventory slot remains the material source.  Its
+   cool outline distinguishes it from the active yellow cursor and the green
+   equipped hotbar slot without obscuring either icon. */
+static void drawInventorySource(u32 x, u32 y) {
+  gDPPipeSync(dlp++);
+  gDPSetCycleType(dlp++, G_CYC_FILL);
+  gDPSetRenderMode(dlp++, G_RM_NOOP, G_RM_NOOP2);
+  setHudFillColor(76, 172, 236);
+  gDPFillRectangle(dlp++, x + 2, y + 2, x + INVENTORY_SLOT_SIZE - 3, y + 2);
+  gDPFillRectangle(dlp++, x + 2, y + INVENTORY_SLOT_SIZE - 3,
+    x + INVENTORY_SLOT_SIZE - 3, y + INVENTORY_SLOT_SIZE - 3);
+  gDPFillRectangle(dlp++, x + 2, y + 3, x + 2, y + INVENTORY_SLOT_SIZE - 4);
+  gDPFillRectangle(dlp++, x + INVENTORY_SLOT_SIZE - 3, y + 3,
+    x + INVENTORY_SLOT_SIZE - 3, y + INVENTORY_SLOT_SIZE - 4);
+}
+
 static void drawInventory() {
   Player *player = &players[inventory_player];
   u8 craft_columns = player->crafting_table_open ? CRAFTING_TABLE_COLUMNS : PLAYER_CRAFTING_COLUMNS;
@@ -1432,8 +1549,14 @@ static void drawInventory() {
       drawInventorySlot(slot_x + column * INVENTORY_SLOT_SIZE, slot_y + row * INVENTORY_SLOT_SIZE,
         &player->inventory[index], row == INVENTORY_STORAGE_ROWS &&
         player->selected_hotbar_slot == column);
+    }
   }
-}
+
+  if (player->inventory_area == INVENTORY_AREA_CRAFTING) {
+    drawInventorySource(slot_x + (player->inventory_cursor % INVENTORY_COLUMNS) *
+      INVENTORY_SLOT_SIZE, slot_y + (player->inventory_cursor / INVENTORY_COLUMNS) *
+      INVENTORY_SLOT_SIZE);
+  }
 
   /* Draw the cursor last so every edge remains intact on the real RDP. */
   if (player->inventory_area == INVENTORY_AREA_CRAFTING) {

@@ -36,6 +36,8 @@ files.
   and then pulls into the nearby player. Tools are non-stackable, pickups are
   protected when the entity pool is full, and partial inventory transfers can
   no longer duplicate items.
+* Passive sheep wander nearby grassland. They never attack: a wooden sword
+  defeats one in two hits and releases a small wool pickup for upcoming beds.
 * Long frame hitches are clamped before physics simulation, preventing world
   generation or storage delays from pushing players through terrain.
 * Co-op deliberately uses a narrower view and no more than 24 visible columns
@@ -52,7 +54,7 @@ files.
 | Hold L + analog stick | Sprint |
 | Hold Z + analog stick | Look around |
 | C-up | Toggle first-person / third-person camera |
-| A / hold B | Use a crafting table or place / mine; tap B with a sword to attack a nearby player |
+| A / hold B | Use a crafting table or place / mine; tap B with a sword to attack a nearby sheep or player |
 | C-left / C-right | Cycle the selected hotbar block |
 | START | Open / close that player's inventory |
 | R | Jump |
@@ -69,13 +71,19 @@ pickaxe both mines them faster and gathers their cube. A wooden sword clears
 leaves quickly. In co-op, face a nearby player and tap **B** to swing: each
 hit removes two hearts and knocks the target back. A player who loses all ten
 hearts respawns at full health with their inventory intact. Equipped swords
-are visible in both first- and third-person views.
+are visible in both first- and third-person views. Passive sheep wander on
+nearby grass; face one and tap **B** twice with a wooden sword to receive one
+to three wool. Sheep do not fight back and respawn over time near players.
 
 Either player can press **START** to open their inventory. It has a 3-row
 storage grid, a selectable nine-slot hotbar, and a working 2x2 crafting area.
-Navigate with the analog stick, D-pad, or C-buttons. Use **A** to pick up/place
-a stack or take the output, and **B** to move one item at a time. One log makes
-four planks; two
+Navigate with the analog stick, D-pad, or C-buttons. For crafting, select a
+material stack, move left into the craft grid, and press **A** to place one
+directly from the blue-outlined source slot; **B** returns one to that slot.
+Press **A** on the output to craft directly into storage—there is no need to
+pick up and re-place the result. The labelled Hand slot remains available for
+moving whole stacks around the inventory: press **A** on an item slot to pick
+up or place a stack, or **B** to split one item. One log makes four planks; two
 vertical planks make four sticks; and four planks make a crafting table.
 Place a crafting table, look at it, then press **A** to open its 3x3 grid for
 wooden swords and wooden pickaxes. **START** also opens this grid while the

@@ -7,6 +7,7 @@
 #include "camera.h"
 #include "geometry.h"
 #include "items.h"
+#include "mobs.h"
 #include "trees.h"
 #include "storage.h"
 #include "audio.h"
@@ -142,6 +143,14 @@ static void selectHotbarSlot(Player *player, u8 slot) {
   player->held_block = player->inventory[player->inventory_cursor].item;
 }
 
+static void refreshHeldItem(Player *player) {
+  if (player->inventory_cursor >= INVENTORY_HOTBAR_START &&
+      player->inventory_cursor - INVENTORY_HOTBAR_START ==
+        player->selected_hotbar_slot) {
+    player->held_block = player->inventory[player->inventory_cursor].item;
+  }
+}
+
 u8 addItemToInventory(Player *player, u8 item, u8 count) {
   u8 slot;
   u8 remaining = count;
@@ -268,8 +277,9 @@ static void swapItemStacks(ItemStack *one, ItemStack *two) {
   *two = temporary;
 }
 
-/* A moves a complete stack.  B is the precise placement control needed for
-   patterns such as two planks over a stick without discarding the remainder. */
+/* The Hand slot keeps conventional inventory rearranging available: A swaps
+   full stacks and B splits a single item.  Crafting itself uses the direct
+   source-to-grid transfer below. */
 static void moveOneItem(ItemStack *target, ItemStack *carried) {
   if (carried->count > 0) {
     if (target->count == 0) {
@@ -294,14 +304,36 @@ static void moveOneItem(ItemStack *target, ItemStack *carried) {
   }
 }
 
+static u8 inventoryCanAccept(Player *player, u8 item, u8 count) {
+  u8 slot;
+  u8 remaining = count;
+  u8 max_stack = itemMaxStack(item);
+
+  for (slot = 0; slot < INVENTORY_SIZE && remaining > 0; slot++) {
+    ItemStack *stack = &player->inventory[slot];
+    if (stack->item == item && stack->count < max_stack) {
+      u8 room = max_stack - stack->count;
+      remaining -= remaining < room ? remaining : room;
+    }
+  }
+  for (slot = 0; slot < INVENTORY_SIZE && remaining > 0; slot++) {
+    if (player->inventory[slot].count == 0) {
+      remaining -= remaining < max_stack ? remaining : max_stack;
+    }
+  }
+  return remaining == 0;
+}
+
+/* Crafting results go straight into storage.  The old carried-item detour
+   made every craft require a second placement action and was especially
+   awkward on a controller. */
 static void craftOutput(Player *player) {
   ItemStack result;
   u16 used_slots;
   u8 slot;
 
   if (!getCraftRecipe(player, &result, &used_slots) ||
-      (player->carried_item.count > 0 && player->carried_item.item != result.item) ||
-      player->carried_item.count + result.count > itemMaxStack(result.item)) {
+      !inventoryCanAccept(player, result.item, result.count)) {
     return;
   }
   for (slot = 0; slot < CRAFTING_SIZE; slot++) {
@@ -312,8 +344,45 @@ static void craftOutput(Player *player) {
       }
     }
   }
-  player->carried_item.item = result.item;
-  player->carried_item.count += result.count;
+  addItemToInventory(player, result.item, result.count);
+}
+
+static u8 moveOneDirect(ItemStack *source, ItemStack *target) {
+  if (source->count == 0 ||
+      (target->count > 0 && (target->item != source->item ||
+        target->count >= itemMaxStack(target->item)))) {
+    return FALSE;
+  }
+  if (target->count == 0) {
+    target->item = source->item;
+  }
+  target->count++;
+  source->count--;
+  if (source->count == 0) {
+    source->item = AIR;
+  }
+  return TRUE;
+}
+
+/* The selected inventory slot remains the material source while the cursor
+   is in the crafting grid.  This keeps normal recipe entry to two direct
+   actions—select material, then place—rather than loading and emptying an
+   invisible hand slot for every ingredient. */
+static void moveCraftingItem(Player *player, u8 remove) {
+  ItemStack *crafting = &player->crafting[player->crafting_cursor];
+  ItemStack *inventory = &player->inventory[player->inventory_cursor];
+
+  if (player->carried_item.count > 0) {
+    if (remove) {
+      moveOneItem(crafting, &player->carried_item);
+    } else {
+      swapItemStacks(crafting, &player->carried_item);
+    }
+  } else if (remove) {
+    moveOneDirect(crafting, inventory);
+  } else {
+    moveOneDirect(inventory, crafting);
+  }
 }
 
 static void returnCraftingItems(Player *player) {
@@ -961,7 +1030,8 @@ static u8 updatePlayer(u8 player_num, float delta) {
         player->build_offset_z + player->target_z);
     }
   }
-  if ((cont->trigger & B_BUTTON) && swingSword(player_num)) {
+  if ((cont->trigger & B_BUTTON) &&
+      (swingSwordAtSheep(player_num) || swingSword(player_num))) {
     resetBreaking(player);
   } else {
     updateBreaking(player_num, delta);
@@ -1001,27 +1071,23 @@ void updatePlayers() {
     }
     if (inventory_cont->trigger & A_BUTTON) {
       if (player->inventory_area == INVENTORY_AREA_CRAFTING) {
-        swapItemStacks(&player->crafting[player->crafting_cursor], &player->carried_item);
+        moveCraftingItem(player, FALSE);
+        refreshHeldItem(player);
       } else if (player->inventory_area == INVENTORY_AREA_OUTPUT) {
         craftOutput(player);
       } else {
         swapItemStacks(&player->inventory[player->inventory_cursor], &player->carried_item);
-        if (player->inventory_cursor >= INVENTORY_HOTBAR_START &&
-            player->inventory_cursor - INVENTORY_HOTBAR_START == player->selected_hotbar_slot) {
-          player->held_block = player->inventory[player->inventory_cursor].item;
-        }
+        refreshHeldItem(player);
       }
       return;
     }
     if (inventory_cont->trigger & B_BUTTON) {
       if (player->inventory_area == INVENTORY_AREA_CRAFTING) {
-        moveOneItem(&player->crafting[player->crafting_cursor], &player->carried_item);
+        moveCraftingItem(player, TRUE);
+        refreshHeldItem(player);
       } else if (player->inventory_area == INVENTORY_AREA_ITEMS) {
         moveOneItem(&player->inventory[player->inventory_cursor], &player->carried_item);
-        if (player->inventory_cursor >= INVENTORY_HOTBAR_START &&
-            player->inventory_cursor - INVENTORY_HOTBAR_START == player->selected_hotbar_slot) {
-          player->held_block = player->inventory[player->inventory_cursor].item;
-        }
+        refreshHeldItem(player);
       }
       return;
     }
@@ -1152,6 +1218,7 @@ void updatePlayers() {
   }
   updateTrees(delta);
   updateDroppedItems(delta);
+  updateMobs(delta);
 
   if (saving_available) {
     for (i = 0; i < active_player_count; i++) {

@@ -13,7 +13,10 @@
 #define WOOD_SWORD    12
 #define WOOD_PICKAXE  13
 #define SAPLING       14
-#define ITEM_TYPE_COUNT SAPLING
+/* Block ID 15 is water, so keep it out of the inventory namespace. */
+#define WOOL           16
+#define ITEM_TYPE_COUNT WOOL
+#define ITEM_IS_VALID(item) ((item) <= SAPLING || (item) == WOOL)
 
 typedef struct {
   Vector3 position;

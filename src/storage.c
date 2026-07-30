@@ -387,7 +387,7 @@ static void restoreSavedInventory(Player *player, SavedPlayer *saved) {
 
   for (slot = 0; slot < INVENTORY_SIZE; slot++) {
     ItemStack stack = saved->inventory[slot];
-    if (stack.item > ITEM_TYPE_COUNT || stack.item == AIR) {
+    if (!ITEM_IS_VALID(stack.item) || stack.item == AIR) {
       stack.item = AIR;
       stack.count = 0;
     } else if (stack.count > itemMaxStack(stack.item)) {
@@ -397,7 +397,7 @@ static void restoreSavedInventory(Player *player, SavedPlayer *saved) {
   }
   for (slot = 0; slot < CRAFTING_SIZE; slot++) {
     ItemStack stack = saved->crafting[slot];
-    if (stack.item > ITEM_TYPE_COUNT || stack.item == AIR) {
+    if (!ITEM_IS_VALID(stack.item) || stack.item == AIR) {
       stack.item = AIR;
       stack.count = 0;
     } else if (stack.count > itemMaxStack(stack.item)) {
@@ -406,7 +406,7 @@ static void restoreSavedInventory(Player *player, SavedPlayer *saved) {
     player->crafting[slot] = stack;
   }
   player->carried_item = saved->carried_item;
-  if (player->carried_item.item > ITEM_TYPE_COUNT ||
+  if (!ITEM_IS_VALID(player->carried_item.item) ||
       player->carried_item.item == AIR) {
     player->carried_item.item = AIR;
     player->carried_item.count = 0;

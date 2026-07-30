@@ -75,13 +75,14 @@ static char *inventory_text[] = {
   "Inventory",
   "Craft",
   "Output",
+  "Hand",
   "Items",
-  "A: Move Stack",
-  "B: Move One",
+  "A: Place 1 / Craft",
+  "B: Remove 1 / Split",
   "D Pad C Stick: Move",
   "Hold a direction: Repeat",
-  "Yellow Cursor Green Equipped",
-  "Start: Close"
+  "Blue Source Green Equipped",
+  "Start: Close / Return Mats"
 };
 
 static Gfx menu_setup_display_list[] = {
@@ -493,9 +494,11 @@ void drawMenu() {
         } else if (current_screen == INVENTORY && i == 2) {
           drawChar(chr, x + (players[inventory_player].crafting_table_open ? 104 : 86), 43);
         } else if (current_screen == INVENTORY && i == 3) {
+          drawChar(chr, x + (players[inventory_player].crafting_table_open ? 104 : 86), 94);
+        } else if (current_screen == INVENTORY && i == 4) {
           drawChar(chr, x + (players[inventory_player].crafting_table_open ? 145 : 115), 43);
-        } else if (current_screen == INVENTORY && i > 3) {
-          drawChar(chr, x + 42, (i - 4) * 10 + 142);
+        } else if (current_screen == INVENTORY && i > 4) {
+          drawChar(chr, x + 42, (i - 5) * 10 + 142);
         } else {
           drawChar(chr, x + SCREEN_WD / 2 - center, i * 12 + y_start);
         }

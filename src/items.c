@@ -27,10 +27,10 @@ const char *itemName(u8 item) {
   static const char *names[] = {
     "Empty", "Dirt", "Stone", "Grass", "Cobblestone", "Sand", "Log",
     "Leaves", "Planks", "Bricks", "Crafting Table", "Stick",
-    "Wood Sword", "Wood Pickaxe", "Sapling"
+    "Wood Sword", "Wood Pickaxe", "Sapling", "Water", "Wool"
   };
 
-  return item <= ITEM_TYPE_COUNT ? names[item] : "Unknown";
+  return ITEM_IS_VALID(item) ? names[item] : "Unknown";
 }
 
 u8 rollLeafDrop(u8 *item) {
