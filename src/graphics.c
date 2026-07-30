@@ -20,7 +20,6 @@
 #define HELD_PREVIEW_SIZE 32
 #define INVENTORY_SLOT_SIZE 18
 #define INVENTORY_ICON_SIZE 14
-#define SKY_BANDS 6
 #define CELESTIAL_DISTANCE_SOLO 11000.f
 #define CELESTIAL_DISTANCE_COOP 7000.f
 #define SUN_SIZE 430.f
@@ -45,6 +44,15 @@ static Gfx empty_column_display_list[] = {
 
 static Mtx c_models[NUM_BLOCKS / BLOCKS_PER_CHUNK];
 static Mtx b_models[CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE];
+
+/* Water keeps the normal block footprint but leaves a small lip below an
+ * adjacent shore.  Only top faces need a special mesh, so this costs 4 KiB
+ * rather than duplicating every terrain quad. */
+#define WATER_SURFACE_HEIGHT (BLOCK_SIZE - BLOCK_SIZE / 8)
+#define WATER_TOP_QUAD_ADDR(width, height) \
+  (water_top_verts + (((width) * CHUNK_SIZE + (height)) * 4))
+static Vtx water_top_verts[CHUNK_SIZE * CHUNK_SIZE * 4]
+  __attribute__((aligned(8)));
 
 /* Lighting and sky geometry are both frame-buffered just like the camera:
    the RSP can still be drawing the previous frame when the CPU prepares the
@@ -276,35 +284,11 @@ static void setWorldLight(u8 player_num) {
 
 static void setPreviewLight() {
   Lights0 *lights = &preview_lights[dl_no];
-  SkyColor preview_ambient = {155, 174, 196};
+  SkyColor ambient = {215, 215, 215};
   SkyColor no_direct_light = {0, 0, 0};
 
-  /* The loading orbit can expose almost every column at once.  It keeps a
-     pleasant, evenly lit terrain preview, but deliberately has no moving
-     directional light for the RSP to evaluate on each submitted vertex. */
-  setAmbientColor(&lights->a, preview_ambient);
+  setAmbientColor(&lights->a, ambient);
   setLightColor(&lights->l[0], no_direct_light);
-}
-
-static void drawSkyGradient(u8 player_num) {
-  u8 band;
-  u32 x = playerViewportX(player_num);
-  u32 y = playerViewportY(player_num);
-  u32 width = playerViewportWidth();
-  u32 height = playerViewportHeight();
-
-  gDPSetCycleType(dlp++, G_CYC_FILL);
-  gDPSetRenderMode(dlp++, G_RM_NOOP, G_RM_NOOP2);
-  for (band = 0; band < SKY_BANDS; band++) {
-    SkyColor color = dayCycleSkyColor((band * 255 + 127) / SKY_BANDS);
-    u32 top = y + band * height / SKY_BANDS;
-    u32 bottom = y + (band + 1) * height / SKY_BANDS - 1;
-    u16 packed = GPACK_RGBA5551(color.r, color.g, color.b, 1);
-
-    gDPSetFillColor(dlp++, (packed << 16) | packed);
-    gDPFillRectangle(dlp++, x, top, x + width - 1, bottom);
-  }
-  gDPPipeSync(dlp++);
 }
 
 static void setCelestialVertex(Vtx *vertex, Vector3 point, u16 s, u16 t) {
@@ -506,7 +490,8 @@ void loadTexture(Texture *texture) {
   }
 }
 
-void makeQuadDL(u16 chunk, u8 bx, u8 by, u8 bz, u8 width, u8 height, u8 face) {
+void makeQuadDL(u16 chunk, u8 bx, u8 by, u8 bz, u8 width, u8 height,
+    u8 face, u8 is_water) {
   u32 b = bx * CHUNK_SIZE * CHUNK_SIZE + by * CHUNK_SIZE + bz;
 
   /* Reserve one final command for the column's EndDisplayList.  A maximally
@@ -520,21 +505,23 @@ void makeQuadDL(u16 chunk, u8 bx, u8 by, u8 bz, u8 width, u8 height, u8 face) {
     G_MTX_MODELVIEW|G_MTX_LOAD|G_MTX_NOPUSH);
   gSPMatrix(column_dlp++,OS_K0_TO_PHYSICAL(b_models + b),
     G_MTX_MODELVIEW|G_MTX_MUL|G_MTX_NOPUSH);
-  gSPVertex(column_dlp++, QUAD_ADDR(face, width, height), 4, 0);
+  gSPVertex(column_dlp++, is_water && face == TOP ?
+    WATER_TOP_QUAD_ADDR(width, height) : QUAD_ADDR(face, width, height), 4, 0);
   gSP1Quadrangle(column_dlp++, 3, 2, 1, 0, 0);
 }
 
-void makeQuadDLRST(u16 chunk, u8 br, u8 bs, u8 bt, u8 axes, u8 width, u8 height, u8 face) {
+void makeQuadDLRST(u16 chunk, u8 br, u8 bs, u8 bt, u8 axes, u8 width,
+    u8 height, u8 face, u8 is_water) {
   if (face == NONE) {
     return;
   }
 
   if (axes == ZXY) {
-    makeQuadDL(chunk, bs, bt, br, width, height, face);
+    makeQuadDL(chunk, bs, bt, br, width, height, face, is_water);
   } else if (axes == XZY) {
-    makeQuadDL(chunk, br, bt, bs, width, height, face);
+    makeQuadDL(chunk, br, bt, bs, width, height, face, is_water);
   } else if (axes == YXZ) {
-    makeQuadDL(chunk, bs, br, bt, width, height, face);
+    makeQuadDL(chunk, bs, br, bt, width, height, face, is_water);
   }
 }
 
@@ -546,7 +533,8 @@ void makeChunkAxisDL(DualQuadList *axis_quads, u16 chunk, u8 axes, u8 face1, u8 
     for (i = 0; i < both_quads->n_front + both_quads->n_back; i++) {
       if (both_quads->quads[i].block == block) {
         makeQuadDLRST(chunk, br, both_quads->quads[i].bs, both_quads->quads[i].bt, axes,
-          both_quads->quads[i].width, both_quads->quads[i].height, i < both_quads->n_front? face1 : face2);
+          both_quads->quads[i].width, both_quads->quads[i].height,
+          i < both_quads->n_front ? face1 : face2, block == WATER);
       }
     }
   }
@@ -645,6 +633,21 @@ void drawTextured(u8 texture, u8 player_num) {
       }
     }
   }
+}
+
+static void setWaterTopVertex(Vtx *vertex, s16 x, s16 z, s16 s, s16 t) {
+  vertex->v.ob[0] = x;
+  vertex->v.ob[1] = WATER_SURFACE_HEIGHT;
+  vertex->v.ob[2] = z;
+  vertex->v.flag = 0;
+  vertex->v.tc[0] = s;
+  vertex->v.tc[1] = t;
+  /* Water is rendered unlit so its atlas colours remain stable through the
+   * day/night render states.  White modulation keeps the blue texture intact. */
+  vertex->v.cn[0] = 255;
+  vertex->v.cn[1] = 255;
+  vertex->v.cn[2] = 255;
+  vertex->v.cn[3] = 255;
 }
 
 static void setStevePartTransform(u8 player_num, u8 part, Vector3 local_offset,
@@ -918,15 +921,13 @@ void drawWorld() {
       gSPViewport(dlp++, &full_viewport);
       gDPSetScissor(dlp++, G_SC_NON_INTERLACE, 0, 0, SCREEN_WD, SCREEN_HT);
     }
-    if (!cinematic) {
-      drawSkyGradient(player_num);
-    }
     gSPDisplayList(dlp++, draw_setup_display_list);
     loadCameraMatrices(player_num);
     if (!cinematic) {
       drawCelestialBodies(player_num);
     }
     gSPSetGeometryMode(dlp++, G_CULL_BACK | G_LIGHTING);
+    gDPSetCombineMode(dlp++, G_CC_MODULATERGB, G_CC_MODULATERGB);
     if (cinematic) {
       setPreviewLight();
       gSPSetLights0(dlp++, preview_lights[dl_no]);
@@ -935,8 +936,15 @@ void drawWorld() {
       gSPSetLights1(dlp++, world_lights[dl_no][player_num]);
     }
     for (i = 0; i < NUM_TEXTURES; i++) {
+      if (textures[i] == &water_spec) {
+        /* Water's dedicated vertices carry white RGB, not normals. */
+        gSPClearGeometryMode(dlp++, G_LIGHTING);
+      }
       loadTexture(textures[i]->texture);
       drawTextured(i, player_num);
+      if (textures[i] == &water_spec) {
+        gSPSetGeometryMode(dlp++, G_LIGHTING);
+      }
     }
     if (!cinematic) {
       gSPClearGeometryMode(dlp++, G_LIGHTING);
@@ -1520,6 +1528,22 @@ void initGraphics() {
       for (z = 0; z < CHUNK_SIZE; z++) {
         guTranslate(&(b_models[x * CHUNK_SIZE * CHUNK_SIZE + y * CHUNK_SIZE + z]), x * BLOCK_SIZE, y * BLOCK_SIZE, z * BLOCK_SIZE);
       }
+    }
+  }
+
+  for (x = 0; x < CHUNK_SIZE; x++) {
+    for (z = 0; z < CHUNK_SIZE; z++) {
+      Vtx *vertices = WATER_TOP_QUAD_ADDR(x, z);
+      s16 width = (x + 1) * BLOCK_SIZE;
+      s16 depth = (z + 1) * BLOCK_SIZE;
+      s16 texture_width = (x + 1) * 1024;
+      s16 texture_depth = (z + 1) * 1024;
+
+      setWaterTopVertex(&vertices[0], 0, 0, 0, 0);
+      setWaterTopVertex(&vertices[1], width, 0, texture_width, 0);
+      setWaterTopVertex(&vertices[2], width, depth, texture_width,
+        texture_depth);
+      setWaterTopVertex(&vertices[3], 0, depth, 0, texture_depth);
     }
   }
 

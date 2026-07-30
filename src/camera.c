@@ -13,7 +13,7 @@
 #define FOUR_PLAYER_FOV_RATIO ((float) (SCREEN_WD / 2) / (float) (SCREEN_HT / 2))
 #define NUM_CULL_LINES 4
 #define ALL_ACCEPT ((1 << NUM_CULL_LINES) - 1)
-#define SOLO_MAX_VISIBLE_COLUMNS 160
+#define SOLO_MAX_VISIBLE_COLUMNS 128
 #define COOP_MAX_VISIBLE_COLUMNS 24
 #define FOUR_PLAYER_MAX_VISIBLE_COLUMNS 8
 #define THIRD_PERSON_DISTANCE 176.f
@@ -21,9 +21,9 @@
 #define THIRD_PERSON_SAMPLES 12
 #define THIRD_PERSON_AVATAR_MIN_DISTANCE 40.f
 #define LOADING_PREVIEW_FRAMES 150
-#define LOADING_ORBIT_RADIUS 6400.f
-#define LOADING_CAMERA_HEIGHT 4400.f
-#define LOADING_CAMERA_BOB 320.f
+#define LOADING_ORBIT_RADIUS 5600.f
+#define LOADING_CAMERA_HEIGHT 3850.f
+#define LOADING_CAMERA_BOB 280.f
 #define LOADING_WORLD_CENTER (MAX_X * BLOCK_SIZE / 2.f)
 
 typedef struct {
@@ -129,7 +129,7 @@ void initCamera() {
 
   for (frame = 0; frame < NUM_DISPLAY_LISTS; frame++) {
     guPerspective(&projection_matrix[frame][0], &perspective_norm[frame][0],
-      FOV_Y, FOV_RATIO, 10, 16000, 1.0);
+      FOV_Y, FOV_RATIO, 10, 14000, 1.0);
     guPerspective(&projection_matrix[frame][CAMERA_VIEW_TWO_PLAYER], &perspective_norm[frame][CAMERA_VIEW_TWO_PLAYER],
       FOV_Y_COOP, COOP_FOV_RATIO, 10, 8000, 1.0);
     guPerspective(&projection_matrix[frame][CAMERA_VIEW_FOUR_PLAYER], &perspective_norm[frame][CAMERA_VIEW_FOUR_PLAYER],
@@ -208,7 +208,7 @@ static void updateVisibleColumnsFor(u8 player_num, Player *player,
       visible_columns[player_num][cx * CHUNKS_Z + cz] = (s1 | s2 | s3 | s4) == ALL_ACCEPT;
 
       /* A radius limit prevents multiplayer cameras from turning co-op into
-         a worst-case multi-RSP transform.  The world is sixteen chunks wide. */
+         a worst-case multi-RSP transform. The world is fourteen chunks wide. */
       dx = cx * CHUNK_SIZE + CHUNK_SIZE / 2 -
         camera_position.x / BLOCK_SIZE;
       dz = cz * CHUNK_SIZE + CHUNK_SIZE / 2 -
@@ -220,7 +220,7 @@ static void updateVisibleColumnsFor(u8 player_num, Player *player,
     }
   }
 
-  /* Display submission is bounded even for the loading orbit: 160 columns
+  /* Display submission is bounded even for the loading orbit: 128 columns
      x 11 texture lists stays below the 3,072-command solo list, while the
      multiplayer caps keep all viewports within the same budget. */
   while (visible_count > max_visible_columns) {
@@ -282,7 +282,7 @@ void updateLoadingCamera() {
   float low_orbit = sinf(angle * .5f * M_DTOR);
   Vector3 camera_position;
 
-  /* The orbit looks inward across the centre of the 128x128-block map. Its
+  /* The orbit looks inward across the centre of the 112x112-block map. Its
      radius and height keep the complete landscape in a 60-degree view
      without using a separate, low-detail world model. */
   loading_camera.position.x = LOADING_WORLD_CENTER +

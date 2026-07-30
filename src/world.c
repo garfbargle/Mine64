@@ -34,14 +34,14 @@ static int terrainHeight(int x, int z) {
   float continents = perlin2d(x, z, 0.010f, 4);
   float rolling = perlin2d(x + 213, z - 97, 0.045f, 3);
   float mountain_mask = perlin2d(x - 401, z + 179, 0.017f, 3);
-  float ridges = ridgeNoise(x + 67, z - 311, 0.034f);
+  float ridges = ridgeNoise(x + 67, z - 311, 0.026f);
   int height;
 
   /* Broad continents supply the silhouette while ridges only become tall in
    * mountain regions.  This leaves room for beaches and low grasslands. */
   height = 5 + (int)(continents * 11.0f) + (int)((rolling - 0.5f) * 5.0f);
-  if (mountain_mask > 0.51f) {
-    height += (int)((mountain_mask - 0.51f) * ridges * 40.0f);
+  if (mountain_mask > 0.58f) {
+    height += (int)((mountain_mask - 0.58f) * ridges * 85.0f);
   }
 
   return clampHeight(height);
@@ -201,7 +201,11 @@ void initWorld() {
       biome = perlin2d(x + 883, z - 521, 0.025f, 3);
       slope = absolute((float)(terrainHeight(x + 1, z) - terrainHeight(x - 1, z))) +
               absolute((float)(terrainHeight(x, z + 1) - terrainHeight(x, z - 1)));
-      do_sand = water_level >= 0 || height <= SEA_LEVEL + 2 || biome < 0.38f;
+      /* Sand belongs at shorelines and a few shallow lowland patches.  Do
+       * not let a broad biome signal turn hills or mountain shoulders into
+       * implausible vertical sand stacks. */
+      do_sand = height <= SEA_LEVEL + 1 ||
+        (height <= SEA_LEVEL + 3 && biome < 0.42f);
       exposed_stone = height > 21 || slope >= 5;
       dirt_depth = 3 + (int)(biome * 2.0f);
 

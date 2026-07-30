@@ -27,6 +27,12 @@ typedef struct {
   u8 status;
 } Scanline;
 
+static u8 blocksOcclude(u8 block, u8 cover_block) {
+  /* Water is passable.  A solid face bordering it must remain in the mesh so
+   * the player cannot see through a shoreline or cave wall while swimming. */
+  return cover_block != AIR && !(block != WATER && cover_block == WATER);
+}
+
 void setFront(Front *front, u8 lower, u8 upper, u8 start, u8 block) {
   front->lower = lower;
   front->upper = upper;
@@ -103,7 +109,8 @@ void droppingStep(Scanline *scan, QuadList *quads, u8 bs, u8 bt, u8 block, u8 co
     scan->status = NOT_VISIBLE;
   }
 
-  if (scan->fi < scan->n_fronts && bt >= scan->fronts[scan->fi].lower && scan->status != OBSTRUCTED && !cover_block) {
+  if (scan->fi < scan->n_fronts && bt >= scan->fronts[scan->fi].lower &&
+      scan->status != OBSTRUCTED && !blocksOcclude(block, cover_block)) {
     if (block == scan->fronts[scan->fi].block) {
       scan->status = KEEP;
     } else {
@@ -161,7 +168,7 @@ void creationStep(Scanline *scan, u8 bs, u8 bt, u8 block, u8 cover_block, u8 spl
   if (scan->fi < scan->n_fronts && bt >= scan->fronts[scan->fi].lower) {
     endFront(scan, bt, bs);
   } else {
-    if (block && !cover_block) {
+    if (block && !blocksOcclude(block, cover_block)) {
       if (block != scan->block) {
         endFront(scan, bt, bs);
       }

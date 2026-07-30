@@ -95,8 +95,9 @@ recommended deployment path:
 The menu path is `/Games/Mine64.n64`. The prior ROM is preserved as
 `/Games/Mine64_original.64`. The former 64x64-world saves
 (`mine64/world_*.m64`) are left alone. The
-96x96-world saves (`mine64/world_large_*.m64`) are also preserved. This
-128x128-world build uses `mine64/world_128_*.m64`, so saves cannot be
+96x96-world saves (`mine64/world_large_*.m64`) and 128x128-world saves
+(`mine64/world_128_*.m64`) are also preserved. This 112x112-world build uses
+`mine64/world_112_*.m64`, so saves cannot be
 misread with a different packed-world length. Saves are stored on the
 cartridge SD card when libcart detects a supported flash cartridge.
 
@@ -263,7 +264,7 @@ within the stock console's 4 MiB RDRAM; an Expansion Pak is not required.
 
 ## Technical Details
 
-* The world consists of a 16x16 grid of "columns", each split into 4 vertical chunks of 8x8x8 blocks each (a 128x32x128-block world).
+* The world consists of a 14x14 grid of "columns", each split into 4 vertical chunks of 8x8x8 blocks each (a 112x32x112-block world).
 * For each chunk a greedy scanning algorithm merges adjacent block faces with the same texture,
 to reduce the number of quads that need to be rendered.
 * Greedy geometry is held only for the four chunks in the column currently

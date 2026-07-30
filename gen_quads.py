@@ -36,9 +36,8 @@ tex_coords = [[0, 0],
               [1, 1],
               [0, 1]]
 
-# These are RSP lighting normals, not baked RGB shades.  Keeping them in the
-# generated vertex table lets a single directional light animate every face
-# without touching world geometry or rebuilding any display lists.
+# RSP lighting normals.  They let the gameplay sun move across block faces
+# without touching world geometry or rebuilding display lists.
 front_normal  = [0, 0, 127]
 left_normal   = [127, 0, 0]
 back_normal   = [0, 0, -127]
