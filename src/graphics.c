@@ -561,7 +561,19 @@ static void beginColumnArenaBuild(u8 arena) {
   column_display_list_full = FALSE;
 }
 
-void makeQuadDL(u16 chunk, u8 bx, u8 by, u8 bz, u8 width, u8 height,
+static void resetColumnArenaBuild(u8 arena) {
+  u16 column;
+  u8 texture;
+
+  beginColumnArenaBuild(arena);
+  for (texture = 0; texture < NUM_TEXTURES; texture++) {
+    for (column = 0; column < CHUNKS_X * CHUNKS_Z; column++) {
+      column_starts[arena][texture][column] = empty_column_display_list;
+    }
+  }
+}
+
+static void makeQuadDL(u16 chunk, u8 bx, u8 by, u8 bz, u8 width, u8 height,
     u8 face, u8 is_water) {
   u32 b = bx * CHUNK_SIZE * CHUNK_SIZE + by * CHUNK_SIZE + bz;
 
@@ -581,7 +593,7 @@ void makeQuadDL(u16 chunk, u8 bx, u8 by, u8 bz, u8 width, u8 height,
   gSP1Quadrangle(column_dlp++, 3, 2, 1, 0, 0);
 }
 
-void makeQuadDLRST(u16 chunk, u8 br, u8 bs, u8 bt, u8 axes, u8 width,
+static void makeQuadDLRST(u16 chunk, u8 br, u8 bs, u8 bt, u8 axes, u8 width,
     u8 height, u8 face, u8 is_water) {
   if (face == NONE) {
     return;
@@ -596,7 +608,8 @@ void makeQuadDLRST(u16 chunk, u8 br, u8 bs, u8 bt, u8 axes, u8 width,
   }
 }
 
-void makeChunkAxisDL(DualQuadList *axis_quads, u16 chunk, u8 axes, u8 face1, u8 face2, u8 block) {
+static void makeChunkAxisDL(DualQuadList *axis_quads, u16 chunk, u8 axes,
+    u8 face1, u8 face2, u8 block) {
   u8 br, i;
   DualQuadList *both_quads;
   for (br = 0; br < CHUNK_SIZE; br++) {
@@ -611,20 +624,19 @@ void makeChunkAxisDL(DualQuadList *axis_quads, u16 chunk, u8 axes, u8 face1, u8 
   }
 }
 
-void makeColumnDL(u8 cx, u8 cz, u8 texture) {
+static u8 makeColumnDL(u8 cx, u8 cz, u8 texture, Gfx **new_start) {
   u8 cy, i;
   u16 chunk;
+  Gfx *texture_start;
   ChunkQuads *c_quads;
   FaceSpec *faces = textures[texture]->faces;
 
   if (column_display_list_full ||
       columnArenaFree() < 1) {
     column_display_list_full = TRUE;
-    column_starts[column_build_arena][texture][cx * CHUNKS_Z + cz] =
-      empty_column_display_list;
-    return;
+    return FALSE;
   }
-  column_starts[column_build_arena][texture][cx * CHUNKS_Z + cz] = column_dlp;
+  texture_start = column_dlp;
 
   for (cy = 0; cy < CHUNKS_Y; cy++) {
     chunk = cx * CHUNKS_Y * CHUNKS_Z + cy * CHUNKS_Z + cz;
@@ -642,21 +654,50 @@ void makeColumnDL(u8 cx, u8 cz, u8 texture) {
     }
   }
 
+  if (column_display_list_full) {
+    return FALSE;
+  }
+
+  if (column_dlp == texture_start) {
+    /* Most columns use only a subset of the texture bank. Sharing one empty
+       list saves an EndDisplayList command for every absent material. */
+    *new_start = empty_column_display_list;
+    return TRUE;
+  }
+
   gSPEndDisplayList(column_dlp++);
+  *new_start = texture_start;
+  return TRUE;
 }
 
-static void makeColumnDisplayLists(u8 cx, u8 cz) {
+static u8 makeColumnDisplayLists(u8 cx, u8 cz) {
   u8 texture;
+  u16 column = cx * CHUNKS_Z + cz;
+  Gfx *column_start = column_dlp;
+  Gfx *new_starts[NUM_TEXTURES];
 
+  /* Do not publish any new pointer until every material in the replacement
+     column fits. Previous RSP tasks can keep reading the old immutable lists,
+     and an overflow can safely roll this unpublished append back. */
   makeColumnGeometry(cx, cz);
   for (texture = 0; texture < NUM_TEXTURES; texture++) {
-    makeColumnDL(cx, cz, texture);
+    if (!makeColumnDL(cx, cz, texture, &new_starts[texture])) {
+      column_dlp = column_start;
+      column_display_list_full = TRUE;
+      return FALSE;
+    }
   }
+  for (texture = 0; texture < NUM_TEXTURES; texture++) {
+    column_starts[column_build_arena][texture][column] =
+      new_starts[texture];
+  }
+  return TRUE;
 }
 
 void makeWorldDisplayLists() {
   u8 cx, cz;
   u16 column;
+  u8 build_complete = TRUE;
 
   /* This is a complete mesh rebuild, not an incremental block edit.  World
      previews can rebuild several slots back-to-back, so start from the
@@ -668,10 +709,13 @@ void makeWorldDisplayLists() {
   for (column = 0; column < CHUNKS_X * CHUNKS_Z; column++) {
     dirty_columns[column] = FALSE;
   }
-  beginColumnArenaBuild(active_column_arena);
-  for (cx = 0; cx < CHUNKS_X; cx++) {
+  resetColumnArenaBuild(active_column_arena);
+  for (cx = 0; cx < CHUNKS_X && build_complete; cx++) {
     for (cz = 0; cz < CHUNKS_Z; cz++) {
-      makeColumnDisplayLists(cx, cz);
+      if (!makeColumnDisplayLists(cx, cz)) {
+        build_complete = FALSE;
+        break;
+      }
     }
   }
   column_arena_ends[active_column_arena] = column_dlp;
@@ -717,18 +761,11 @@ static u8 takeDirtyColumn(u8 *cx, u8 *cz) {
 }
 
 static void startColumnCompaction(void) {
-  u16 index;
-
-  /* Existing dirty marks are already represented in the world array.  The
-   * inactive arena is built from that latest state; only edits arriving while
-   * compaction is in progress need a later incremental replacement. */
-  for (index = 0; index < CHUNKS_X * CHUNKS_Z; index++) {
-    dirty_columns[index] = FALSE;
-  }
-  dirty_column_cursor = 0;
+  /* Keep dirty marks until a complete replacement arena is active. If this
+     rebuild cannot fit, the old arena remains valid and no edit is forgotten. */
   compaction_column_cursor = 0;
   compacting_columns = TRUE;
-  beginColumnArenaBuild(active_column_arena ^ 1);
+  resetColumnArenaBuild(active_column_arena ^ 1);
 }
 
 static void processColumnDisplayListUpdates(int can_reclaim_mesh_arena) {
@@ -739,7 +776,12 @@ static void processColumnDisplayListUpdates(int can_reclaim_mesh_arena) {
         compaction_column_cursor < CHUNKS_X * CHUNKS_Z; budget++) {
       u8 cx = compaction_column_cursor / CHUNKS_Z;
       u8 cz = compaction_column_cursor % CHUNKS_Z;
-      makeColumnDisplayLists(cx, cz);
+      if (!makeColumnDisplayLists(cx, cz)) {
+        /* Never expose a partially rebuilt arena. Rendering continues from
+           the complete active arena while a later safe pass can retry. */
+        compacting_columns = FALSE;
+        return;
+      }
       compaction_column_cursor++;
     }
     if (compaction_column_cursor == CHUNKS_X * CHUNKS_Z) {
@@ -767,7 +809,15 @@ static void processColumnDisplayListUpdates(int can_reclaim_mesh_arena) {
     if (!takeDirtyColumn(&cx, &cz)) {
       break;
     }
-    makeColumnDisplayLists(cx, cz);
+    if (!makeColumnDisplayLists(cx, cz)) {
+      /* takeDirtyColumn clears the mark; restore it because the live column
+         pointers were deliberately left unchanged on failure. */
+      markColumnDirty(cx, cz);
+      if (can_reclaim_mesh_arena) {
+        startColumnCompaction();
+      }
+      break;
+    }
     column_arena_ends[active_column_arena] = column_dlp;
     if (column_display_list_full || columnArenaFree() < MESH_COMPACTION_RESERVE) {
       break;
