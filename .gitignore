@@ -9,6 +9,7 @@
 /assets/audio/sfx/*.wav
 /assets/audio/**/*.o
 /mine64-audio.out
+/mine64.out
 __pycache__/
 *.sh
 !toolchain/
