@@ -11,7 +11,10 @@
 #define HUD_DISPLAY_LIST_SIZE 2048
 /* World, targeting, and HUD now share one RSP task.  Leave deliberate headroom
  * over the former three independent command buffers. */
-#define FRAME_DISPLAY_LIST_SIZE 6656
+/* The cinematic preview can submit up to 96 columns across 16 texture
+ * passes. Keep a generous fixed command margin so the loading orbit and its
+ * overlay cannot scribble past the frame task on real hardware. */
+#define FRAME_DISPLAY_LIST_SIZE 8192
 
 #define BLOCK_SIZE 64
 

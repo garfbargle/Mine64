@@ -692,28 +692,20 @@ static void beginColumnArenaBuild(u8 arena) {
 }
 
 static void makeQuadDL(u16 chunk, u8 bx, u8 by, u8 bz, u8 width, u8 height,
-    u8 face, u8 is_water, u8 *chunk_matrix_loaded) {
+    u8 face, u8 is_water) {
   u32 b = bx * CHUNK_SIZE * CHUNK_SIZE + by * CHUNK_SIZE + bz;
-  u8 commands = *chunk_matrix_loaded ? 3 : 4;
 
   /* Reserve one final command for the column's EndDisplayList.  A maximally
      fragmented player-built chunk can exceed the normal greedy-mesh budget;
      dropping only excess faces is far safer than overwriting adjacent RAM. */
-  if (columnArenaFree() < commands + 1) {
+  if (columnArenaFree() < 6) {
     column_display_list_full = TRUE;
     return;
   }
-  /*
-   * All faces of this texture in the chunk share its world transform.  Load
-   * that matrix once, then change only the small block-local translation for
-   * each greedy quad. This removes one RSP command from every additional face
-   * in the group and materially stretches the fixed terrain arena.
-   */
-  if (!*chunk_matrix_loaded) {
-    gSPMatrix(column_dlp++,OS_K0_TO_PHYSICAL(c_models + chunk),
-      G_MTX_MODELVIEW|G_MTX_LOAD|G_MTX_NOPUSH);
-    *chunk_matrix_loaded = TRUE;
-  }
+  /* b_models is a relative transform. Reload the chunk transform for every
+     quad so local translations never accumulate across a display list. */
+  gSPMatrix(column_dlp++,OS_K0_TO_PHYSICAL(c_models + chunk),
+    G_MTX_MODELVIEW|G_MTX_LOAD|G_MTX_NOPUSH);
   gSPMatrix(column_dlp++,OS_K0_TO_PHYSICAL(b_models + b),
     G_MTX_MODELVIEW|G_MTX_MUL|G_MTX_NOPUSH);
   gSPVertex(column_dlp++, is_water && face == TOP ?
@@ -722,25 +714,22 @@ static void makeQuadDL(u16 chunk, u8 bx, u8 by, u8 bz, u8 width, u8 height,
 }
 
 static void makeQuadDLRST(u16 chunk, u8 br, u8 bs, u8 bt, u8 axes, u8 width,
-    u8 height, u8 face, u8 is_water, u8 *chunk_matrix_loaded) {
+    u8 height, u8 face, u8 is_water) {
   if (face == NONE) {
     return;
   }
 
   if (axes == ZXY) {
-    makeQuadDL(chunk, bs, bt, br, width, height, face, is_water,
-      chunk_matrix_loaded);
+    makeQuadDL(chunk, bs, bt, br, width, height, face, is_water);
   } else if (axes == XZY) {
-    makeQuadDL(chunk, br, bt, bs, width, height, face, is_water,
-      chunk_matrix_loaded);
+    makeQuadDL(chunk, br, bt, bs, width, height, face, is_water);
   } else if (axes == YXZ) {
-    makeQuadDL(chunk, bs, br, bt, width, height, face, is_water,
-      chunk_matrix_loaded);
+    makeQuadDL(chunk, bs, br, bt, width, height, face, is_water);
   }
 }
 
 static void makeChunkAxisDL(DualQuadList *axis_quads, u16 chunk, u8 axes,
-    u8 face1, u8 face2, u8 block, u8 *chunk_matrix_loaded) {
+    u8 face1, u8 face2, u8 block) {
   u8 br, i;
   DualQuadList *both_quads;
   for (br = 0; br < CHUNK_SIZE; br++) {
@@ -749,8 +738,7 @@ static void makeChunkAxisDL(DualQuadList *axis_quads, u16 chunk, u8 axes,
       if (both_quads->quads[i].block == block) {
         makeQuadDLRST(chunk, br, both_quads->quads[i].bs, both_quads->quads[i].bt, axes,
           both_quads->quads[i].width, both_quads->quads[i].height,
-          i < both_quads->n_front ? face1 : face2, block == WATER,
-          chunk_matrix_loaded);
+          i < both_quads->n_front ? face1 : face2, block == WATER);
       }
     }
   }
@@ -775,22 +763,21 @@ void makeColumnDL(u8 cx, u8 cz, u8 texture) {
     column_start;
 
   for (cy = 0; cy < CHUNKS_Y; cy++) {
-    u8 chunk_matrix_loaded = FALSE;
     chunk = cx * CHUNKS_Y * CHUNKS_Z + cy * CHUNKS_Z + cz;
     c_quads = &column_quads[cy];
 
     for (i = 0; i < textures[texture]->n_faces; i++) {
       if (faces[i].sides) {
         makeChunkAxisDL(c_quads->z_quads, chunk, ZXY, FRONT, BACK,
-          faces[i].block, &chunk_matrix_loaded);
+          faces[i].block);
         makeChunkAxisDL(c_quads->x_quads, chunk, XZY, RIGHT, LEFT,
-          faces[i].block, &chunk_matrix_loaded);
+          faces[i].block);
       }
 
       if (faces[i].top || faces[i].bottom) {
         makeChunkAxisDL(c_quads->y_quads, chunk, YXZ,
           faces[i].top ? TOP : NONE, faces[i].bottom ? BOTTOM : NONE,
-          faces[i].block, &chunk_matrix_loaded);
+          faces[i].block);
       }
     }
   }
