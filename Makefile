@@ -73,8 +73,12 @@ CUSTOM_TEXTURE_SOURCE := $(wildcard art/custom-textures.png)
 AUDIO_ASSET_DIR := $(ASSDIR)/audio
 AUDIO_IMPORT_DIR := $(OBJDIR)/audio-import
 MUSIC_SOURCE_DIR ?=
-MUSIC_RATE ?= 22050
-MUSIC_EFFECTS ?= highpass 30 lowpass 10000 gain -n -3
+# 12 kHz is the best quality/ROM-size balance for Mine64's background music.
+# When raising MUSIC_RATE, raise MUSIC_LOWPASS accordingly (for example 7000
+# at 16 kHz or 10000 at 22.05 kHz).
+MUSIC_RATE ?= 12000
+MUSIC_LOWPASS ?= 5200
+MUSIC_EFFECTS ?= highpass 30 lowpass $(MUSIC_LOWPASS) gain -n -3
 MUSIC_TITLE_PCM := $(AUDIO_IMPORT_DIR)/music-title-$(MUSIC_RATE)-mono.wav
 MUSIC_GAME_PCM := $(AUDIO_IMPORT_DIR)/music-game-$(MUSIC_RATE)-mono.wav
 MUSIC_TITLE_AIFC := $(AUDIO_IMPORT_DIR)/music-title.vadpcm.aifc
@@ -118,6 +122,12 @@ music:
 
 sfx:
 	python3 tools/generate_sfx.py
+
+# These are checked-in binary ROM inputs. Explicitly declaring them prevents
+# make's built-in .o-to-file rule from mistaking spicy's assembler sidecars for
+# an instruction to rebuild the source payload.
+$(MUSIC_ASSETS) $(SFX_ASSETS):
+	@test -f $@
 
 $(BASE_ASSETS): generate_assets.py tools/import_textures.py $(CUSTOM_TEXTURE_SOURCE)
 	python3 generate_assets.py

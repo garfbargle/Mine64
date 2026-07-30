@@ -217,20 +217,20 @@ docker run --rm --platform linux/amd64 \
   mine64-nusys-build:local make music MUSIC_SOURCE_DIR=/music
 ```
 
-The pipeline downmixes each track to mono, resamples to 22,050 Hz, removes
+The pipeline downmixes each track to mono, resamples to 12,000 Hz, removes
 inaudible sub-bass/ultrasonic content, normalizes peaks to -3 dBFS, and
 encodes the result as N64 VADPCM. It replaces the checked-in payloads and
 metadata headers; intermediate WAV and AIFF-C files remain under
 `build/audio-import/`.
 
-VADPCM uses roughly 28% of the space of 16-bit PCM.  The default 22,050 Hz
-mono asset is a strong quality/ROM-size balance for background music. To
-prefer a smaller or clearer asset, set `MUSIC_RATE`, for example
-`make music MUSIC_RATE=16000` or `make music MUSIC_RATE=32000`. To use a
-different private source folder, set `MUSIC_SOURCE_DIR=/path/to/music`. To
-keep the input's level and EQ unchanged, set `MUSIC_EFFECTS=`. Review and
-commit the resulting encoded assets whenever the masters or import settings
-change.
+VADPCM uses roughly 28% of the space of 16-bit PCM. The default 12 kHz mono
+asset, filtered at 5.2 kHz, is the chosen quality/ROM-size balance for
+background music. To prefer clearer assets, set both `MUSIC_RATE` and a
+rate-appropriate `MUSIC_LOWPASS`, for example
+`make music MUSIC_RATE=16000 MUSIC_LOWPASS=7000`. To use a different private
+source folder, set `MUSIC_SOURCE_DIR=/path/to/music`. To keep the input's
+level and EQ unchanged, set `MUSIC_EFFECTS=`. Review and commit the resulting
+encoded assets whenever the masters or import settings change.
 
 Music playback is intentionally not linked into the default ROM. Use the
 separate `AUDIO=1` ROM for hardware validation; a known-good silent build

@@ -2,20 +2,20 @@
 #ifndef MUSIC_TITLE_VADPCM_H
 #define MUSIC_TITLE_VADPCM_H
 
-#define MUSIC_TITLE_VADPCM_SAMPLE_RATE 22050
-#define MUSIC_TITLE_VADPCM_SAMPLE_COUNT 2302912
-#define MUSIC_TITLE_VADPCM_DATA_BYTES 1295388
+#define MUSIC_TITLE_VADPCM_SAMPLE_RATE 12000
+#define MUSIC_TITLE_VADPCM_SAMPLE_COUNT 1253280
+#define MUSIC_TITLE_VADPCM_DATA_BYTES 704970
 #define MUSIC_TITLE_VADPCM_BOOK_ORDER 2
 #define MUSIC_TITLE_VADPCM_BOOK_PREDICTORS 4
 #define MUSIC_TITLE_VADPCM_BOOK_VALUES { \
-   -1863,  -3549,  -5062,  -6412,  -7604,  -8647,  -9548, -10314, \
-    3900,   5564,   7047,   8357,   9503,  10493,  11336,  12040, \
-    -468,   -557,   -556,   -535,   -509,   -484,   -460,   -437, \
-    2438,   2434,   2340,   2230,   2120,   2014,   1913,   1817, \
-    -726,   -777,   -574,   -339,   -159,    -50,      3,     21, \
-    2192,   1619,    956,    449,    141,     -8,    -59,    -60, \
-     720,    467,    556,    525,    536,    532,    534,    533, \
-    1328,   1582,   1493,   1524,   1514,   1518,   1517,   1517, \
+   -1932,  -3739,  -5415,  -6955,  -8354,  -9609, -10720, -11686, \
+    3964,   5741,   7373,   8857,  10188,  11366,  12390,  13261, \
+    -959,   -840,   -287,    142,    258,    160,     19,    -58, \
+    1794,    613,   -303,   -552,   -342,    -41,    124,    128, \
+    -921,  -1130,   -972,   -685,   -404,   -187,    -48,     25, \
+    2513,   2163,   1524,    898,    417,    108,    -55,   -116, \
+   -1946,  -3616,  -4867,  -5606,  -5788,  -5426,  -4578,  -3349, \
+    3805,   5122,   5899,   6091,   5709,   4817,   3523,   1967, \
 }
 #define MUSIC_TITLE_VADPCM_LOOP_STATE { \
        0,      0,      0,      0,      0,      0,      0,      0, \
