@@ -39,7 +39,8 @@ LCDEFS := -DF3DEX_GBI_2 -DNDEBUG
 OPTIMIZER := -O2 -g
 endif
 
-LDFLAGS := $(MKDEPOPT) -L$(LIB) -L$(NUSYSLIBDIR) -lnusys$(SDK_VARIANT) -lultra$(SDK_VARIANT) -lcart
+LDFLAGS := $(MKDEPOPT) -L$(LIB) -L$(NUSYSLIBDIR) -lnusys$(SDK_VARIANT) \
+	-lnualsgi$(SDK_VARIANT) -lultra$(SDK_VARIANT) -lcart
 
 OBJECT_DIR := $(OBJDIR)/$(BUILD_VARIANT)
 APP := $(OBJDIR)/$(TARGET).out
@@ -47,19 +48,29 @@ ROM := $(OBJDIR)/$(TARGET).n64
 CODEFILES := $(wildcard $(SRCDIR)/*.c) $(wildcard $(SRCDIR)/ff/*.c)
 CODEOBJECTS := $(patsubst $(SRCDIR)/%.c,$(OBJECT_DIR)/%.o,$(CODEFILES)) $(NUSYSLIBDIR)/nusys$(SDK_VARIANT).o
 CODESEGMENT := $(OBJDIR)/codesegment.o
-ASSETS := $(ASSDIR)/texture_data.h $(ASSDIR)/font.h
+BASE_ASSETS := $(ASSDIR)/texture_data.h $(ASSDIR)/font.h
 CUSTOM_TEXTURE_SOURCE := $(wildcard art/custom-textures.png)
 
-# Music is intentionally opt-in: a source WAV is usually large and is not
-# required to build the game until audio playback is added.  The pipeline
-# normalizes it to a hardware-friendly format and encodes N64 VADPCM.
+# The original WAVs are local artist assets, while these generated files are
+# compact ROM inputs. Override MUSIC_SOURCE_DIR when building elsewhere.
 AUDIO_BUILD_DIR := $(OBJDIR)/audio
-MUSIC_SOURCE ?= art/music.wav
+MUSIC_SOURCE_DIR ?= /Users/codi/Downloads
+MUSIC_TITLE_SOURCE ?= $(MUSIC_SOURCE_DIR)/Softstone\ Sunset.wav
+MUSIC_GAME_SOURCE ?= $(MUSIC_SOURCE_DIR)/Still\ Exploring.wav
 MUSIC_RATE ?= 22050
 MUSIC_EFFECTS ?= highpass 30 lowpass 10000 gain -n -3
-MUSIC_PCM := $(AUDIO_BUILD_DIR)/music-$(MUSIC_RATE)-mono.wav
-MUSIC_AIFC := $(AUDIO_BUILD_DIR)/music.vadpcm.aifc
-MUSIC_INFO := $(AUDIO_BUILD_DIR)/music.json
+MUSIC_TITLE_PCM := $(AUDIO_BUILD_DIR)/music-title-$(MUSIC_RATE)-mono.wav
+MUSIC_GAME_PCM := $(AUDIO_BUILD_DIR)/music-game-$(MUSIC_RATE)-mono.wav
+MUSIC_TITLE_AIFC := $(AUDIO_BUILD_DIR)/music-title.vadpcm.aifc
+MUSIC_GAME_AIFC := $(AUDIO_BUILD_DIR)/music-game.vadpcm.aifc
+MUSIC_TITLE_BIN := $(AUDIO_BUILD_DIR)/music-title.vadpcm.bin
+MUSIC_GAME_BIN := $(AUDIO_BUILD_DIR)/music-game.vadpcm.bin
+MUSIC_TITLE_HEADER := $(ASSDIR)/music_title_vadpcm.h
+MUSIC_GAME_HEADER := $(ASSDIR)/music_game_vadpcm.h
+MUSIC_TITLE_INFO := $(AUDIO_BUILD_DIR)/music-title.json
+MUSIC_GAME_INFO := $(AUDIO_BUILD_DIR)/music-game.json
+MUSIC_ASSETS := $(MUSIC_TITLE_BIN) $(MUSIC_GAME_BIN) $(MUSIC_TITLE_HEADER) $(MUSIC_GAME_HEADER)
+ASSETS := $(BASE_ASSETS) $(MUSIC_TITLE_HEADER) $(MUSIC_GAME_HEADER)
 SOX ?= sox
 VADPCM ?= vadpcm
 
@@ -70,23 +81,47 @@ default: $(ROM)
 
 # Run this inside the project Docker image. The encoder accepts mono 16-bit
 # PCM only, so SoX supplies the deterministic resample/downmix stage first.
-music: $(MUSIC_INFO)
+music: $(MUSIC_ASSETS) $(MUSIC_TITLE_INFO) $(MUSIC_GAME_INFO)
 
-music-info: $(MUSIC_INFO)
+music-info: $(MUSIC_TITLE_INFO) $(MUSIC_GAME_INFO)
 
-$(MUSIC_PCM): $(MUSIC_SOURCE)
+$(MUSIC_TITLE_PCM): $(MUSIC_TITLE_SOURCE)
 	@mkdir -p $(dir $@)
-	$(SOX) $< -r $(MUSIC_RATE) -c 1 -b 16 -e signed-integer $@ remix - $(MUSIC_EFFECTS)
+	$(SOX) "$<" -r $(MUSIC_RATE) -c 1 -b 16 -e signed-integer $@ remix - $(MUSIC_EFFECTS)
 
-$(MUSIC_AIFC): $(MUSIC_PCM)
+$(MUSIC_GAME_PCM): $(MUSIC_GAME_SOURCE)
+	@mkdir -p $(dir $@)
+	$(SOX) "$<" -r $(MUSIC_RATE) -c 1 -b 16 -e signed-integer $@ remix - $(MUSIC_EFFECTS)
+
+$(MUSIC_TITLE_AIFC): $(MUSIC_TITLE_PCM)
 	$(VADPCM) encode --predictors 4 $< $@
 
-$(MUSIC_INFO): $(MUSIC_AIFC) tools/audio_manifest.py
+$(MUSIC_GAME_AIFC): $(MUSIC_GAME_PCM)
+	$(VADPCM) encode --predictors 4 $< $@
+
+$(MUSIC_TITLE_HEADER): $(MUSIC_TITLE_AIFC) tools/audio_codegen.py
+	python3 tools/audio_codegen.py $< $(MUSIC_TITLE_BIN) $@ MUSIC_TITLE
+
+$(MUSIC_GAME_HEADER): $(MUSIC_GAME_AIFC) tools/audio_codegen.py
+	python3 tools/audio_codegen.py $< $(MUSIC_GAME_BIN) $@ MUSIC_GAME
+
+$(MUSIC_TITLE_BIN): $(MUSIC_TITLE_HEADER)
+	@test -f $@
+
+$(MUSIC_GAME_BIN): $(MUSIC_GAME_HEADER)
+	@test -f $@
+
+$(MUSIC_TITLE_INFO): $(MUSIC_TITLE_AIFC) tools/audio_manifest.py
 	python3 tools/audio_manifest.py $< $@
 
-$(ASSETS): generate_assets.py tools/import_textures.py $(CUSTOM_TEXTURE_SOURCE)
+$(MUSIC_GAME_INFO): $(MUSIC_GAME_AIFC) tools/audio_manifest.py
+	python3 tools/audio_manifest.py $< $@
+
+$(BASE_ASSETS): generate_assets.py tools/import_textures.py $(CUSTOM_TEXTURE_SOURCE)
 	python3 generate_assets.py
 	@if [ -n "$(CUSTOM_TEXTURE_SOURCE)" ]; then python3 tools/import_textures.py $(CUSTOM_TEXTURE_SOURCE); fi
+
+$(ROM): $(MUSIC_ASSETS)
 
 $(OBJECT_DIR)/%.o: $(SRCDIR)/%.c $(ASSETS)
 	@mkdir -p $(dir $@)

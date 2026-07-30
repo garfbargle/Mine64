@@ -173,31 +173,34 @@ each tile to its own N64 palette.
 
 ### Music asset pipeline
 
-Put a WAV at `art/music.wav`, then create an N64-ready music asset inside the
-same Docker environment used for ROM builds:
+Mine64 uses `Softstone Sunset.wav` for the title screen and `Still Exploring.wav`
+in-game. Keep the original WAVs in one private local directory (the default is
+`/Users/codi/Downloads`) and create N64-ready assets inside the same Docker
+environment used for ROM builds:
 
 ```sh
 docker run --rm --platform linux/amd64 \
-  -v "$PWD:/work" -w /work \
-  mine64-nusys-build:local make music
+  -v "$PWD:/work" -v /Users/codi/Downloads:/music:ro -w /work \
+  mine64-nusys-build:local make music MUSIC_SOURCE_DIR=/music
 ```
 
-The pipeline downmixes to mono, resamples to 22,050 Hz, removes inaudible
+The pipeline downmixes each track to mono, resamples to 22,050 Hz, removes inaudible
 sub-bass/ultrasonic content, normalizes peaks to -3 dBFS, and encodes the
 result as N64 VADPCM. Outputs are written to `build/audio/`:
-`music-22050-mono.wav` is the review copy, `music.vadpcm.aifc` is the compact
-runtime asset, and `music.json` records its exact size, rate, duration,
-codebook, and an infinite whole-track loop.
+`music-*-22050-mono.wav` files are review copies, `music-*.vadpcm.aifc` files
+are the compact runtime assets, and `music-*.json` files record exact size,
+rate, duration, codebook, and an infinite whole-track loop. The audio payloads
+are ROM-streamed and never occupy the full track size in RDRAM.
 
 VADPCM uses roughly 28% of the space of 16-bit PCM.  The default 22,050 Hz
 mono asset is a strong quality/ROM-size balance for background music. To
 prefer a smaller or clearer asset, set `MUSIC_RATE`, for example
-`make music MUSIC_RATE=16000` or `make music MUSIC_RATE=32000`. To keep the
-input's level and EQ unchanged, set `MUSIC_EFFECTS=`.
+`make music MUSIC_RATE=16000` or `make music MUSIC_RATE=32000`. To use a
+different private source folder, set `MUSIC_SOURCE_DIR=/path/to/music`. To
+keep the input's level and EQ unchanged, set `MUSIC_EFFECTS=`.
 
 Make the WAV itself loop cleanly from its end back to its beginning; the
-runtime will use the full file as an infinite loop. The asset stays opt-in, so
-the normal `make` build continues to work before a track is supplied.
+runtime uses the full file as an infinite loop.
 
 For the complete art-to-cartridge walkthrough, see
 [Custom texture workflow](docs/custom-textures.md).
