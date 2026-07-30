@@ -25,46 +25,54 @@ static int clampHeight(int height) {
   return height;
 }
 
-static float ridgeNoise(float x, float z, float frequency) {
-  float value = perlin2d(x, z, frequency, 3);
-  return 1.0f - absolute(value * 2.0f - 1.0f);
-}
-
 static int terrainHeight(int x, int z) {
-  float continents = perlin2d(x, z, 0.010f, 4);
-  float rolling = perlin2d(x + 213, z - 97, 0.045f, 3);
-  float mountain_mask = perlin2d(x - 401, z + 179, 0.017f, 3);
-  float ridges = ridgeNoise(x + 67, z - 311, 0.026f);
+  float plains = perlin2d(x + 97, z + 211, 0.010f, 4);
+  float lowlands = perlin2d(x + 557, z + 877, 0.030f, 3);
+  float gentle_hills = perlin2d(x + 419, z + 131, 0.014f, 3);
+  float mountain_mask = perlin2d(x + 701, z + 337, 0.022f, 3);
+  float mountain_shape = perlin2d(x + 109, z + 593, 0.010f, 3);
   int height;
 
-  /* Broad continents supply the silhouette while ridges only become tall in
-   * mountain regions.  This leaves room for beaches and low grasslands. */
-  height = 5 + (int)(continents * 11.0f) + (int)((rolling - 0.5f) * 5.0f);
-  if (mountain_mask > 0.58f) {
-    height += (int)((mountain_mask - 0.58f) * ridges * 85.0f);
+  /* Keep the normal route through the world broad and mostly level.  Small,
+   * scattered lowlands form shore-level basins, while a slow contribution
+   * adds walkable grass hills. */
+  height = 9 + (int)(plains * 2.0f);
+  if (lowlands < 0.28f) {
+    height -= 1 + (int)((0.28f - lowlands) * 8.0f);
+  }
+  if (gentle_hills > 0.56f) {
+    height += (int)((gentle_hills - 0.56f) * 9.0f);
+  }
+
+  /* Mountains occupy only the highest islands of a separate field.  Their
+   * rounded shape and capped boost leave them as rare destinations rather
+   * than a wall of sharp ridges between players. */
+  if (mountain_mask > 0.74f) {
+    height += (int)((mountain_mask - 0.74f) *
+      (45.0f + mountain_shape * 55.0f));
   }
 
   return clampHeight(height);
 }
 
 static int isLake(int x, int z, int natural_height) {
-  float basin = perlin2d(x - 719, z + 337, 0.018f, 3);
-  float moisture = perlin2d(x + 281, z - 647, 0.033f, 2);
+  float basin = perlin2d(x + 719, z + 337, 0.018f, 3);
+  float moisture = perlin2d(x + 281, z + 647, 0.033f, 2);
 
   /* Large, low-frequency islands in the basin signal become lakes only in
    * low-to-mid terrain.  That avoids flat mountaintop puddles. */
-  return natural_height <= SEA_LEVEL + 5 &&
+  return natural_height <= SEA_LEVEL + 3 &&
     basin > 0.66f && moisture > 0.55f;
 }
 
 static int isRiver(int x, int z, int natural_height) {
-  float watershed = perlin2d(x + 157, z - 491, 0.012f, 3);
-  float channel = absolute(perlin2d(x - 383, z + 73, 0.024f, 2) - 0.5f);
+  float watershed = perlin2d(x + 157, z + 491, 0.012f, 3);
+  float channel = absolute(perlin2d(x + 383, z + 73, 0.024f, 2) - 0.5f);
 
   /* An iso-line in a second noise field provides long, gently winding river
    * courses.  The watershed mask breaks it into distinct drainages instead
    * of a regular grid of channels. */
-  return natural_height > SEA_LEVEL && natural_height <= SEA_LEVEL + 5 &&
+  return natural_height > SEA_LEVEL && natural_height <= SEA_LEVEL + 3 &&
     watershed > 0.58f && channel < 0.022f;
 }
 
@@ -198,7 +206,7 @@ void initWorld() {
   for (x = 0; x < MAX_X; x++) {
     for (z = 0; z < MAX_Z; z++) {
       height = shapedSurfaceHeight(x, z, &water_level);
-      biome = perlin2d(x + 883, z - 521, 0.025f, 3);
+      biome = perlin2d(x + 883, z + 521, 0.025f, 3);
       slope = absolute((float)(terrainHeight(x + 1, z) - terrainHeight(x - 1, z))) +
               absolute((float)(terrainHeight(x, z + 1) - terrainHeight(x, z - 1)));
       /* Sand belongs at shorelines and a few shallow lowland patches.  Do
