@@ -81,10 +81,13 @@ static Gfx dropped_item_display_list[] = {
 #define STEVE_RIGHT_ARM 3
 #define STEVE_LEFT_LEG 4
 #define STEVE_RIGHT_LEG 5
-#define STEVE_PART_COUNT 6
+#define STEVE_SWORD 6
+#define STEVE_PART_COUNT 7
 
 static Mtx steve_translate[NUM_DISPLAY_LISTS][MAX_PLAYERS][STEVE_PART_COUNT];
 static Mtx steve_rotate[NUM_DISPLAY_LISTS][MAX_PLAYERS][STEVE_PART_COUNT];
+static Mtx first_person_sword_translate[NUM_DISPLAY_LISTS][MAX_PLAYERS];
+static Mtx first_person_sword_rotate[NUM_DISPLAY_LISTS][MAX_PLAYERS];
 
 #define STEVE_VERTEX(x, y, z, r, g, b) {x, y, z, 0, 0, 0, r, g, b, 255}
 
@@ -127,6 +130,33 @@ static Vtx steve_eye_verts[] = {
   STEVE_VERTEX(11, 2, -17, 55, 125, 210), STEVE_VERTEX(5, 2, -17, 55, 125, 210)
 };
 
+/* The blade points down from the hand pivot.  Keeping it as two shaded boxes
+   gives every equipped sword a crisp silhouette without adding a texture or
+   a costly animated skeleton. */
+static Vtx steve_sword_blade_verts[] = {
+  STEVE_VERTEX(-4, 4, 3, 205, 205, 188), STEVE_VERTEX(4, 4, 3, 205, 205, 188),
+  STEVE_VERTEX(4, -42, 3, 205, 205, 188), STEVE_VERTEX(-4, -42, 3, 205, 205, 188),
+  STEVE_VERTEX(4, 4, -3, 165, 165, 154), STEVE_VERTEX(-4, 4, -3, 165, 165, 154),
+  STEVE_VERTEX(-4, -42, -3, 165, 165, 154), STEVE_VERTEX(4, -42, -3, 165, 165, 154)
+};
+
+static Vtx steve_sword_hilt_verts[] = {
+  STEVE_VERTEX(-12, 7, 5, 142, 83, 38), STEVE_VERTEX(12, 7, 5, 142, 83, 38),
+  STEVE_VERTEX(12, 1, 5, 142, 83, 38), STEVE_VERTEX(-12, 1, 5, 142, 83, 38),
+  STEVE_VERTEX(12, 7, -5, 104, 58, 27), STEVE_VERTEX(-12, 7, -5, 104, 58, 27),
+  STEVE_VERTEX(-12, 1, -5, 104, 58, 27), STEVE_VERTEX(12, 1, -5, 104, 58, 27)
+};
+
+/* First person needs the forearm as well as the blade; otherwise a floating
+   sword loses the "held" feeling that makes an attack easy to read.  Its hand
+   ends at the same origin as the sword hilt. */
+static Vtx first_person_arm_verts[] = {
+  STEVE_VERTEX(-7, 48, 7, 198, 137, 90), STEVE_VERTEX(7, 48, 7, 198, 137, 90),
+  STEVE_VERTEX(7, 0, 7, 198, 137, 90), STEVE_VERTEX(-7, 0, 7, 198, 137, 90),
+  STEVE_VERTEX(7, 48, -7, 198, 137, 90), STEVE_VERTEX(-7, 48, -7, 198, 137, 90),
+  STEVE_VERTEX(-7, 0, -7, 198, 137, 90), STEVE_VERTEX(7, 0, -7, 198, 137, 90)
+};
+
 static Gfx steve_box_display_list[] = {
   gsSP2Triangles(0, 1, 2, 0, 0, 2, 3, 0),
   gsSP2Triangles(4, 5, 6, 0, 4, 6, 7, 0),
@@ -152,10 +182,53 @@ static Vp full_viewport = {
 
 /* N64 viewport coordinates are 10.2 fixed point.  These two viewports fill
    the same framebuffer as solo play, so split-screen does not double fill-rate. */
-static Vp coop_viewports[MAX_PLAYERS] = {
+static Vp two_player_viewports[2] = {
   {SCREEN_WD*2, SCREEN_HT, G_MAXZ/2, 0, SCREEN_WD*2, SCREEN_HT, G_MAXZ/2, 0},
   {SCREEN_WD*2, SCREEN_HT, G_MAXZ/2, 0, SCREEN_WD*2, SCREEN_HT*3, G_MAXZ/2, 0}
 };
+
+/* Four players use 160x120 quadrants.  vscale/vtrans use the N64's 10.2
+   viewport representation, hence the doubled dimensions and centres. */
+static Vp four_player_viewports[MAX_PLAYERS] = {
+  {SCREEN_WD, SCREEN_HT, G_MAXZ/2, 0, SCREEN_WD, SCREEN_HT, G_MAXZ/2, 0},
+  {SCREEN_WD, SCREEN_HT, G_MAXZ/2, 0, SCREEN_WD*3, SCREEN_HT, G_MAXZ/2, 0},
+  {SCREEN_WD, SCREEN_HT, G_MAXZ/2, 0, SCREEN_WD, SCREEN_HT*3, G_MAXZ/2, 0},
+  {SCREEN_WD, SCREEN_HT, G_MAXZ/2, 0, SCREEN_WD*3, SCREEN_HT*3, G_MAXZ/2, 0}
+};
+
+static u8 usesFourPlayerLayout(void) {
+  return active_player_count >= 3;
+}
+
+static u32 playerViewportWidth(void) {
+  return usesFourPlayerLayout() ? SCREEN_WD / 2 : SCREEN_WD;
+}
+
+static u32 playerViewportHeight(void) {
+  return active_player_count > 1 ? SCREEN_HT / 2 : SCREEN_HT;
+}
+
+static u32 playerViewportX(u8 player_num) {
+  return usesFourPlayerLayout() ? (player_num & 1) * (SCREEN_WD / 2) : 0;
+}
+
+static u32 playerViewportY(u8 player_num) {
+  return active_player_count > 1 ? (usesFourPlayerLayout() ? player_num / 2 :
+    player_num) * (SCREEN_HT / 2) : 0;
+}
+
+static void selectPlayerViewport(u8 player_num) {
+  u32 x = playerViewportX(player_num);
+  u32 y = playerViewportY(player_num);
+
+  if (usesFourPlayerLayout()) {
+    gSPViewport(dlp++, &four_player_viewports[player_num]);
+  } else {
+    gSPViewport(dlp++, &two_player_viewports[player_num]);
+  }
+  gDPSetScissor(dlp++, G_SC_NON_INTERLACE, x, y,
+    x + playerViewportWidth(), y + playerViewportHeight());
+}
 
 static Gfx setup_display_list[] = {
   gsSPSegment(0, 0x0),
@@ -285,7 +358,7 @@ void loadTexture(Texture *texture) {
   }
 }
 
-void makeQuadDL(u8 chunk, u8 bx, u8 by, u8 bz, u8 width, u8 height, u8 face) {
+void makeQuadDL(u16 chunk, u8 bx, u8 by, u8 bz, u8 width, u8 height, u8 face) {
   u32 b = bx * CHUNK_SIZE * CHUNK_SIZE + by * CHUNK_SIZE + bz;
 
   /* Reserve one final command for the column's EndDisplayList.  A maximally
@@ -303,7 +376,7 @@ void makeQuadDL(u8 chunk, u8 bx, u8 by, u8 bz, u8 width, u8 height, u8 face) {
   gSP1Quadrangle(column_dlp++, 3, 2, 1, 0, 0);
 }
 
-void makeQuadDLRST(u8 chunk, u8 br, u8 bs, u8 bt, u8 axes, u8 width, u8 height, u8 face) {
+void makeQuadDLRST(u16 chunk, u8 br, u8 bs, u8 bt, u8 axes, u8 width, u8 height, u8 face) {
   if (face == NONE) {
     return;
   }
@@ -317,7 +390,7 @@ void makeQuadDLRST(u8 chunk, u8 br, u8 bs, u8 bt, u8 axes, u8 width, u8 height, 
   }
 }
 
-void makeChunkAxisDL(DualQuadList *axis_quads, u8 chunk, u8 axes, u8 face1, u8 face2, u8 block) {
+void makeChunkAxisDL(DualQuadList *axis_quads, u16 chunk, u8 axes, u8 face1, u8 face2, u8 block) {
   u8 br, i;
   DualQuadList *both_quads;
   for (br = 0; br < CHUNK_SIZE; br++) {
@@ -332,7 +405,8 @@ void makeChunkAxisDL(DualQuadList *axis_quads, u8 chunk, u8 axes, u8 face1, u8 f
 }
 
 void makeColumnDL(u8 cx, u8 cz, u8 texture) {
-  u8 cy, i, chunk;
+  u8 cy, i;
+  u16 chunk;
   ChunkQuads *c_quads;
   FaceSpec *faces = textures[texture]->faces;
 
@@ -366,9 +440,13 @@ void makeColumnDL(u8 cx, u8 cz, u8 texture) {
 
 void makeWorldDisplayLists() {
   u8 cx, cz, i;
-  if (column_dlp == column_display_list) {
-    column_display_list_full = FALSE;
-  }
+
+  /* This is a complete mesh rebuild, not an incremental block edit.  World
+     previews can rebuild several slots back-to-back, so start from the
+     beginning of the fixed command arena after the RSP is done with it. */
+  nuGfxTaskAllEndWait();
+  column_dlp = column_display_list;
+  column_display_list_full = FALSE;
   for (i = 0; i < NUM_TEXTURES; i++) {
     for (cx = 0; cx < CHUNKS_X; cx++) {
       for (cz = 0; cz < CHUNKS_Z; cz++) {
@@ -427,23 +505,47 @@ static void setStevePartTransform(u8 player_num, u8 part, Vector3 local_offset,
   guRotateRPY(&steve_rotate[dl_no][player_num][part], pitch, yaw, 0);
 }
 
+static u8 playerHoldingSword(Player *player) {
+  ItemStack *held = &player->inventory[INVENTORY_HOTBAR_START +
+    player->selected_hotbar_slot];
+  return held->count > 0 && held->item == WOOD_SWORD;
+}
+
+static float swordSwingAngle(Player *player) {
+  float phase;
+
+  if (player->attack_time <= 0) {
+    return 0;
+  }
+  phase = 1.f - player->attack_time / PLAYER_ATTACK_DURATION;
+  /* Start raised, sweep through the target at mid-animation, then settle. */
+  return -58.f + sinf(phase * 180.f * M_DTOR) * 135.f;
+}
+
 static void makeStevePose(u8 player_num) {
   Player *player = &players[player_num];
   float head_pitch = player->pitch > 180 ? player->pitch - 360 : player->pitch;
   float swing = sinf(player->walk_time) * 28 * player->walk_swing;
+  float right_arm_pitch = -swing + swordSwingAngle(player);
+  float hurt_bob = player->hurt_time > 0 ?
+    sinf((PLAYER_ATTACK_DURATION - player->hurt_time) * 180.f * M_DTOR) * 7.f : 0;
 
-  setStevePartTransform(player_num, STEVE_BODY, (Vector3) {0, -30, 0},
+  setStevePartTransform(player_num, STEVE_BODY, (Vector3) {hurt_bob, -30, 0},
     0, -player->body_yaw);
   /* Unlike the torso, this orientation uses the current camera yaw/pitch. */
-  setStevePartTransform(player_num, STEVE_HEAD, (Vector3) {0, 8, 0},
+  setStevePartTransform(player_num, STEVE_HEAD, (Vector3) {hurt_bob, 8, 0},
     head_pitch, -player->yaw);
-  setStevePartTransform(player_num, STEVE_LEFT_ARM, (Vector3) {-25, -8, 0},
+  setStevePartTransform(player_num, STEVE_LEFT_ARM, (Vector3) {-25 + hurt_bob, -8, 0},
     swing, -player->body_yaw);
-  setStevePartTransform(player_num, STEVE_RIGHT_ARM, (Vector3) {25, -8, 0},
+  setStevePartTransform(player_num, STEVE_RIGHT_ARM, (Vector3) {25 + hurt_bob, -8, 0},
+    right_arm_pitch, -player->body_yaw);
+  /* The sword's origin is the right hand, and it shares the arm's pitch so
+     walking and attacks naturally carry it through the same arc. */
+  setStevePartTransform(player_num, STEVE_SWORD, (Vector3) {25 + hurt_bob, -52, 0},
+    right_arm_pitch, -player->body_yaw);
+  setStevePartTransform(player_num, STEVE_LEFT_LEG, (Vector3) {-10 + hurt_bob, -52, 0},
     -swing, -player->body_yaw);
-  setStevePartTransform(player_num, STEVE_LEFT_LEG, (Vector3) {-10, -52, 0},
-    -swing, -player->body_yaw);
-  setStevePartTransform(player_num, STEVE_RIGHT_LEG, (Vector3) {10, -52, 0},
+  setStevePartTransform(player_num, STEVE_RIGHT_LEG, (Vector3) {10 + hurt_bob, -52, 0},
     swing, -player->body_yaw);
 }
 
@@ -462,6 +564,12 @@ static void drawSteve(u8 player_num) {
   drawStevePart(player_num, STEVE_BODY, steve_body_verts, steve_box_display_list);
   drawStevePart(player_num, STEVE_LEFT_ARM, steve_arm_verts, steve_box_display_list);
   drawStevePart(player_num, STEVE_RIGHT_ARM, steve_arm_verts, steve_box_display_list);
+  if (playerHoldingSword(&players[player_num])) {
+    drawStevePart(player_num, STEVE_SWORD, steve_sword_blade_verts,
+      steve_box_display_list);
+    drawStevePart(player_num, STEVE_SWORD, steve_sword_hilt_verts,
+      steve_box_display_list);
+  }
   drawStevePart(player_num, STEVE_LEFT_LEG, steve_leg_verts, steve_box_display_list);
   drawStevePart(player_num, STEVE_RIGHT_LEG, steve_leg_verts, steve_box_display_list);
   drawStevePart(player_num, STEVE_HEAD, steve_head_verts, steve_box_display_list);
@@ -469,6 +577,41 @@ static void drawSteve(u8 player_num) {
   /* The eyes share the head transform, so their direction matches its pitch
      and yaw exactly. */
   drawStevePart(player_num, STEVE_HEAD, steve_eye_verts, steve_eyes_display_list);
+}
+
+static void drawFirstPersonSword(u8 player_num) {
+  Player *player = &players[player_num];
+  Vector3 forward = {0, 0, -1};
+  Vector3 right = {1, 0, 0};
+  Vector3 position;
+  float swing;
+
+  if (player->camera_mode != CAMERA_FIRST_PERSON || !playerHoldingSword(player)) {
+    return;
+  }
+  forward = rotateX(forward, player->pitch);
+  forward = rotateY(forward, -player->yaw);
+  right = rotateY(right, -player->yaw);
+  position = add(player->position, mul(forward, 72.f));
+  position = add(position, mul(right, 34.f));
+  position.y -= 36.f;
+  swing = swordSwingAngle(player);
+  guTranslate(&first_person_sword_translate[dl_no][player_num], position.x,
+    position.y, position.z);
+  guRotateRPY(&first_person_sword_rotate[dl_no][player_num],
+    20.f - player->pitch + swing, -player->yaw, -18.f);
+  gSPClearGeometryMode(dlp++, G_CULL_BACK);
+  gSPMatrix(dlp++, OS_K0_TO_PHYSICAL(&first_person_sword_translate[dl_no][player_num]),
+    G_MTX_MODELVIEW | G_MTX_LOAD | G_MTX_NOPUSH);
+  gSPMatrix(dlp++, OS_K0_TO_PHYSICAL(&first_person_sword_rotate[dl_no][player_num]),
+    G_MTX_MODELVIEW | G_MTX_MUL | G_MTX_NOPUSH);
+  gSPVertex(dlp++, first_person_arm_verts, 8, 0);
+  gSPDisplayList(dlp++, steve_box_display_list);
+  gSPVertex(dlp++, steve_sword_blade_verts, 8, 0);
+  gSPDisplayList(dlp++, steve_box_display_list);
+  gSPVertex(dlp++, steve_sword_hilt_verts, 8, 0);
+  gSPDisplayList(dlp++, steve_box_display_list);
+  gSPSetGeometryMode(dlp++, G_CULL_BACK);
 }
 
 static void drawOtherPlayers(u8 viewer_num) {
@@ -613,9 +756,8 @@ void drawWorld() {
 
   for (player_num = 0; player_num < viewer_count; player_num++) {
     gSPDisplayList(dlp++, draw_setup_display_list);
-    if (viewer_count == 2) {
-      gSPViewport(dlp++, &coop_viewports[player_num]);
-      gDPSetScissor(dlp++, G_SC_NON_INTERLACE, 0, player_num * (SCREEN_HT / 2), SCREEN_WD, (player_num + 1) * (SCREEN_HT / 2));
+    if (viewer_count > 1) {
+      selectPlayerViewport(player_num);
     } else {
       gSPViewport(dlp++, &full_viewport);
       gDPSetScissor(dlp++, G_SC_NON_INTERLACE, 0, 0, SCREEN_WD, SCREEN_HT);
@@ -629,9 +771,12 @@ void drawWorld() {
       drawFallingTrees();
       drawDroppedItems();
     }
-    if (!cinematic && (active_player_count == 2 ||
+    if (!cinematic && (active_player_count > 1 ||
         players[player_num].camera_mode == CAMERA_THIRD_PERSON)) {
       drawOtherPlayers(player_num);
+    }
+    if (!cinematic) {
+      drawFirstPersonSword(player_num);
     }
   }
 
@@ -654,9 +799,8 @@ void drawWireframes() {
 
   for (player_num = 0; player_num < active_player_count; player_num++) {
     if (!players[player_num].target_present) continue;
-    if (active_player_count == 2) {
-      gSPViewport(dlp++, &coop_viewports[player_num]);
-      gDPSetScissor(dlp++, G_SC_NON_INTERLACE, 0, player_num * (SCREEN_HT / 2), SCREEN_WD, (player_num + 1) * (SCREEN_HT / 2));
+    if (active_player_count > 1) {
+      selectPlayerViewport(player_num);
     } else {
       gSPViewport(dlp++, &full_viewport);
       gDPSetScissor(dlp++, G_SC_NON_INTERLACE, 0, 0, SCREEN_WD, SCREEN_HT);
@@ -776,11 +920,42 @@ static void setHudFillColor(u8 r, u8 g, u8 b) {
   gDPSetFillColor(dlp++, (color << 16) | color);
 }
 
+static void drawHealth(u8 player_num) {
+  u8 compact = usesFourPlayerLayout();
+  u32 size = compact ? 4 : 6;
+  u32 x = playerViewportX(player_num) + (compact ? 5 : 7);
+  u32 y = playerViewportY(player_num) + playerViewportHeight() -
+    (compact ? 14 + 4 + 8 : HOTBAR_SLOT_SIZE + HOTBAR_MARGIN + 10);
+  u8 heart;
+
+  gDPPipeSync(dlp++);
+  gDPSetCycleType(dlp++, G_CYC_FILL);
+  gDPSetRenderMode(dlp++, G_RM_NOOP, G_RM_NOOP2);
+  for (heart = 0; heart < PLAYER_MAX_HEALTH / 2; heart++) {
+    u8 full = players[player_num].health >= (heart + 1) * 2;
+    setHudFillColor(full ? 220 : 72, full ? 48 : 22, full ? 48 : 22);
+    /* A few filled pixels read as a heart on a CRT more clearly than a
+       single health bar, while still fitting beside a four-player hotbar. */
+    gDPFillRectangle(dlp++, x + 1, y, x + size - 2, y + 1);
+    gDPFillRectangle(dlp++, x, y + 1, x + size - 1, y + size - 2);
+    gDPFillRectangle(dlp++, x + 1, y + size - 1, x + size - 2, y + size);
+    x += size + 2;
+  }
+  gDPPipeSync(dlp++);
+  gDPSetCycleType(dlp++, G_CYC_1CYCLE);
+  gDPSetRenderMode(dlp++, G_RM_NOOP, G_RM_NOOP2);
+  gDPSetCombineMode(dlp++, G_CC_MODULATEI_PRIM, G_CC_MODULATEI_PRIM);
+  gDPSetPrimColor(dlp++, 0, 0, 255, 255, 255, 255);
+  gDPSetTexturePersp(dlp++, G_TP_NONE);
+  gDPSetTextureLUT(dlp++, G_TT_RGBA16);
+}
+
 /* A compact, deliberately chunky version of the Minecraft hotbar.  It uses
    the existing 16x16 block previews, keeping the HUD cheap enough for both
    split-screen players without introducing another texture atlas. */
 static void drawItemIcon(u8 item, u32 x, u32 y, u32 size) {
-  if (item <= BLOCK_TYPE_COUNT && preview_textures[item] != NULL) {
+  if ((item <= BLOCK_TYPE_COUNT || item == SAPLING) &&
+      preview_textures[item] != NULL) {
     loadTexture(preview_textures[item]);
     gSPTextureRectangle(dlp++, x << 2, y << 2,
       ((x + size) << 2) - 2, ((y + size) << 2) - 2,
@@ -815,13 +990,21 @@ static void drawItemIcon(u8 item, u32 x, u32 y, u32 size) {
   gDPSetTextureLUT(dlp++, G_TT_RGBA16);
 }
 
-static void drawHotbar(u8 player_num, u32 y_offset) {
-  u32 viewport_height = active_player_count == 2 ? SCREEN_HT / 2 : SCREEN_HT;
-  u32 bar_width = HOTBAR_SLOT_COUNT * HOTBAR_SLOT_SIZE;
-  u32 bar_x = (SCREEN_WD - bar_width) / 2;
-  u32 bar_y = y_offset + viewport_height - HOTBAR_SLOT_SIZE - HOTBAR_MARGIN;
-  u32 held_x = SCREEN_WD - HELD_PREVIEW_SIZE - HOTBAR_MARGIN;
-  u32 held_y = bar_y - HELD_PREVIEW_SIZE - 4;
+static void drawHotbar(u8 player_num) {
+  u8 compact = usesFourPlayerLayout();
+  u32 viewport_width = playerViewportWidth();
+  u32 viewport_height = playerViewportHeight();
+  u32 x_offset = playerViewportX(player_num);
+  u32 y_offset = playerViewportY(player_num);
+  u32 slot_size = compact ? 14 : HOTBAR_SLOT_SIZE;
+  u32 icon_size = compact ? 10 : HOTBAR_ICON_SIZE;
+  u32 preview_size = compact ? 16 : HELD_PREVIEW_SIZE;
+  u32 margin = compact ? 4 : HOTBAR_MARGIN;
+  u32 bar_width = HOTBAR_SLOT_COUNT * slot_size;
+  u32 bar_x = x_offset + (viewport_width - bar_width) / 2;
+  u32 bar_y = y_offset + viewport_height - slot_size - margin;
+  u32 held_x = x_offset + viewport_width - preview_size - margin;
+  u32 held_y = bar_y - preview_size - 3;
   u8 slot;
 
   gDPPipeSync(dlp++);
@@ -831,18 +1014,18 @@ static void drawHotbar(u8 player_num, u32 y_offset) {
   /* One raised rim groups all nine slots into a single familiar item bar. */
   setHudFillColor(20, 20, 20);
   gDPFillRectangle(dlp++, bar_x - 2, bar_y - 2, bar_x + bar_width + 1,
-    bar_y + HOTBAR_SLOT_SIZE + 1);
+    bar_y + slot_size + 1);
 
   for (slot = 0; slot < HOTBAR_SLOT_COUNT; slot++) {
-    u32 x = bar_x + slot * HOTBAR_SLOT_SIZE;
+    u32 x = bar_x + slot * slot_size;
     u8 selected = players[player_num].selected_hotbar_slot == slot;
 
     setHudFillColor(selected ? 250 : 78, selected ? 250 : 78, selected ? 250 : 78);
-    gDPFillRectangle(dlp++, x, bar_y, x + HOTBAR_SLOT_SIZE - 1,
-      bar_y + HOTBAR_SLOT_SIZE - 1);
+    gDPFillRectangle(dlp++, x, bar_y, x + slot_size - 1,
+      bar_y + slot_size - 1);
     setHudFillColor(selected ? 118 : 42, selected ? 118 : 42, selected ? 118 : 42);
-    gDPFillRectangle(dlp++, x + 2, bar_y + 2, x + HOTBAR_SLOT_SIZE - 3,
-      bar_y + HOTBAR_SLOT_SIZE - 3);
+    gDPFillRectangle(dlp++, x + 2, bar_y + 2, x + slot_size - 3,
+      bar_y + slot_size - 3);
   }
 
   gDPPipeSync(dlp++);
@@ -854,18 +1037,18 @@ static void drawHotbar(u8 player_num, u32 y_offset) {
   gDPSetTextureLUT(dlp++, G_TT_RGBA16);
 
   for (slot = 0; slot < HOTBAR_SLOT_COUNT; slot++) {
-    u32 x = bar_x + slot * HOTBAR_SLOT_SIZE + (HOTBAR_SLOT_SIZE - HOTBAR_ICON_SIZE) / 2;
-    u32 y = bar_y + (HOTBAR_SLOT_SIZE - HOTBAR_ICON_SIZE) / 2;
+    u32 x = bar_x + slot * slot_size + (slot_size - icon_size) / 2;
+    u32 y = bar_y + (slot_size - icon_size) / 2;
     ItemStack *stack = &players[player_num].inventory[INVENTORY_HOTBAR_START + slot];
     if (stack->count > 0) {
-      drawItemIcon(stack->item, x, y, HOTBAR_ICON_SIZE);
+      drawItemIcon(stack->item, x, y, icon_size);
     }
   }
 
   /* The enlarged current block is the first-person held-item cue. */
   if (players[player_num].inventory[INVENTORY_HOTBAR_START +
       players[player_num].selected_hotbar_slot].count > 0) {
-    drawItemIcon(players[player_num].held_block, held_x, held_y, HELD_PREVIEW_SIZE);
+    drawItemIcon(players[player_num].held_block, held_x, held_y, preview_size);
   }
 }
 
@@ -1018,36 +1201,44 @@ static void drawGameText() {
 
   beginText();
   for (player_num = 0; player_num < active_player_count; player_num++) {
-    u32 y_offset = active_player_count == 2 ?
-      player_num * (SCREEN_HT / 2) : 0;
-    u32 viewport_height = active_player_count == 2 ?
-      SCREEN_HT / 2 : SCREEN_HT;
+    u32 x_offset = playerViewportX(player_num);
+    u32 y_offset = playerViewportY(player_num);
+    u32 viewport_height = playerViewportHeight();
     u32 bar_width = HOTBAR_SLOT_COUNT * HOTBAR_SLOT_SIZE;
-    u32 bar_x = (SCREEN_WD - bar_width) / 2;
-    u32 bar_y = y_offset + viewport_height - HOTBAR_SLOT_SIZE -
-      HOTBAR_MARGIN;
+    u32 bar_x;
+    u32 bar_y;
     ItemStack *held_stack = &players[player_num].inventory[
       INVENTORY_HOTBAR_START + players[player_num].selected_hotbar_slot];
     u8 slot;
 
-    drawChar('P', 6, y_offset + 6);
-    drawChar('1' + player_num, 13, y_offset + 6);
-    if (players[player_num].camera_mode == CAMERA_THIRD_PERSON) {
-      drawString("3P", 25, y_offset + 6);
-      drawString(itemName(held_stack->count > 0 ? held_stack->item : AIR),
-        43, y_offset + 6);
+    if (usesFourPlayerLayout()) {
+      bar_width = HOTBAR_SLOT_COUNT * 14;
+      bar_x = x_offset + (playerViewportWidth() - bar_width) / 2;
+      bar_y = y_offset + viewport_height - 14 - 4;
+      drawChar('P', x_offset + 5, y_offset + 5);
+      drawChar('1' + player_num, x_offset + 12, y_offset + 5);
     } else {
-    drawString(itemName(held_stack->count > 0 ? held_stack->item : AIR),
-      25, y_offset + 6);
-    }
-    if (pickup_message[player_num] > 0) {
-      drawChar('+', 6, y_offset + 16);
-      drawString(itemName(pickup_item[player_num]), 13, y_offset + 16);
+      bar_x = (SCREEN_WD - bar_width) / 2;
+      bar_y = y_offset + viewport_height - HOTBAR_SLOT_SIZE - HOTBAR_MARGIN;
+      drawChar('P', 6, y_offset + 6);
+      drawChar('1' + player_num, 13, y_offset + 6);
+      if (players[player_num].camera_mode == CAMERA_THIRD_PERSON) {
+        drawString("3P", 25, y_offset + 6);
+        drawString(itemName(held_stack->count > 0 ? held_stack->item : AIR),
+          43, y_offset + 6);
+      } else {
+        drawString(itemName(held_stack->count > 0 ? held_stack->item : AIR),
+          25, y_offset + 6);
+      }
+      if (pickup_message[player_num] > 0) {
+        drawChar('+', 6, y_offset + 16);
+        drawString(itemName(pickup_item[player_num]), 13, y_offset + 16);
+      }
     }
     for (slot = 0; slot < HOTBAR_SLOT_COUNT; slot++) {
       ItemStack *stack = &players[player_num].inventory[
         INVENTORY_HOTBAR_START + slot];
-      drawStackCount(stack, bar_x + slot * HOTBAR_SLOT_SIZE + 2,
+      drawStackCount(stack, bar_x + slot * (usesFourPlayerLayout() ? 14 : HOTBAR_SLOT_SIZE) + 2,
         bar_y + 1);
     }
   }
@@ -1072,17 +1263,20 @@ void drawHUD() {
   } else if (current_screen == GAME) {
     loaded_texture = NULL;
     for (player_num = 0; player_num < active_player_count; player_num++) {
-      u32 y_offset = active_player_count == 2 ? player_num * (SCREEN_HT / 2) : 0;
-      u32 crosshair_y = y_offset +
-        (active_player_count == 2 ? SCREEN_HT / 4 : SCREEN_HT / 2);
-      drawCrosshair(SCREEN_WD / 2, crosshair_y, &players[player_num]);
-      drawBreakProgress(SCREEN_WD / 2, crosshair_y, &players[player_num]);
-      drawHotbar(player_num, y_offset);
+      u32 crosshair_x = playerViewportX(player_num) + playerViewportWidth() / 2;
+      u32 crosshair_y = playerViewportY(player_num) + playerViewportHeight() / 2;
+      drawCrosshair(crosshair_x, crosshair_y, &players[player_num]);
+      drawBreakProgress(crosshair_x, crosshair_y, &players[player_num]);
+      drawHotbar(player_num);
+      drawHealth(player_num);
     }
-    if (active_player_count == 2) {
+    if (active_player_count > 1) {
       gDPSetCycleType(dlp++, G_CYC_FILL);
       gDPSetFillColor(dlp++, (GPACK_RGBA5551(0, 0, 0, 1) << 16 | GPACK_RGBA5551(0, 0, 0, 1)));
       gDPFillRectangle(dlp++, 0, SCREEN_HT / 2 - 1, SCREEN_WD - 1, SCREEN_HT / 2);
+      if (usesFourPlayerLayout()) {
+        gDPFillRectangle(dlp++, SCREEN_WD / 2 - 1, 0, SCREEN_WD / 2, SCREEN_HT - 1);
+      }
       gDPPipeSync(dlp++);
     }
     gDPPipeSync(dlp++);

@@ -113,7 +113,8 @@ TextureSpec *textures[] = {
 Texture *preview_textures[] = {
   NULL, &dirt_texture, &stone_texture, &grass_side_texture,
   &cobblestone_texture, &sand_texture, &wood_side_texture,
-  &leaves_texture, &planks_texture, &bricks_texture, &planks_texture
+  &leaves_texture, &planks_texture, &bricks_texture, &planks_texture,
+  NULL, NULL, NULL, &leaves_texture
 };
 
 #define NUM_TEXTURES (sizeof(textures) / sizeof(textures[0]))

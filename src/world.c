@@ -29,21 +29,11 @@ void generateLeafHeights(int *heights) {
   heights[4 * 5 + 4] = -random(3);
 }
 
-void trySpawnTree(int tx, int tz) {
-  u8 block;
-  int ty, height;
+static void spawnTree(int tx, int ty, int tz) {
+  int height;
   int x, y, z;
   u8 tree_index;
   int leaf_heightmap[25];
-
-  for (ty = MAX_Y - 1; ty >= 0; ty--) {
-    block = blocks[tx * MAX_Z * MAX_Y + ty * MAX_Z + tz];
-    if (block == GRASS) {
-      break;
-    } else if (block != AIR) {
-      return;
-    }
-  }
 
   blocks[tx * MAX_Z * MAX_Y + ty * MAX_Z + tz] = DIRT;
 
@@ -65,6 +55,38 @@ void trySpawnTree(int tx, int tz) {
       }
     }
   }
+}
+
+void trySpawnTree(int tx, int tz) {
+  u8 block;
+  int ty;
+
+  for (ty = MAX_Y - 1; ty >= 0; ty--) {
+    block = blocks[tx * MAX_Z * MAX_Y + ty * MAX_Z + tz];
+    if (block == GRASS) {
+      spawnTree(tx, ty, tz);
+      return;
+    } else if (block != AIR) {
+      return;
+    }
+  }
+}
+
+u8 tryPlantTree(u8 x, u8 y, u8 z) {
+  u8 scan_y;
+
+  if (x >= MAX_X || y == 0 || y >= MAX_Y || z >= MAX_Z ||
+      blocks[x * MAX_Y * MAX_Z + y * MAX_Z + z] != AIR ||
+      blocks[x * MAX_Y * MAX_Z + (y - 1) * MAX_Z + z] != GRASS) {
+    return FALSE;
+  }
+  for (scan_y = y; scan_y < MAX_Y; scan_y++) {
+    if (blocks[x * MAX_Y * MAX_Z + scan_y * MAX_Z + z] != AIR) {
+      return FALSE;
+    }
+  }
+  spawnTree(x, y - 1, z);
+  return TRUE;
 }
 
 void initWorld() {

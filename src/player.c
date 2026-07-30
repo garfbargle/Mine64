@@ -10,6 +10,7 @@
 #include "trees.h"
 #include "storage.h"
 #include "audio.h"
+#include "world.h"
 
 #define START_X 32
 #define START_Z 48
@@ -346,6 +347,10 @@ static void spawnPlayer(Player *player, int x, int z) {
   player->walk_time = 0;
   player->walk_swing = 0;
   player->y_velocity = 0;
+  player->knockback_velocity = (Vector3) {0, 0, 0};
+  player->attack_time = 0;
+  player->hurt_time = 0;
+  player->health = PLAYER_MAX_HEALTH;
   player->camera_mode = CAMERA_FIRST_PERSON;
   player->held_block = COBBLESTONE;
   resetPlayerInventory(player);
@@ -367,20 +372,52 @@ static void spawnPlayer(Player *player, int x, int z) {
   player->position.y = (MAX_Y + EYE_HEIGHT) * BLOCK_SIZE;
 }
 
-void initPlayers() {
-  active_player_count = 1;
-  spawnPlayer(&players[0], START_X, START_Z);
-  players[1].active = FALSE;
-  players[1].target_present = FALSE;
+/* Death returns an avatar to its join spawn without consuming its hard-won
+   inventory.  The initial spawn routine remains responsible for new players. */
+static void respawnPlayer(Player *player, int x, int z) {
+  int y;
+
+  player->position.x = (x + 0.5f) * BLOCK_SIZE;
+  player->position.z = (z + 0.5f) * BLOCK_SIZE;
+  for (y = MAX_Y - 1; y >= 0; y--) {
+    if (blocks[x * MAX_Y * MAX_Z + y * MAX_Z + z]) {
+      player->position.y = (y + 1 + EYE_HEIGHT) * BLOCK_SIZE;
+      break;
+    }
+  }
+  if (y < 0) {
+    player->position.y = (MAX_Y + EYE_HEIGHT) * BLOCK_SIZE;
+  }
+  player->y_velocity = 0;
+  player->knockback_velocity = (Vector3) {0, 0, 0};
+  player->attack_time = 0;
+  player->hurt_time = 0;
+  player->health = PLAYER_MAX_HEALTH;
+  player->breaking = FALSE;
+  player->break_progress = 0;
 }
 
-void activatePlayerTwo() {
-  if (!players[1].active) {
-    /* A nearby, separate spawn avoids an immediate overlap without needing
+void initPlayers() {
+  u8 player_num;
+
+  active_player_count = 1;
+  spawnPlayer(&players[0], START_X, START_Z);
+  for (player_num = 1; player_num < MAX_PLAYERS; player_num++) {
+    players[player_num].active = FALSE;
+    players[player_num].target_present = FALSE;
+    players[player_num].breaking = FALSE;
+  }
+}
+
+void activatePlayer(u8 player_num) {
+  if (player_num < MAX_PLAYERS && !players[player_num].active) {
+    /* Nearby, staggered spawns avoid an immediate overlap without needing
        a second world copy or an expensive entity system. */
-    spawnPlayer(&players[1], START_X + 3, START_Z);
-    active_player_count = 2;
-    player_two_joined_message = 120;
+    spawnPlayer(&players[player_num], START_X + player_num * 3,
+      START_Z + (player_num & 1 ? 0 : 3));
+    active_player_count = player_num + 1;
+    player_joined_number = player_num + 1;
+    player_joined_message = 120;
   }
 }
 
@@ -523,8 +560,21 @@ static void placeBlock(u8 player_num, u8 x, u8 y, u8 z) {
   ItemStack *held_stack = &player->inventory[
     INVENTORY_HOTBAR_START + player->selected_hotbar_slot];
 
-  if (x >= MAX_X || y >= MAX_Y || z >= MAX_Z ||
-      player->held_block < FIRST_PLACEABLE_BLOCK || player->held_block > BLOCK_TYPE_COUNT) {
+  if (x >= MAX_X || y >= MAX_Y || z >= MAX_Z) {
+    return;
+  }
+
+  if (player->held_block == SAPLING) {
+    if (held_stack->item == SAPLING && held_stack->count > 0 &&
+        tryPlantTree(x, y, z)) {
+      held_stack->count--;
+      playSound(SOUND_PLACE);
+    }
+    return;
+  }
+
+  if (player->held_block < FIRST_PLACEABLE_BLOCK ||
+      player->held_block > BLOCK_TYPE_COUNT) {
     return;
   }
 
@@ -564,6 +614,9 @@ static u8 dropForBlock(u8 block, u8 tool, u8 *item) {
       tool != WOOD_PICKAXE) {
     return FALSE;
   }
+  if (block == LEAVES) {
+    return rollLeafDrop(item);
+  }
   *item = block;
   return TRUE;
 }
@@ -602,6 +655,80 @@ static u8 heldItem(Player *player) {
     INVENTORY_HOTBAR_START + player->selected_hotbar_slot];
 
   return held_stack->count > 0 ? held_stack->item : AIR;
+}
+
+/* Avatars already carry all of the state a first PvP pass needs.  Keep the
+   sword hit test intentionally short and forward-facing so mining retains its
+   B-button behavior unless another player is actually within reach. */
+static Player *swordTarget(u8 attacker_num) {
+  Player *attacker = &players[attacker_num];
+  Vector3 forward = {0, 0, -1};
+  Player *target = NULL;
+  float nearest = 999999.f;
+  u8 player_num;
+
+  forward = rotateY(forward, -attacker->yaw);
+  for (player_num = 0; player_num < active_player_count; player_num++) {
+    Player *candidate = &players[player_num];
+    float dx;
+    float dy;
+    float dz;
+    float horizontal_distance;
+    float facing;
+
+    if (player_num == attacker_num || !candidate->active) {
+      continue;
+    }
+    dx = candidate->position.x - attacker->position.x;
+    dy = candidate->position.y - attacker->position.y;
+    dz = candidate->position.z - attacker->position.z;
+    horizontal_distance = sqrtf(dx * dx + dz * dz);
+    if (horizontal_distance < 1.f || horizontal_distance > 100.f ||
+        dy < -88.f || dy > 48.f) {
+      continue;
+    }
+    facing = (forward.x * dx + forward.z * dz) / horizontal_distance;
+    if (facing < .35f || horizontal_distance >= nearest) {
+      continue;
+    }
+    nearest = horizontal_distance;
+    target = candidate;
+  }
+  return target;
+}
+
+static u8 swingSword(u8 attacker_num) {
+  Player *attacker = &players[attacker_num];
+  Player *target;
+  float dx;
+  float dz;
+  float horizontal_distance;
+
+  if (heldItem(attacker) != WOOD_SWORD || attacker->attack_time > 0) {
+    return FALSE;
+  }
+  target = swordTarget(attacker_num);
+  if (target == NULL) {
+    return FALSE;
+  }
+
+  attacker->attack_time = PLAYER_ATTACK_DURATION;
+  target->health = target->health > 4 ? target->health - 4 : 0;
+  target->hurt_time = PLAYER_ATTACK_DURATION;
+  dx = target->position.x - attacker->position.x;
+  dz = target->position.z - attacker->position.z;
+  horizontal_distance = sqrtf(dx * dx + dz * dz);
+  target->knockback_velocity.x = dx / horizontal_distance * 13.f;
+  target->knockback_velocity.z = dz / horizontal_distance * 13.f;
+  target->y_velocity = max(target->y_velocity, 5.f);
+  playSound(SOUND_PUNCH);
+
+  if (target->health == 0) {
+    u8 target_num = target - players;
+    respawnPlayer(target, START_X + target_num * 3,
+      START_Z + (target_num & 1 ? 0 : 3));
+  }
+  return TRUE;
 }
 
 static float blockBreakTime(u8 block, u8 tool) {
@@ -666,6 +793,18 @@ static void updateBreaking(u8 player_num, float delta) {
   }
 }
 
+static void openInventory(u8 player_num) {
+  Player *player = &players[player_num];
+
+  player->crafting_table_open = player->target_present &&
+    blocks[player->target_x * MAX_Y * MAX_Z + player->target_y * MAX_Z +
+      player->target_z] == CRAFTING_TABLE;
+  player->inventory_area = INVENTORY_AREA_ITEMS;
+  inventory_player = player_num;
+  resetInventoryNavigation();
+  current_screen = INVENTORY;
+}
+
 static u8 onGround(Player *player) {
   int x, y, z;
   Vector3i min_block, max_block;
@@ -685,7 +824,7 @@ static u8 onGround(Player *player) {
   return FALSE;
 }
 
-static void updatePlayer(u8 player_num, float delta) {
+static u8 updatePlayer(u8 player_num, float delta) {
   Player *player = &players[player_num];
   NUContData *cont = &cont_data[player_num];
   Vector3 velocity = {0, 0, 0};
@@ -702,6 +841,9 @@ static void updatePlayer(u8 player_num, float delta) {
 
   if (stick_x > -4 && stick_x < 4) stick_x = 0;
   if (stick_y > -4 && stick_y < 4) stick_y = 0;
+
+  player->attack_time = max(0, player->attack_time - delta);
+  player->hurt_time = max(0, player->hurt_time - delta);
 
   if (cont->button & Z_TRIG) {
     player->yaw -= stick_x * delta / STICK_DAMPER;
@@ -734,6 +876,10 @@ static void updatePlayer(u8 player_num, float delta) {
        leg or arm hanging at the last animation frame. */
     player->walk_swing = max(0, player->walk_swing - delta / 6);
   }
+
+  velocity = add(velocity, player->knockback_velocity);
+  player->knockback_velocity = mul(player->knockback_velocity,
+    max(0, 1.f - delta * .16f));
 
   if (cont->button & L_CBUTTONS) {
     if (!block_dec_held[player_num]) {
@@ -774,11 +920,25 @@ static void updatePlayer(u8 player_num, float delta) {
   }
 
   updateTargetBlock(player_num);
-  if ((cont->trigger & A_BUTTON) && player->target_present) {
-    placeBlock(player_num, player->build_offset_x + player->target_x,
-      player->build_offset_y + player->target_y, player->build_offset_z + player->target_z);
+  if (cont->trigger & A_BUTTON) {
+    if (player->target_present &&
+        blocks[player->target_x * MAX_Y * MAX_Z + player->target_y * MAX_Z +
+          player->target_z] == CRAFTING_TABLE) {
+      openInventory(player_num);
+      return TRUE;
+    }
+    if (player->target_present) {
+      placeBlock(player_num, player->build_offset_x + player->target_x,
+        player->build_offset_y + player->target_y,
+        player->build_offset_z + player->target_z);
+    }
   }
-  updateBreaking(player_num, delta);
+  if ((cont->trigger & B_BUTTON) && swingSword(player_num)) {
+    resetBreaking(player);
+  } else {
+    updateBreaking(player_num, delta);
+  }
+  return FALSE;
 }
 
 void updatePlayers() {
@@ -787,8 +947,9 @@ void updatePlayers() {
   u16 down_pressed, up_pressed, act_pressed;
   u8 i;
 
-  nuContDataGetEx(&cont_data[0], 0);
-  nuContDataGetEx(&cont_data[1], 1);
+  /* NuSystem snapshots all four pads together and derives each pad's trigger
+     state from that shared sample. */
+  nuContDataGetExAll(cont_data);
   time = osGetTime();
   delta = last_time == 0 ? 1.f :
     OS_CYCLES_TO_USEC(time - last_time) * 60 / 1000000.f;
@@ -917,24 +1078,23 @@ void updatePlayers() {
     return;
   }
 
-  if (!players[1].active && (cont_data[1].trigger & START_BUTTON)) {
-    activatePlayerTwo();
+  /* Players join in port order, keeping the active range contiguous for the
+     renderer, saves, and every per-player simulation loop. */
+  if (active_player_count < MAX_PLAYERS &&
+      (cont_data[active_player_count].trigger & START_BUTTON)) {
+    activatePlayer(active_player_count);
     return;
   }
   for (i = 0; i < active_player_count; i++) {
     if (cont_data[i].trigger & START_BUTTON) {
-      players[i].crafting_table_open = players[i].target_present &&
-        blocks[players[i].target_x * MAX_Y * MAX_Z + players[i].target_y * MAX_Z +
-          players[i].target_z] == CRAFTING_TABLE;
-      players[i].inventory_area = INVENTORY_AREA_ITEMS;
-      inventory_player = i;
-      resetInventoryNavigation();
-      current_screen = INVENTORY;
+      openInventory(i);
       return;
     }
   }
   for (i = 0; i < active_player_count; i++) {
-    updatePlayer(i, delta);
+    if (updatePlayer(i, delta)) {
+      return;
+    }
   }
   updateTrees(delta);
   updateDroppedItems(delta);

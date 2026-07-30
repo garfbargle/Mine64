@@ -7,7 +7,8 @@
 enum Screen current_screen = MENU;
 u32 save_message_cooldown = 0;
 u8 save_failed_message = 0;
-u8 player_two_joined_message = 0;
+u8 player_joined_message = 0;
+u8 player_joined_number = 0;
 
 static char *menu_text[] = {
   "MINE64",
@@ -43,7 +44,7 @@ static char *info_text[] = {
   "Inventory: START button",
   "Jump: Right shoulder",
   "Save game: D-Pad",
-  "Co-op: Player 2 presses START"
+  "Co-op: Controllers 2-4 press START"
 };
 
 static char *generating_text[] = {
@@ -62,9 +63,8 @@ static char *save_failed_text[] = {
   "Save failed"
 };
 
-static char *player_two_joined_text[] = {
-  "Player 2 joined"
-};
+static char player_joined_text[] = "Player 1 joined";
+static char *player_joined_lines[] = {player_joined_text};
 
 static char *inventory_text[] = {
   "Inventory",
@@ -218,8 +218,9 @@ void drawMenu() {
         text = saved_text;
         n_lines = sizeof(saved_text) / sizeof(char *);
       } else {
-        text = player_two_joined_text;
-        n_lines = sizeof(player_two_joined_text) / sizeof(char *);
+        player_joined_text[7] = '0' + player_joined_number;
+        text = player_joined_lines;
+        n_lines = 1;
       }
       y_start = SCREEN_HT / 3;
       break;
@@ -233,7 +234,7 @@ void drawMenu() {
   }
 
   if (current_screen == GAME && save_message_cooldown == 0 &&
-      save_failed_message == 0 && player_two_joined_message == 0) {
+      save_failed_message == 0 && player_joined_message == 0) {
     return;
   }
 
@@ -243,8 +244,8 @@ void drawMenu() {
   if (save_failed_message > 0) {
     save_failed_message--;
   }
-  if (player_two_joined_message > 0) {
-    player_two_joined_message--;
+  if (player_joined_message > 0) {
+    player_joined_message--;
   }
 
   beginText();
@@ -255,7 +256,9 @@ void drawMenu() {
       continue;
     }
     if (current_screen == INVENTORY && i == 0) {
-      text_line = inventory_player == 0 ? "P1 Inventory" : "P2 Inventory";
+      static char inventory_title[] = "P1 Inventory";
+      inventory_title[1] = '1' + inventory_player;
+      text_line = inventory_title;
     } else if (current_screen == MENU && i >= option_lines[0]) {
       u8 world = i - option_lines[0];
       text_line = files_present[world] ? world_names[world] : "New World";

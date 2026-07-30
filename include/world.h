@@ -3,9 +3,9 @@
 
 #include <nusys.h>
 
-#define MAX_X 64
+#define MAX_X 96
 #define MAX_Y 32
-#define MAX_Z 64
+#define MAX_Z 96
 
 #define CHUNK_SIZE 8
 
@@ -19,5 +19,6 @@
 extern u8 blocks[NUM_BLOCKS];
 
 void initWorld();
+u8 tryPlantTree(u8 x, u8 y, u8 z);
 
 #endif /* WORLD_H */

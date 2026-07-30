@@ -27,10 +27,25 @@ const char *itemName(u8 item) {
   static const char *names[] = {
     "Empty", "Dirt", "Stone", "Grass", "Cobblestone", "Sand", "Log",
     "Leaves", "Planks", "Bricks", "Crafting Table", "Stick",
-    "Wood Sword", "Wood Pickaxe"
+    "Wood Sword", "Wood Pickaxe", "Sapling"
   };
 
-  return item <= WOOD_PICKAXE ? names[item] : "Unknown";
+  return item <= ITEM_TYPE_COUNT ? names[item] : "Unknown";
+}
+
+u8 rollLeafDrop(u8 *item) {
+  /* A leaf produces one outcome: saplings are rare, and the remainder has an
+     even chance to survive as a leaf cube.  This keeps a small felled tree
+     from flooding the 16-slot pickup pool. */
+  if (random(10) == 0) {
+    *item = SAPLING;
+    return TRUE;
+  }
+  if (random(2) == 0) {
+    *item = LEAVES;
+    return TRUE;
+  }
+  return FALSE;
 }
 
 void initDroppedItems() {

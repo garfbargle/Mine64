@@ -12,6 +12,8 @@
 #define STICK         11
 #define WOOD_SWORD    12
 #define WOOD_PICKAXE  13
+#define SAPLING       14
+#define ITEM_TYPE_COUNT SAPLING
 
 typedef struct {
   Vector3 position;
@@ -31,6 +33,7 @@ extern u8 pickup_item[MAX_PLAYERS];
 
 u8 itemMaxStack(u8 item);
 const char *itemName(u8 item);
+u8 rollLeafDrop(u8 *item);
 void initDroppedItems();
 u8 spawnDroppedItem(u8 item, u8 count, u8 x, u8 y, u8 z);
 void updateDroppedItems(float delta);

@@ -1,7 +1,7 @@
 # Mine64 for Nintendo 64
 
 Mine64 is a compact block-building game for original Nintendo 64 hardware.
-Version 0.3 adds hardware-stable two-player co-op, deeper mining and crafting,
+Version 0.3 adds hardware-stable four-player co-op, deeper mining and crafting,
 safer cartridge saves, and an asset pipeline that does not require Minecraft
 files.
 
@@ -11,9 +11,10 @@ files.
 
 ## v0.3 highlights
 
-* Two-player horizontal split-screen: Player 2 can join a running world with
-  **START** on Controller 2.
-* Both players have independent movement, camera control, targeting, block
+* Up to four players: Controller 2 joins with horizontal split-screen; adding
+  Player 3 or 4 switches to a 2x2 split-screen. Players join a running world
+  in controller order with **START** on their controller.
+* All players have independent movement, camera control, targeting, block
   selection, placement, breaking, inventory management, and crafting.
 * Split-screen render commands and every camera/entity matrix are
   double-buffered. This prevents the RSP from reading a camera transform while
@@ -35,8 +36,8 @@ files.
 * Long frame hitches are clamped before physics simulation, preventing world
   generation or storage delays from pushing players through terrain.
 * Co-op deliberately uses a narrower view and no more than 24 visible columns
-  per player. This keeps the RSP and display-list workload within the limits of
-  an unmodified N64.
+  per player in two-player mode, or 8 in four-player mode. This keeps the RSP
+  and display-list workload within the limits of an unmodified N64.
 * Original, generated 16-colour block tiles and UI font replace the former
   external Minecraft-art build dependency.
 
@@ -48,12 +49,12 @@ files.
 | Hold L + analog stick | Sprint |
 | Hold Z + analog stick | Look around |
 | C-up | Toggle first-person / third-person camera |
-| A / hold B | Place / mine the targeted block |
+| A / hold B | Use a crafting table or place / mine; tap B with a sword to attack a nearby player |
 | C-left / C-right | Cycle the selected hotbar block |
 | START | Open / close that player's inventory |
 | R | Jump |
 | D-pad (either player) | Save, when cartridge storage is available |
-| Controller 2 START | Join co-op during a running world |
+| Controller 2-4 START | Join co-op during a running world |
 
 The bottom hotbar starts empty. Its bright slot and the enlarged block at the
 lower right show what each player is holding; that is the block placed with
@@ -62,7 +63,10 @@ Every current terrain block can be broken and the gatherable ones pop out as a
 small cube before flying into the player when collected. Stone, cobblestone,
 and bricks are slow to punch and yield nothing without a wooden pickaxe; the
 pickaxe both mines them faster and gathers their cube. A wooden sword clears
-leaves quickly.
+leaves quickly. In co-op, face a nearby player and tap **B** to swing: each
+hit removes two hearts and knocks the target back. A player who loses all ten
+hearts respawns at full health with their inventory intact. Equipped swords
+are visible in both first- and third-person views.
 
 Either player can press **START** to open their inventory. It has a 3-row
 storage grid, a selectable nine-slot hotbar, and a working 2x2 crafting area.
@@ -70,8 +74,9 @@ Navigate with the analog stick, D-pad, or C-buttons. Use **A** to pick up/place
 a stack or take the output, and **B** to move one item at a time. One log makes
 four planks; two
 vertical planks make four sticks; and four planks make a crafting table.
-Place a crafting table, look at it, then press **START** to open its 3x3 grid
-for wooden swords and wooden pickaxes.
+Place a crafting table, look at it, then press **A** to open its 3x3 grid for
+wooden swords and wooden pickaxes. **START** also opens this grid while the
+table is targeted.
 
 ## SummerCart64
 
@@ -85,8 +90,10 @@ recommended deployment path:
 ```
 
 The menu path is `/Games/Mine64.n64`. The prior ROM is preserved as
-`/Games/Mine64_original.64`; existing
-`mine64/world_*.m64` save files are left alone. Saves are stored on the
+`/Games/Mine64_original.64`. The former 64x64-world saves
+(`mine64/world_*.m64`) are left alone. The
+larger-world build uses `mine64/world_large_*.m64`, so its saves cannot be
+misread with the old packed-world length. Saves are stored on the
 cartridge SD card when libcart detects a supported flash cartridge.
 
 For development-only USB streaming, with the SummerCart64 connected, use:
@@ -238,21 +245,21 @@ For the complete art-to-cartridge walkthrough, see
 
 ## Hardware notes
 
-Mine64 renders the same world mesh for both cameras rather than duplicating the
+Mine64 renders the same world mesh for every camera rather than duplicating the
 world. In co-op it also submits one small, untextured Steve-style model per
-viewport. The split-screen viewport shares the original framebuffer, and the
+viewport. The split-screen viewports share the original framebuffer, and the
 explicit co-op visibility cap keeps the main per-frame display list inside its
 fixed hardware budget, including third-person avatars and pickups. All
 per-frame display lists and referenced matrices are double-buffered so their
 memory stays immutable until the RSP finishes.
 
-The linked release program currently occupies about 2.1 MiB including its world,
+The linked release program currently occupies about 3.3 MiB including its world,
 geometry cache, NuSystem task buffers, and doubled render state. It remains
 within the stock console's 4 MiB RDRAM; an Expansion Pak is not required.
 
 ## Technical Details
 
-* The world consists of a 8x8 grid of "columns", each split into 4 vertical chunks of 8x8x8 blocks each.
+* The world consists of a 12x12 grid of "columns", each split into 4 vertical chunks of 8x8x8 blocks each (a 96x32x96-block world).
 * For each chunk a greedy scanning algorithm merges adjacent block faces with the same texture,
 to reduce the number of quads that need to be rendered.
 * `quads.h` contains the vertex data for all possible shapes and orientations of merged quad.

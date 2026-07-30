@@ -10,15 +10,19 @@
 #define FOV_Y_COOP 40
 #define FOV_RATIO ((float) SCREEN_WD / (float) SCREEN_HT)
 #define COOP_FOV_RATIO ((float) SCREEN_WD / (float) (SCREEN_HT / 2))
+#define FOUR_PLAYER_FOV_RATIO ((float) (SCREEN_WD / 2) / (float) (SCREEN_HT / 2))
 #define NUM_CULL_LINES 4
 #define ALL_ACCEPT ((1 << NUM_CULL_LINES) - 1)
 #define COOP_MAX_VISIBLE_COLUMNS 24
+#define FOUR_PLAYER_MAX_VISIBLE_COLUMNS 8
 #define THIRD_PERSON_DISTANCE 176.f
 #define THIRD_PERSON_HEIGHT 24.f
 #define THIRD_PERSON_SAMPLES 12
 #define THIRD_PERSON_AVATAR_MIN_DISTANCE 40.f
 #define LOADING_PREVIEW_FRAMES 150
-#define LOADING_ORBIT_RADIUS 3200.f
+#define LOADING_ORBIT_RADIUS 4800.f
+#define LOADING_CAMERA_HEIGHT 3300.f
+#define LOADING_CAMERA_BOB 240.f
 #define LOADING_WORLD_CENTER (MAX_X * BLOCK_SIZE / 2.f)
 
 typedef struct {
@@ -26,6 +30,12 @@ typedef struct {
   float b;
   float c;
 } Line2D;
+
+enum CameraViewMode {
+  CAMERA_VIEW_SOLO,
+  CAMERA_VIEW_TWO_PLAYER,
+  CAMERA_VIEW_FOUR_PLAYER
+};
 
 u8 visible_columns[MAX_PLAYERS][CHUNKS_X * CHUNKS_Z];
 u8 third_person_avatar_visible[MAX_PLAYERS];
@@ -118,9 +128,11 @@ void initCamera() {
 
   for (frame = 0; frame < NUM_DISPLAY_LISTS; frame++) {
     guPerspective(&projection_matrix[frame][0], &perspective_norm[frame][0],
-      FOV_Y, FOV_RATIO, 10, 8000, 1.0);
-    guPerspective(&projection_matrix[frame][1], &perspective_norm[frame][1],
+      FOV_Y, FOV_RATIO, 10, 12000, 1.0);
+    guPerspective(&projection_matrix[frame][CAMERA_VIEW_TWO_PLAYER], &perspective_norm[frame][CAMERA_VIEW_TWO_PLAYER],
       FOV_Y_COOP, COOP_FOV_RATIO, 10, 8000, 1.0);
+    guPerspective(&projection_matrix[frame][CAMERA_VIEW_FOUR_PLAYER], &perspective_norm[frame][CAMERA_VIEW_FOUR_PLAYER],
+      FOV_Y_COOP, FOUR_PLAYER_FOV_RATIO, 10, 8000, 1.0);
   }
 }
 
@@ -156,14 +168,18 @@ static void makeVerticalCullLine(Line2D *line, float side, Player *player,
 }
 
 static void updateVisibleColumnsFor(u8 player_num, Player *player,
-    Vector3 camera_position, u8 coop) {
+    Vector3 camera_position, u8 view_mode) {
   u8 cx, cz, i;
   u8 s1, s2, s3, s4;
   u8 visible_count = 0;
   u8 farthest_x = 0, farthest_z = 0;
   float dx, dz, distance, farthest_distance;
-  float fov_y = coop ? FOV_Y_COOP : FOV_Y;
-  float fov_x = fov_y * (coop ? COOP_FOV_RATIO : FOV_RATIO);
+  u8 multiplayer = view_mode != CAMERA_VIEW_SOLO;
+  u8 max_visible_columns = view_mode == CAMERA_VIEW_FOUR_PLAYER ?
+    FOUR_PLAYER_MAX_VISIBLE_COLUMNS : COOP_MAX_VISIBLE_COLUMNS;
+  float fov_y = multiplayer ? FOV_Y_COOP : FOV_Y;
+  float fov_x = fov_y * (view_mode == CAMERA_VIEW_FOUR_PLAYER ?
+    FOUR_PLAYER_FOV_RATIO : (multiplayer ? COOP_FOV_RATIO : FOV_RATIO));
 
   makeHorizontalCullLine(&cull_lines[0], -1, player, camera_position, fov_x);
   makeHorizontalCullLine(&cull_lines[1], 1, player, camera_position, fov_x);
@@ -190,22 +206,22 @@ static void updateVisibleColumnsFor(u8 player_num, Player *player,
       visible_columns[player_num][cx * CHUNKS_Z + cz] = (s1 | s2 | s3 | s4) == ALL_ACCEPT;
 
       /* A radius limit prevents the second camera from turning co-op into a
-         worst-case double RSP transform.  The world is only eight chunks wide. */
+         worst-case double RSP transform.  The world is twelve chunks wide. */
       dx = cx * CHUNK_SIZE + CHUNK_SIZE / 2 -
         camera_position.x / BLOCK_SIZE;
       dz = cz * CHUNK_SIZE + CHUNK_SIZE / 2 -
         camera_position.z / BLOCK_SIZE;
-      if (coop && dx * dx + dz * dz > 1600) {
+      if (multiplayer && dx * dx + dz * dz > 1600) {
         visible_columns[player_num][cx * CHUNKS_Z + cz] = FALSE;
       }
       if (visible_columns[player_num][cx * CHUNKS_Z + cz]) visible_count++;
     }
   }
 
-  /* The world display list is deliberately bounded as well as the view
-     distance: 24 columns x 11 textures x 2 players is comfortably within
-     the 1,024-command per-frame list on a stock N64. */
-  while (coop && visible_count > COOP_MAX_VISIBLE_COLUMNS) {
+  /* Four cameras fit the same 320x240 framebuffer, but their combined RSP
+     work must still fit the fixed display-list budget.  Eight near columns
+     per quadrant keeps four views below the former two-player worst case. */
+  while (multiplayer && visible_count > max_visible_columns) {
     farthest_distance = -1;
     for (cx = 0; cx < CHUNKS_X; cx++) {
       for (cz = 0; cz < CHUNKS_Z; cz++) {
@@ -229,8 +245,10 @@ static void updateVisibleColumnsFor(u8 player_num, Player *player,
 }
 
 void updateVisibleColumns(u8 player_num) {
+  u8 view_mode = active_player_count >= 3 ? CAMERA_VIEW_FOUR_PLAYER :
+    (active_player_count == 2 ? CAMERA_VIEW_TWO_PLAYER : CAMERA_VIEW_SOLO);
   updateVisibleColumnsFor(player_num, &players[player_num],
-    playerCameraPosition(player_num), active_player_count == 2);
+    playerCameraPosition(player_num), view_mode);
 }
 
 static void updateCameraMatricesFor(u8 player_num, Player *player,
@@ -262,20 +280,21 @@ void updateLoadingCamera() {
   float low_orbit = sinf(angle * .5f * M_DTOR);
   Vector3 camera_position;
 
-  /* The orbit looks inward across the centre of the 64x64-block map.  Its
-     radius keeps the complete landscape in a 60-degree view without using a
-     separate, low-detail world model. */
+  /* The orbit looks inward across the centre of the 96x96-block map.  Its
+     radius and height keep the complete landscape in a 60-degree view
+     without using a separate, low-detail world model. */
   loading_camera.position.x = LOADING_WORLD_CENTER +
     sinf(angle * M_DTOR) * LOADING_ORBIT_RADIUS;
   loading_camera.position.z = LOADING_WORLD_CENTER +
     cosf(angle * M_DTOR) * LOADING_ORBIT_RADIUS;
-  loading_camera.position.y = 2200.f + low_orbit * 160.f;
+  loading_camera.position.y = LOADING_CAMERA_HEIGHT +
+    low_orbit * LOADING_CAMERA_BOB;
   loading_camera.yaw = angle;
   loading_camera.pitch = -22.f;
   loading_camera.camera_mode = CAMERA_FIRST_PERSON;
   camera_position = loading_camera.position;
 
-  updateVisibleColumnsFor(0, &loading_camera, camera_position, FALSE);
+  updateVisibleColumnsFor(0, &loading_camera, camera_position, CAMERA_VIEW_SOLO);
   updateCameraMatricesFor(0, &loading_camera, camera_position, FALSE);
   loading_preview_frame++;
 }
@@ -296,7 +315,11 @@ u8 loadingPreviewProgress() {
 }
 
 void loadCameraMatrices(u8 player_num) {
-  u8 projection = !loading_preview_active && active_player_count == 2;
+  u8 projection = CAMERA_VIEW_SOLO;
+  if (!loading_preview_active) {
+    projection = active_player_count >= 3 ? CAMERA_VIEW_FOUR_PLAYER :
+      (active_player_count == 2 ? CAMERA_VIEW_TWO_PLAYER : CAMERA_VIEW_SOLO);
+  }
   gSPMatrix(dlp++, OS_K0_TO_PHYSICAL(&projection_matrix[dl_no][projection]),
     G_MTX_PROJECTION | G_MTX_LOAD | G_MTX_NOPUSH);
   gSPPerspNormalize(dlp++, perspective_norm[dl_no][projection]);

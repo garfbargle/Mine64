@@ -405,7 +405,9 @@ static u8 emitDebris(TreeRecord *tree) {
       x = tree->x + local_x - 2;
       y = tree->canopy_y + local_y;
       z = tree->z + local_z - 2;
-      item = LEAVES;
+      if (!rollLeafDrop(&item)) {
+        continue;
+      }
     }
     if (!spawnDroppedItem(item, 1, x, y, z)) {
       tree->debris_cursor--;

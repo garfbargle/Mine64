@@ -4,7 +4,9 @@
 #include <nusys.h>
 #include "math.h"
 
-#define MAX_PLAYERS 2
+/* The Nintendo 64 has four controller ports.  Keep player state indexed by
+   port so a joining controller always owns the matching local player. */
+#define MAX_PLAYERS 4
 #define INVENTORY_COLUMNS 9
 #define INVENTORY_STORAGE_ROWS 3
 #define INVENTORY_HOTBAR_ROWS 1
@@ -19,6 +21,8 @@
 #define PLAYER_CRAFTING_ROWS 2
 #define CAMERA_FIRST_PERSON 0
 #define CAMERA_THIRD_PERSON 1
+#define PLAYER_MAX_HEALTH 20
+#define PLAYER_ATTACK_DURATION 12.f
 
 enum InventoryArea {
   INVENTORY_AREA_CRAFTING,
@@ -41,6 +45,12 @@ typedef struct {
   float walk_time;
   float walk_swing;
   float y_velocity;
+  /* Combat state is transient, so loading a world never resumes a player at
+     one hit point or halfway through an animation. */
+  Vector3 knockback_velocity;
+  float attack_time;
+  float hurt_time;
+  u8 health;
   u8 camera_mode;
   int held_block;
   ItemStack inventory[INVENTORY_SIZE];
@@ -83,7 +93,7 @@ void resetPlayerInventory(Player *player);
 u8 addItemToInventory(Player *player, u8 item, u8 count);
 u8 getCraftResult(Player *player, ItemStack *result);
 
-/* Used by save-game compatibility code. */
-void activatePlayerTwo();
+/* Used by the local join flow and save-game compatibility code. */
+void activatePlayer(u8 player_num);
 
 #endif /* PLAYER_H */

@@ -14,8 +14,10 @@ static FATFS fs;
 // "MI64"
 #define MAGIC_NUM 0x4D493634
 #define LEGACY_HEADER_PAGE_SIZE 128
-#define BUFFER_LEN 256
-#define SAVE_VERSION 6
+#define LEGACY_COOP_HEADER_SIZE 256
+#define LEGACY_MAX_PLAYERS 2
+#define BUFFER_LEN 512
+#define SAVE_VERSION 8
 
 typedef struct {
   u32 magic_num;
@@ -48,6 +50,19 @@ typedef struct {
   u32 checksum;
   SavedPlayer player[MAX_PLAYERS];
 } Header;
+
+/* Versions 4-7 stored exactly two SavedPlayer records in a 256-byte header.
+   Keep this ABI frozen so expanding the live player array never makes an old
+   save appear malformed or shifts the packed world data. */
+typedef struct {
+  u32 magic_num;
+  u32 version;
+  u32 file_num;
+  u32 save_count;
+  u32 player_count;
+  u32 checksum;
+  SavedPlayer player[LEGACY_MAX_PLAYERS];
+} HeaderV7;
 
 /* Save v5 introduced tree records.  Its compact layout pre-dates the falling
    animation fields in v6, so v5 records are checksummed then reconstructed
@@ -83,7 +98,7 @@ typedef struct {
   u32 file_num;
   u32 save_count;
   u32 player_count;
-  SavedPlayerV3 player[MAX_PLAYERS];
+  SavedPlayerV3 player[LEGACY_MAX_PLAYERS];
 } HeaderV3;
 
 /* v2 saved just the log stack.  Keep its layout separate so existing worlds
@@ -102,7 +117,7 @@ typedef struct {
   u32 file_num;
   u32 save_count;
   u32 player_count;
-  SavedPlayerV2 player[MAX_PLAYERS];
+  SavedPlayerV2 player[LEGACY_MAX_PLAYERS];
 } HeaderV2;
 
 /* The first co-op save format did not contain an inventory count.  Its
@@ -120,7 +135,7 @@ typedef struct {
   u32 file_num;
   u32 save_count;
   u32 player_count;
-  SavedPlayerV1 player[MAX_PLAYERS];
+  SavedPlayerV1 player[LEGACY_MAX_PLAYERS];
 } HeaderV1;
 
 static u32 save_count = 0;
@@ -133,27 +148,47 @@ typedef char HeaderMustFitBuffer[
   sizeof(Header) <= BUFFER_LEN ? 1 : -1
 ];
 
+typedef char LegacyHeaderMustRemainOnePage[
+  sizeof(HeaderV7) == LEGACY_COOP_HEADER_SIZE ? 1 : -1
+];
+
 static u8 file_buffer[BUFFER_LEN] __attribute__((aligned(16)));
 static u32 cursor_pos = 0;
 static UINT buffer_bytes_read = 0;
+
+/* The reserved bytes of player zero record the chunk dimensions. */
+static void saveWorldDimensions(Header *header) {
+  header->player[0].reserved[0] = CHUNKS_X;
+  header->player[0].reserved[1] = CHUNKS_Y;
+  header->player[0].reserved[2] = CHUNKS_Z;
+}
+
+static u8 savedWorldDimensionsMatch(SavedPlayer *saved_players) {
+  return saved_players[0].reserved[0] == CHUNKS_X &&
+    saved_players[0].reserved[1] == CHUNKS_Y &&
+    saved_players[0].reserved[2] == CHUNKS_Z;
+}
 
 static u32 checksumByte(u32 checksum, u8 value) {
   return (checksum ^ value) * 16777619UL;
 }
 
-static u32 checksumPlayers(SavedPlayer *players_to_save, u32 player_count) {
+static u32 checksumPlayers(SavedPlayer *players_to_save, u32 player_count,
+    u8 stored_player_slots) {
   u8 *bytes = (u8 *) players_to_save;
   u32 checksum = checksumByte(2166136261UL, player_count);
   u32 index;
 
-  for (index = 0; index < sizeof(SavedPlayer) * MAX_PLAYERS; index++) {
+  for (index = 0; index < sizeof(SavedPlayer) * stored_player_slots; index++) {
     checksum = checksumByte(checksum, bytes[index]);
   }
   return checksum;
 }
 
-static u32 checksumSave(SavedPlayer *players_to_save, u32 player_count) {
-  u32 checksum = checksumPlayers(players_to_save, player_count);
+static u32 checksumSave(SavedPlayer *players_to_save, u32 player_count,
+    u8 stored_player_slots) {
+  u32 checksum = checksumPlayers(players_to_save, player_count,
+    stored_player_slots);
   u32 index;
 
   for (index = 0; index < NUM_BLOCKS; index++) {
@@ -175,24 +210,98 @@ static u32 checksumTrees(u32 checksum) {
 u8 saving_available;
 u8 files_present[3];
 u32 game_file_num;
+char world_names[3][WORLD_NAME_LENGTH + 1];
 
 static char *file_names[] = {
-  "mine64/world_1.m64",
-  "mine64/world_2.m64",
-  "mine64/world_3.m64"
+  "mine64/world_large_1.m64",
+  "mine64/world_large_2.m64",
+  "mine64/world_large_3.m64"
 };
 
 static char *temporary_file_names[] = {
-  "mine64/temp_1.tmp",
-  "mine64/temp_2.tmp",
-  "mine64/temp_3.tmp"
+  "mine64/temp_large_1.tmp",
+  "mine64/temp_large_2.tmp",
+  "mine64/temp_large_3.tmp"
 };
 
 static char *backup_file_names[] = {
-  "mine64/world_1.bak",
-  "mine64/world_2.bak",
-  "mine64/world_3.bak"
+  "mine64/world_large_1.bak",
+  "mine64/world_large_2.bak",
+  "mine64/world_large_3.bak"
 };
+
+static char *name_file_names[] = {
+  "mine64/world_large_1.name",
+  "mine64/world_large_2.name",
+  "mine64/world_large_3.name"
+};
+
+static void setDefaultWorldName(u8 slot) {
+  char *name = world_names[slot];
+
+  name[0] = 'W';
+  name[1] = 'o';
+  name[2] = 'r';
+  name[3] = 'l';
+  name[4] = 'd';
+  name[5] = ' ';
+  name[6] = '1' + slot;
+  name[7] = 0;
+}
+
+void setWorldName(u8 slot, const char *name) {
+  u8 i;
+
+  if (slot >= 3) {
+    return;
+  }
+  for (i = 0; i < WORLD_NAME_LENGTH && name[i]; i++) {
+    world_names[slot][i] = name[i] >= ' ' && name[i] <= '~' ?
+      name[i] : ' ';
+  }
+  while (i > 0 && world_names[slot][i - 1] == ' ') {
+    i--;
+  }
+  if (i == 0) {
+    setDefaultWorldName(slot);
+  } else {
+    world_names[slot][i] = 0;
+  }
+}
+
+static void loadWorldName(u8 slot) {
+  FIL file;
+  UINT read;
+  char name[WORLD_NAME_LENGTH + 1];
+
+  if (f_open(&file, name_file_names[slot], FA_READ) != FR_OK) {
+    return;
+  }
+  if (f_read(&file, name, WORLD_NAME_LENGTH, &read) == FR_OK && read > 0) {
+    name[read] = 0;
+    setWorldName(slot, name);
+  }
+  f_close(&file);
+}
+
+static void saveWorldName(u8 slot) {
+  FIL file;
+  UINT written;
+  u8 length = 0;
+
+  while (length < WORLD_NAME_LENGTH && world_names[slot][length]) {
+    length++;
+  }
+  if (f_open(&file, name_file_names[slot],
+      FA_WRITE | FA_CREATE_ALWAYS) != FR_OK) {
+    return;
+  }
+  if (f_write(&file, world_names[slot], length, &written) == FR_OK &&
+      written == length) {
+    f_sync(&file);
+  }
+  f_close(&file);
+}
 
 static u8 recoverBackup(u8 slot) {
   FILINFO info;
@@ -256,7 +365,7 @@ static void restoreSavedInventory(Player *player, SavedPlayer *saved) {
 
   for (slot = 0; slot < INVENTORY_SIZE; slot++) {
     ItemStack stack = saved->inventory[slot];
-    if (stack.item > WOOD_PICKAXE || stack.item == AIR) {
+    if (stack.item > ITEM_TYPE_COUNT || stack.item == AIR) {
       stack.item = AIR;
       stack.count = 0;
     } else if (stack.count > itemMaxStack(stack.item)) {
@@ -266,7 +375,7 @@ static void restoreSavedInventory(Player *player, SavedPlayer *saved) {
   }
   for (slot = 0; slot < CRAFTING_SIZE; slot++) {
     ItemStack stack = saved->crafting[slot];
-    if (stack.item > WOOD_PICKAXE || stack.item == AIR) {
+    if (stack.item > ITEM_TYPE_COUNT || stack.item == AIR) {
       stack.item = AIR;
       stack.count = 0;
     } else if (stack.count > itemMaxStack(stack.item)) {
@@ -275,7 +384,7 @@ static void restoreSavedInventory(Player *player, SavedPlayer *saved) {
     player->crafting[slot] = stack;
   }
   player->carried_item = saved->carried_item;
-  if (player->carried_item.item > WOOD_PICKAXE ||
+  if (player->carried_item.item > ITEM_TYPE_COUNT ||
       player->carried_item.item == AIR) {
     player->carried_item.item = AIR;
     player->carried_item.count = 0;
@@ -302,6 +411,10 @@ static void restorePlayerState(Player *player, Vector3 position, float pitch,
   player->body_yaw = yaw;
   player->walk_time = 0;
   player->walk_swing = 0;
+  player->knockback_velocity = (Vector3) {0, 0, 0};
+  player->attack_time = 0;
+  player->hurt_time = 0;
+  player->health = PLAYER_MAX_HEALTH;
   player->camera_mode = CAMERA_FIRST_PERSON;
   player->held_block = held_block;
   player->y_velocity = 0;
@@ -335,6 +448,7 @@ void initStorage() {
   saving_available = FALSE;
   for (i = 0; i < 3; i++) {
     files_present[i] = FALSE;
+    setDefaultWorldName(i);
   }
 
   if (cart_init() != 0) {
@@ -375,6 +489,9 @@ void initStorage() {
       res = f_stat(file_names[i], &info);
     }
     files_present[i] = res == FR_OK && !(info.fattrib & AM_DIR);
+    if (files_present[i]) {
+      loadWorldName(i);
+    }
     f_unlink(temporary_file_names[i]);
   }
 }
@@ -407,6 +524,7 @@ u8 saveGame() {
   u8 write_ok = TRUE;
   u8 packed;
   u8 slot;
+  u8 player_num;
   u8 had_previous_file;
   u8 *blocks_ptr;
   const u8 *blocks_end = blocks + NUM_BLOCKS;
@@ -424,15 +542,22 @@ u8 saveGame() {
     return FALSE;
   }
 
+  /* Inactive slots are included in the checksummed fixed-size header.  Clear
+     them first so a new single-player save is deterministic and recoverable. */
+  for (cursor_pos = 0; cursor_pos < sizeof(Header); cursor_pos++) {
+    file_buffer[cursor_pos] = 0;
+  }
   header->magic_num = MAGIC_NUM;
   header->version = SAVE_VERSION;
   header->file_num = game_file_num;
   header->save_count = save_count + 1;
   header->player_count = active_player_count;
-  savePlayerState(&header->player[0], &players[0]);
-  savePlayerState(&header->player[1], &players[1]);
+  for (player_num = 0; player_num < active_player_count; player_num++) {
+    savePlayerState(&header->player[player_num], &players[player_num]);
+  }
+  saveWorldDimensions(header);
   header->checksum = checksumTrees(
-    checksumSave(header->player, header->player_count));
+    checksumSave(header->player, header->player_count, MAX_PLAYERS));
 
   cursor_pos = sizeof(Header);
   while (cursor_pos < BUFFER_LEN) {
@@ -486,6 +611,7 @@ u8 saveGame() {
   if (write_ok) {
     save_count++;
     files_present[slot] = TRUE;
+    saveWorldName(slot);
   } else {
     f_unlink(temporary_file_names[slot]);
   }
@@ -495,6 +621,7 @@ u8 saveGame() {
 void loadGame() {
   FIL file;
   Header *header = (Header *) file_buffer;
+  HeaderV7 *header_v7 = (HeaderV7 *) file_buffer;
   HeaderV3 *header_v3 = (HeaderV3 *) file_buffer;
   HeaderV2 *header_v2 = (HeaderV2 *) file_buffer;
   HeaderV1 *header_v1 = (HeaderV1 *) file_buffer;
@@ -516,6 +643,7 @@ void loadGame() {
   u8 *blocks_ptr;
   u8 *trees_ptr;
   u32 tree_byte;
+  u8 player_num;
   const u8 *blocks_end = blocks + NUM_BLOCKS;
 
   if (game_file_num < 1 || game_file_num > 3) {
@@ -533,8 +661,18 @@ void loadGame() {
   read_ok = readPage(&file);
   if (!read_ok || legacy_header->magic_num != MAGIC_NUM ||
       legacy_header->version > SAVE_VERSION ||
+      (legacy_header->version == SAVE_VERSION &&
+       buffer_bytes_read < sizeof(Header)) ||
+      (legacy_header->version == 7 &&
+       !savedWorldDimensionsMatch(header_v7->player)) ||
+      (legacy_header->version == SAVE_VERSION &&
+       !savedWorldDimensionsMatch(header->player)) ||
       (legacy_header->version >= 1 &&
-       (header_v1->player_count < 1 || header_v1->player_count > MAX_PLAYERS))) {
+       ((legacy_header->version == SAVE_VERSION &&
+         (header->player_count < 1 || header->player_count > MAX_PLAYERS)) ||
+        (legacy_header->version < SAVE_VERSION &&
+         (header_v1->player_count < 1 ||
+          header_v1->player_count > LEGACY_MAX_PLAYERS))))) {
     f_close(&file);
     if (recoverBackup(game_file_num - 1)) {
       loadGame();
@@ -554,6 +692,10 @@ void loadGame() {
   players[0].body_yaw = players[0].yaw;
   players[0].walk_time = 0;
   players[0].walk_swing = 0;
+  players[0].knockback_velocity = (Vector3) {0, 0, 0};
+  players[0].attack_time = 0;
+  players[0].hurt_time = 0;
+  players[0].health = PLAYER_MAX_HEALTH;
   players[0].camera_mode = CAMERA_FIRST_PERSON;
   players[0].held_block = legacy_header->held_block;
   players[0].y_velocity = 0;
@@ -561,29 +703,49 @@ void loadGame() {
   players[0].target_present = FALSE;
   players[0].breaking = FALSE;
   players[0].break_progress = 0;
-  players[1].active = FALSE;
-  players[1].camera_mode = CAMERA_FIRST_PERSON;
-  players[1].target_present = FALSE;
-  players[1].breaking = FALSE;
-  players[1].break_progress = 0;
+  for (player_num = 1; player_num < MAX_PLAYERS; player_num++) {
+    players[player_num].active = FALSE;
+    players[player_num].camera_mode = CAMERA_FIRST_PERSON;
+    players[player_num].knockback_velocity = (Vector3) {0, 0, 0};
+    players[player_num].attack_time = 0;
+    players[player_num].hurt_time = 0;
+    players[player_num].health = PLAYER_MAX_HEALTH;
+    players[player_num].target_present = FALSE;
+    players[player_num].breaking = FALSE;
+    players[player_num].break_progress = 0;
+  }
   active_player_count = 1;
 
-  if (legacy_header->version >= 4) {
+  if (legacy_header->version == SAVE_VERSION) {
     expected_checksum = header->checksum;
-    computed_checksum = checksumPlayers(header->player, header->player_count);
-    restorePlayerState(&players[0], header->player[0].position,
-      header->player[0].pitch, header->player[0].yaw, AIR);
-    restoreSavedInventory(&players[0], &header->player[0]);
-    if (header->player_count == 2) {
-      restorePlayerState(&players[1], header->player[1].position,
-        header->player[1].pitch, header->player[1].yaw, AIR);
-      restoreSavedInventory(&players[1], &header->player[1]);
+    computed_checksum = checksumPlayers(header->player, header->player_count,
+      MAX_PLAYERS);
+    for (player_num = 0; player_num < header->player_count; player_num++) {
+      restorePlayerState(&players[player_num], header->player[player_num].position,
+        header->player[player_num].pitch, header->player[player_num].yaw, AIR);
+      restoreSavedInventory(&players[player_num], &header->player[player_num]);
+    }
+    active_player_count = header->player_count;
+    full_inventory_saved = TRUE;
+    tree_records_saved = TRUE;
+    cursor_pos = BUFFER_LEN;
+  } else if (legacy_header->version >= 4) {
+    expected_checksum = header_v7->checksum;
+    computed_checksum = checksumPlayers(header_v7->player,
+      header_v7->player_count, LEGACY_MAX_PLAYERS);
+    restorePlayerState(&players[0], header_v7->player[0].position,
+      header_v7->player[0].pitch, header_v7->player[0].yaw, AIR);
+    restoreSavedInventory(&players[0], &header_v7->player[0]);
+    if (header_v7->player_count == 2) {
+      restorePlayerState(&players[1], header_v7->player[1].position,
+        header_v7->player[1].pitch, header_v7->player[1].yaw, AIR);
+      restoreSavedInventory(&players[1], &header_v7->player[1]);
       active_player_count = 2;
     }
     full_inventory_saved = TRUE;
-    tree_records_saved = legacy_header->version >= SAVE_VERSION;
+    tree_records_saved = legacy_header->version >= 6;
     legacy_tree_records_saved = legacy_header->version == 5;
-    cursor_pos = BUFFER_LEN;
+    cursor_pos = LEGACY_COOP_HEADER_SIZE;
   } else if (legacy_header->version >= 3 && header_v3->player_count == 2) {
     restorePlayerState(&players[0], header_v3->player[0].position,
       header_v3->player[0].pitch, header_v3->player[0].yaw,
@@ -688,8 +850,13 @@ void loadGame() {
     }
   }
 
-  if (!playerStateValid(&players[0]) ||
-      (players[1].active && !playerStateValid(&players[1]))) {
+  for (player_num = 0; player_num < active_player_count; player_num++) {
+    if (!playerStateValid(&players[player_num])) {
+      read_ok = FALSE;
+      break;
+    }
+  }
+  if (!read_ok) {
     f_close(&file);
     if (recoverBackup(game_file_num - 1)) {
       loadGame();
