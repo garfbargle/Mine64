@@ -54,15 +54,29 @@ for wooden swords and wooden pickaxes.
 
 ## SummerCart64
 
-On the cartridge SD card, launch:
+For the normal SummerCart64 menu workflow, upload the built ROM to the
+cartridge SD card, then select it in the menu. This is the persistent,
+recommended deployment path:
 
-```
-/games/Mine64.n64
+```sh
+../N64FlashcartMenu/tools/sc64/sc64deployer sd upload \
+  build/mine64.n64 /Games/Mine64.n64
 ```
 
-The prior ROM is preserved as `/games/Mine64_original.64`; existing
+The menu path is `/Games/Mine64.n64`. The prior ROM is preserved as
+`/Games/Mine64_original.64`; existing
 `mine64/world_*.m64` save files are left alone. Saves are stored on the
 cartridge SD card when libcart detects a supported flash cartridge.
+
+For development-only USB streaming, with the SummerCart64 connected, use:
+
+```sh
+../N64FlashcartMenu/tools/sc64/sc64deployer upload build/mine64.n64
+```
+
+This sends the ROM to the cartridge's RAM and configures **Bootloader → ROM**;
+it does not create or replace a file on the SD card. To bypass the bootloader
+and start the uploaded ROM directly, add `--direct`.
 
 ## Build
 
