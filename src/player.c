@@ -785,6 +785,16 @@ static void placeBlock(u8 player_num, u8 x, u8 y, u8 z) {
     if (held_stack->item == SAPLING && held_stack->count > 0 &&
         tryPlantTree(x, y, z)) {
       held_stack->count--;
+      /*
+       * A planted tree writes its trunk and five-by-five canopy in one step.
+       * Mark every touched horizontal coordinate so canopies spanning chunk
+       * boundaries become visible as soon as their columns are rebuilt.
+       */
+      for (bx = max((int) x - 2, 0); bx < min((int) x + 3, MAX_X); bx++) {
+        for (bz = max((int) z - 2, 0); bz < min((int) z + 3, MAX_Z); bz++) {
+          makeDisplayListsAt(bx, bz);
+        }
+      }
       playSound(SOUND_PLACE);
     }
     return;
