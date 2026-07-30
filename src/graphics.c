@@ -1670,8 +1670,14 @@ static void drawGameText() {
     for (slot = 0; slot < HOTBAR_SLOT_COUNT; slot++) {
       ItemStack *stack = &players[player_num].inventory[
         INVENTORY_HOTBAR_START + slot];
-      drawStackCount(stack, bar_x + slot * (usesFourPlayerLayout() ? 14 : HOTBAR_SLOT_SIZE) + 2,
-        bar_y + 1);
+      /* The 5x7 `1` glyph reads as a white underline at hotbar scale.
+         Single items do not need a count label; retain labels only when a
+         stack contains more than one item. */
+      if (stack->count > 1) {
+        drawStackCount(stack,
+          bar_x + slot * (usesFourPlayerLayout() ? 14 : HOTBAR_SLOT_SIZE) + 2,
+          bar_y + 1);
+      }
     }
   }
 }
