@@ -144,6 +144,18 @@ static u8 building_scenic;
    scenic pass resolves it once per column instead of rescanning the full
    height for every candidate quad. */
 static u8 surface_heights[CHUNK_SIZE][CHUNK_SIZE];
+/*
+ * Rebuild classes for dirty_columns.  A player edit's changed faces are
+ * already visible as missing or stale geometry the frame it happens, so edit
+ * marks outrank stream marks in the queue, and edits are the only marks that
+ * may rebuild past the frame's work deadline outside the mesh stage's turn
+ * in the streaming rotation (see STREAM_STAGE_* in world.h).  Marks only
+ * ever upgrade: a stream mark landing on an edit-marked column must not
+ * demote the rebuild the player is watching for.
+ */
+#define DIRTY_NONE 0
+#define DIRTY_STREAM 1
+#define DIRTY_EDIT 2
 static u8 dirty_columns[WINDOW_SLOTS];
 /* Frames left before rebuilds may be attempted after the arena refused an
    allocation; the dirty marks and the ring scan keep the need alive. */
@@ -2019,16 +2031,20 @@ void graphicsInvalidateColumnSlot(u32 slot) {
   dirty_columns[slot] = FALSE;
 }
 
-static void markColumnDirty(int cx, int cz) {
+static void markColumnDirty(int cx, int cz, u8 class) {
   /* Only a resident column has anything to rebuild; an edit that reaches past
      the window has no mesh to invalidate. */
   if (windowColumnResident(cx, cz)) {
-    dirty_columns[WINDOW_SLOT(cx, cz)] = TRUE;
+    u32 slot = WINDOW_SLOT(cx, cz);
+
+    if (dirty_columns[slot] < class) {
+      dirty_columns[slot] = class;
+    }
   }
 }
 
 void graphicsMarkColumnDirty(int cx, int cz) {
-  markColumnDirty(cx, cz);
+  markColumnDirty(cx, cz, DIRTY_STREAM);
 }
 
 void makeDisplayListsAt(int x, int z) {
@@ -2038,15 +2054,15 @@ void makeDisplayListsAt(int x, int z) {
   /* Block edits are cheap to mark now.  A later graphics callback bakes a
      bounded amount of geometry, so mining and tree felling cannot monopolize
      a gameplay frame. */
-  markColumnDirty(cx, cz);
+  markColumnDirty(cx, cz, DIRTY_EDIT);
   /* Mask, not modulo: a negative coordinate's remainder is negative, so the
      seam with the column to the west would be missed.  The cx > 0 guards go
      with it -- there is no column zero to stop at any more. */
   if ((x & CHUNK_MASK) == 0) {
-    markColumnDirty(cx - 1, cz);
+    markColumnDirty(cx - 1, cz, DIRTY_EDIT);
   }
   if ((z & CHUNK_MASK) == 0) {
-    markColumnDirty(cx, cz - 1);
+    markColumnDirty(cx, cz - 1, DIRTY_EDIT);
   }
 }
 
@@ -2057,38 +2073,42 @@ void makeDisplayListsAt(int x, int z) {
  * hundreds of columns to fill the player literally watched terrain paint
  * in from the fog toward them instead of from their feet out.
  */
-static u8 takeDirtyColumn(int *cx, int *cz) {
+static u8 takeDirtyColumn(int *cx, int *cz, u8 *class) {
   u16 slot;
   u16 best_slot = 0;
   int best_distance = 0;
-  u8 found = FALSE;
+  u8 best_class = DIRTY_NONE;
 
   for (slot = 0; slot < WINDOW_SLOTS; slot++) {
     int distance;
 
-    if (!dirty_columns[slot]) {
+    if (dirty_columns[slot] == DIRTY_NONE) {
       continue;
     }
     /* The window can rebind a slot between an edit and this rebuild, which
        leaves a mark referring to a column that is no longer there. */
     if (!windowSlotResident(slot)) {
-      dirty_columns[slot] = FALSE;
+      dirty_columns[slot] = DIRTY_NONE;
       continue;
     }
     distance = columnPlayerDistance(windowSlotChunkX(slot),
       windowSlotChunkZ(slot));
-    if (!found || distance < best_distance) {
-      found = TRUE;
+    /* An edit outranks every stream mark whatever their distances: its
+       changed faces are already on screen.  Within a class, nearest first. */
+    if (dirty_columns[slot] > best_class ||
+        (dirty_columns[slot] == best_class && distance < best_distance)) {
+      best_class = dirty_columns[slot];
       best_distance = distance;
       best_slot = slot;
     }
   }
-  if (!found) {
+  if (best_class == DIRTY_NONE) {
     return FALSE;
   }
-  dirty_columns[best_slot] = FALSE;
+  dirty_columns[best_slot] = DIRTY_NONE;
   *cx = windowSlotChunkX(best_slot);
   *cz = windowSlotChunkZ(best_slot);
+  *class = best_class;
   return TRUE;
 }
 
@@ -2131,6 +2151,7 @@ u8 graphicsColumnNeedsMesh(int cx, int cz) {
 
 static void processColumnDisplayListUpdates(int can_reclaim_mesh_arena) {
   u8 budget;
+  u8 overrun_used;
 
   if (!can_reclaim_mesh_arena) {
     return;
@@ -2145,21 +2166,36 @@ static void processColumnDisplayListUpdates(int can_reclaim_mesh_arena) {
     return;
   }
 
+  overrun_used = FALSE;
   for (budget = 0; budget < MESH_REBUILD_BUDGET; budget++) {
     int cx, cz;
-    /* The first rebuild always runs, so edits are never starved; the
-       deadline sheds only the extras. */
-    if (budget > 0 && streamWorkExpired()) {
+    u8 class;
+
+    if (!takeDirtyColumn(&cx, &cz, &class)) {
       break;
     }
-    if (!takeDirtyColumn(&cx, &cz)) {
-      break;
+    if (streamWorkExpired()) {
+      /*
+       * Past the deadline, at most one rebuild still runs, and only for the
+       * two callers that cannot wait a frame: a player edit, whose changed
+       * faces are already on screen, and the mesh stage's turn in the
+       * streaming rotation, which keeps stream rebuilds from starving when
+       * every frame's deadline is oversubscribed.  A full greedy mesh is
+       * the single largest unit the callback can pay, so this admission is
+       * most of what the rotation saves.
+       */
+      if (overrun_used || (class != DIRTY_EDIT &&
+          !worldStreamStageGuaranteed(STREAM_STAGE_MESH))) {
+        markColumnDirty(cx, cz, class);
+        break;
+      }
+      overrun_used = TRUE;
     }
     if (!makeColumnDisplayLists(cx, cz)) {
       /* Allocation failed: the column keeps its old mesh and its mark.
          Back off so the retry does not pay a full greedy mesh every frame
          while eviction and defrag make room. */
-      markColumnDirty(cx, cz);
+      markColumnDirty(cx, cz, class);
       mesh_alloc_cooldown = MESH_ALLOC_COOLDOWN_FRAMES;
       break;
     }
