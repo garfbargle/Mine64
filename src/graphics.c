@@ -2217,10 +2217,15 @@ static void drawDetailsForPlayer(u8 viewer_num) {
   u16 index;
   u8 render_slot;
 
+  /* No records means no pass and no state changes to undo afterwards. */
+  if (detail_count == 0) {
+    return;
+  }
+
   /* Maintain a tiny nearest set in one pass.  Detail count is globally
      bounded, while the selected list keeps matrix and command cost bounded
      independently for solo, split-screen, and four-player views. */
-  for (index = 0; index < MAX_DETAILS; index++) {
+  for (index = 0; index < detail_scan_limit; index++) {
     DetailCell *detail = &details[index];
     Vector3 position;
     Vector3 offset;

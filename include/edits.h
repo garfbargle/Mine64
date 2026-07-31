@@ -19,6 +19,9 @@ typedef struct {
 
 extern WorldEdit world_edits[MAX_WORLD_EDITS];
 extern u16 world_edit_count;
+/* One past the highest slot ever handed out since initWorldEdits.  See the
+   matching note on detail_scan_limit. */
+extern u16 world_edit_scan_limit;
 extern u32 world_edit_overflows;
 
 void initWorldEdits(void);

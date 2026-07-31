@@ -37,6 +37,10 @@ typedef struct {
 
 extern DetailCell details[MAX_DETAILS];
 extern u16 detail_count;
+/* One past the highest slot ever handed out since initDetails.  Records are
+   allocated from the low end, so every pool walk can stop here instead of at
+   MAX_DETAILS -- which is what keeps an empty pool genuinely free. */
+extern u16 detail_scan_limit;
 extern u32 detail_overflows;
 
 void initDetails(void);

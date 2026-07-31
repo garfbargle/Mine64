@@ -5,12 +5,13 @@
 
 WorldEdit world_edits[MAX_WORLD_EDITS];
 u16 world_edit_count;
+u16 world_edit_scan_limit;
 u32 world_edit_overflows;
 
 static WorldEdit *findEdit(int x, int y, int z) {
   u16 index;
 
-  for (index = 0; index < MAX_WORLD_EDITS; index++) {
+  for (index = 0; index < world_edit_scan_limit; index++) {
     WorldEdit *edit = &world_edits[index];
     if (edit->active && edit->x == x && edit->y == y && edit->z == z) {
       return edit;
@@ -23,6 +24,7 @@ void initWorldEdits(void) {
   u16 index;
 
   world_edit_count = 0;
+  world_edit_scan_limit = 0;
   world_edit_overflows = 0;
   for (index = 0; index < MAX_WORLD_EDITS; index++) {
     world_edits[index].active = FALSE;
@@ -37,6 +39,11 @@ u8 worldEditCanSet(int x, int y, int z) {
     return FALSE;
   }
   if (findEdit(x, y, z) != NULL) {
+    return TRUE;
+  }
+  /* Every slot above the high-water mark has never been handed out, so an
+     unreached mark is itself proof that a free slot exists. */
+  if (world_edit_scan_limit < MAX_WORLD_EDITS) {
     return TRUE;
   }
   for (index = 0; index < MAX_WORLD_EDITS; index++) {
@@ -67,6 +74,9 @@ u8 worldEditSet(int x, int y, int z, u8 block) {
       world_edit_overflows++;
       return FALSE;
     }
+    if (index >= world_edit_scan_limit) {
+      world_edit_scan_limit = index + 1;
+    }
     edit->x = x;
     edit->z = z;
     edit->y = y;
@@ -82,10 +92,12 @@ u8 worldEditSet(int x, int y, int z, u8 block) {
 void worldApplyEditsToColumn(int cx, int cz) {
   u16 index;
 
-  if (!windowColumnResident(cx, cz)) {
+  /* Runs for every column the streamer decorates, so an unedited world must
+     not pay for the 2048-slot ceiling on each one. */
+  if (world_edit_count == 0 || !windowColumnResident(cx, cz)) {
     return;
   }
-  for (index = 0; index < MAX_WORLD_EDITS; index++) {
+  for (index = 0; index < world_edit_scan_limit; index++) {
     WorldEdit *edit = &world_edits[index];
     if (edit->active && (edit->x >> CHUNK_SHIFT) == cx &&
         (edit->z >> CHUNK_SHIFT) == cz) {

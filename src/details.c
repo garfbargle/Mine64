@@ -7,6 +7,7 @@
 
 DetailCell details[MAX_DETAILS];
 u16 detail_count;
+u16 detail_scan_limit;
 u32 detail_overflows;
 
 static u8 detailCovers(const DetailCell *detail, int x, int y, int z) {
@@ -23,19 +24,39 @@ void initDetails(void) {
   u16 index;
 
   detail_count = 0;
+  detail_scan_limit = 0;
   detail_overflows = 0;
   for (index = 0; index < MAX_DETAILS; index++) {
     details[index].active = FALSE;
   }
 }
 
+/*
+ * A detail lookup must be answerable in roughly the cost of a block read.
+ *
+ * blockAt asks detailIsCustomAt about every cell of every plane of every
+ * column the greedy mesher compiles -- tens of thousands of queries per
+ * column, and a column is meshed again after every edit.  A linear walk of
+ * the record pool there costs far more than building the mesh itself, and it
+ * is paid in full even in a world that contains no details at all, which is
+ * every world until the player places a torch.
+ *
+ * Two facts make the common answer free.  Every live record keeps
+ * CRAFTING_TABLE in the terrain as its occupied proxy -- detailPlace writes
+ * it and detailsApplyColumn restores it after a column regenerates -- so a
+ * cell holding anything else cannot carry a record, and one nibble read
+ * settles it.  Beyond that, records are handed out from the low end of the
+ * pool, so the scan needs to reach only the high-water mark rather than the
+ * 384-slot ceiling.
+ */
 DetailCell *detailAt(int x, int y, int z) {
   u16 index;
 
-  if ((u32) y >= MAX_Y) {
+  if ((u32) y >= MAX_Y || detail_count == 0 ||
+      blockGet(x, y, z) != CRAFTING_TABLE) {
     return NULL;
   }
-  for (index = 0; index < MAX_DETAILS; index++) {
+  for (index = 0; index < detail_scan_limit; index++) {
     if (detailCovers(&details[index], x, y, z)) {
       return &details[index];
     }
@@ -94,6 +115,9 @@ u8 detailPlace(u8 item, int x, int y, int z, u8 orientation, u8 flags) {
   if (detail == NULL) {
     detail_overflows++;
     return FALSE;
+  }
+  if (index >= detail_scan_limit) {
+    detail_scan_limit = index + 1;
   }
 
   detail->x = x;
@@ -190,7 +214,7 @@ u8 detailLightAt(Vector3 position) {
   u16 index;
   int strongest = 0;
 
-  for (index = 0; index < MAX_DETAILS; index++) {
+  for (index = 0; index < detail_scan_limit; index++) {
     DetailCell *detail = &details[index];
     int dx, dy, dz, distance;
     int light;
@@ -216,10 +240,10 @@ u8 detailLightAt(Vector3 position) {
 void detailsApplyColumn(int cx, int cz) {
   u16 index;
 
-  if (!windowColumnResident(cx, cz)) {
+  if (detail_count == 0 || !windowColumnResident(cx, cz)) {
     return;
   }
-  for (index = 0; index < MAX_DETAILS; index++) {
+  for (index = 0; index < detail_scan_limit; index++) {
     DetailCell *detail = &details[index];
     if (!detail->active || (detail->x >> CHUNK_SHIFT) != cx ||
         (detail->z >> CHUNK_SHIFT) != cz) {
@@ -232,10 +256,12 @@ void detailsApplyColumn(int cx, int cz) {
   }
 }
 
+/* Called on every window claim and release, so it must cost nothing in the
+   overwhelmingly common case of a world with no generated details. */
 void detailsEvictGeneratedColumn(int cx, int cz) {
   u16 index;
 
-  for (index = 0; index < MAX_DETAILS; index++) {
+  for (index = 0; index < detail_scan_limit; index++) {
     DetailCell *detail = &details[index];
     if (detail->active && (detail->flags & DETAIL_FLAG_GENERATED) &&
         (detail->x >> CHUNK_SHIFT) == cx &&
