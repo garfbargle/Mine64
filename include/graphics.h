@@ -62,6 +62,13 @@ extern volatile u32 diag_heartbeat;
 extern volatile u8 diag_player_step;
 extern volatile u8 diag_cpu_faulted;
 extern u32 diag_loop_clamps;
+/* Split the L total by the two collision loops.  The HUD temporarily shows
+   the ray guard's speed (S) and boundary time (N) in place of the
+   low-priority mesh/key rows once it fires. */
+extern u32 diag_ray_clamps;
+extern u32 diag_resolve_clamps;
+extern u32 diag_ray_guard_speed;
+extern u32 diag_ray_guard_time;
 extern u32 diag_position_glitches;
 /* Overlay visibility: Z + D-pad Up toggles; any integrity anomaly (fault,
    hang, key corruption, position snap) switches it on automatically.  The

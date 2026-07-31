@@ -786,6 +786,12 @@ static float detectCollision(Player *player, Vector3 velocity, float max_t, int 
     }
     step_axis = step.x != 0 ? 0 : (step.y != 0 ? 1 : 2);
     block = addi(block, step);
+    /* A face behind the sweep origin is not a collision.  Correct floored
+     * cell coordinates avoid this in normal play, but retaining the check
+     * makes float dust unable to return a negative time to the resolver. */
+    if (t < 0) {
+      continue;
+    }
     pos = div(add(player->position, mul(velocity, t)), BLOCK_SIZE);
 
     if (boxObstructed(pos, step_axis, *ati(&block, step_axis))) {
@@ -806,8 +812,19 @@ static float detectCollision(Player *player, Vector3 velocity, float max_t, int 
      * out of the world.  The L row still counts it.
      */
     if (++ray_steps >= 24) {
+      float speed = (velocity.x < 0 ? -velocity.x : velocity.x) +
+        (velocity.y < 0 ? -velocity.y : velocity.y) +
+        (velocity.z < 0 ? -velocity.z : velocity.z);
+
       diag_loop_clamps++;
       diag_ray_clamps++;
+      /* Never float-to-int a corrupt diagnostic value on the VR4300: that
+       * conversion itself raises the FPU exception this rig exists to catch.
+       * A saturated S/N is still an unambiguous bad-value report. */
+      diag_ray_guard_speed = speed > 0 && speed < 1000000.f ?
+        (u32) speed : 1000000;
+      diag_ray_guard_time = t > 0 && t < 1000.f ?
+        (u32) (t * 1000.f) : 1000000;
       *collision_axis = step_axis;
       return 0;
     }
@@ -1450,6 +1467,12 @@ static u8 updatePlayer(u8 player_num, float delta) {
   velocity = mul(velocity, delta);
   while (t_total < 1) {
     t = detectCollision(player, velocity, 1 - t_total, &collision_axis);
+    /* Collision time is a fraction of this frame.  It must never make the
+     * remaining horizon larger: that was the flat-ground R-held lock, where
+     * a negative time sent the DDA marching 24 cells at speed 8. */
+    if (t < 0) {
+      t = 0;
+    }
     move_t = t > 0.01f ? t - 0.01f : 0;
     player->position = add(player->position, mul(velocity, move_t));
     t_total += t;
@@ -1467,7 +1490,7 @@ static u8 updatePlayer(u8 player_num, float delta) {
        zeroed, or float dust) and the loop would otherwise spin the graphics
        thread forever.  Stop moving this frame and count it on the L row.
        Five keeps the degenerate frame cheap as well as finite. */
-    if (++resolve_steps >= 5) {
+    if (t_total < 1 && ++resolve_steps >= 5) {
       diag_loop_clamps++;
       diag_resolve_clamps++;
       break;

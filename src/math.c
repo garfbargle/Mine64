@@ -83,7 +83,12 @@ Vector3 div(Vector3 a, float b) {
 }
 
 Vector3i divToInt(Vector3 a, float b) {
-  Vector3i out = {a.x / b, a.y / b, a.z / b};
+  /* C's float-to-int conversion truncates toward zero.  Grid cells instead
+   * use floor on both sides of the origin: -0.1 belongs to cell -1, not 0.
+   * The collision DDA relies on that invariant; truncation made a negative
+   * sweep start one cell ahead, yielding a negative hit time and expanding
+   * the resolver's next sweep beyond the current frame. */
+  Vector3i out = {floor(a.x / b), floor(a.y / b), floor(a.z / b)};
   return out;
 }
 

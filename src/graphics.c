@@ -246,6 +246,10 @@ u16 fog_start = 993;
 /* Times a runaway loop guard fired in player collision code.  A rising L row
    with no freeze means a guard is eating what used to be the hang. */
 u32 diag_loop_clamps;
+u32 diag_ray_clamps;
+u32 diag_resolve_clamps;
+u32 diag_ray_guard_speed;
+u32 diag_ray_guard_time;
 /* Times a player position failed the sanity check (non-finite or absurdly far
    out) and was snapped back, or a rebase was refused for the same reason.
    Any non-zero G proves the position-corruption theory of the run-5 fault. */
@@ -3508,9 +3512,11 @@ static void drawStreamingDiagnostics() {
   y = drawDiagnosticRow("D", decorated, y);
   y = drawDiagnosticRow("Q", queued, y);
   y = drawDiagnosticRow("A", free_percent, y);
-  /* Allocated mesh blocks; alongside A this shows arena pressure now that
-     compaction no longer exists to get stuck. */
-  y = drawDiagnosticRow("C", mesh_block_count, y);
+  /* Once the boundary marcher fires, S is the swept-frame speed in world
+     units and N is its final candidate boundary time in thousandths.  They
+     borrow the two least relevant rows during this focused reproduction. */
+  y = drawDiagnosticRow(diag_ray_clamps ? "S" : "C",
+    diag_ray_clamps ? diag_ray_guard_speed : mesh_block_count, y);
   y = drawDiagnosticRow("T", pending_terrain, y);
   /* Worst frame gap and worst gated-CPU cost in the window, in tenths of a
      millisecond: W 166 is a clean 60 Hz frame, W 1000 is 10 fps.  B close to
@@ -3523,7 +3529,8 @@ static void drawStreamingDiagnostics() {
   /* Corrupt window keys caught and repaired.  Any non-zero K is the run-6
      guTranslate fault being absorbed; the first bad key's bits are in the
      freeze report. */
-  y = drawDiagnosticRow("K", window_key_faults, y);
+  y = drawDiagnosticRow(diag_ray_clamps ? "N" : "K",
+    diag_ray_clamps ? diag_ray_guard_time : window_key_faults, y);
   /* Fog start (screen depth), 0 when fog is toggled off.  Tune with
      Z + D-pad Left/Right; Z + D-pad Down toggles. */
   drawDiagnosticRow("P", fog_enabled ? fog_start : 0, y);
