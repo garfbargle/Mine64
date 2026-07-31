@@ -55,12 +55,16 @@
 
 /*
  * How far (in blocks, per axis) the player may wander from the render origin
- * before it is re-centred on them.  Far enough that rebasing is rare, near
- * enough that origin-relative translations -- terrain out to the mesh ring,
- * entities near the players -- stay well inside the s15.16 Mtx integer range:
- * 256 + a ~64-block ring is ~20500 units of a possible 32767.
+ * before it is re-centred on them.  Anything up to ~400 keeps origin-relative
+ * translations -- terrain out to the mesh ring, entities near the players --
+ * inside the s15.16 Mtx integer range.
+ *
+ * TEMPORARILY 64, down from 256, for the far-walk freeze bisection: the
+ * first rebase now fires a few blocks east of spawn instead of 200+ out, so
+ * if rebasing is the fault it reproduces immediately (watch O flip 0 to 1 on
+ * the diagnostics stack).  Restore 256 once the freeze is found.
  */
-#define REBASE_DISTANCE 256
+#define REBASE_DISTANCE 64
 
 static u8 world_job_stage = WORLD_JOB_IDLE;
 static u8 world_job_kind;
@@ -208,12 +212,14 @@ void callbackGfx(int pendingGfx) {
        * matrices need no special handling: draw() rebuilds all of them every
        * frame, so the frame drawn below is consistently in the new origin.
        */
-      if (player_block_x - render_origin_x > REBASE_DISTANCE ||
-          render_origin_x - player_block_x > REBASE_DISTANCE ||
-          player_block_z - render_origin_z > REBASE_DISTANCE ||
-          render_origin_z - player_block_z > REBASE_DISTANCE) {
+      if (stream_rebase_enabled &&
+          (player_block_x - render_origin_x > REBASE_DISTANCE ||
+           render_origin_x - player_block_x > REBASE_DISTANCE ||
+           player_block_z - render_origin_z > REBASE_DISTANCE ||
+           render_origin_z - player_block_z > REBASE_DISTANCE)) {
         graphicsSetRenderOrigin(player_block_x & ~CHUNK_MASK,
           player_block_z & ~CHUNK_MASK);
+        render_rebase_count++;
       }
 
       /*

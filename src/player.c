@@ -1443,6 +1443,14 @@ void updatePlayers() {
   /* NuSystem snapshots all four pads together and derives each pad's trigger
      state from that shared sample. */
   nuContDataGetExAll(cont_data);
+  /* Freeze bisection: hold Z+L+R and press C-right to toggle origin
+     rebasing (the B row on the diagnostics stack).  The hotbar also cycles;
+     harmless.  Temporary, until the far-walk freeze is found. */
+  if ((cont_data[0].button & (Z_TRIG | L_TRIG | R_TRIG)) ==
+      (Z_TRIG | L_TRIG | R_TRIG) &&
+      (cont_data[0].trigger & R_CBUTTONS)) {
+    stream_rebase_enabled = !stream_rebase_enabled;
+  }
   time = osGetTime();
   delta = last_time == 0 ? 1.f :
     OS_CYCLES_TO_USEC(time - last_time) * 60 / 1000000.f;

@@ -232,9 +232,40 @@ fully decorates, that the same terrain arrives with no walk history, that
 eviction and return regenerate it byte-identically, and that far trees carry
 canopies (the exact thing the old clamps broke).
 
-**Hardware checklist for the next session** (nothing above has been on the
-console yet; the streaming diagnostics HUD `R/D/Q/A/C/T` is still drawn in
-single player):
+**First hardware run: froze.** Walking one direction long enough hard-froze
+the console, repeatably, even walking slowly.  Diagnostics immediately before
+were healthy (R≈219 D≈153 Q0 A73 C0 T≈0), so the streaming loop was keeping
+up and the fault is in something the host harness cannot run — meshing,
+rendering, or the origin rebase.  The generation/streaming path also passed
+ASan+UBSan on the host, including the 100-chunk walk test.
+
+**The bisection build** (current tree) instruments for exactly this, per the
+debug-on-device doctrine:
+
+- The diagnostics are now a vertical stack on the left edge (clear of the
+  compass): `X Z` player block position (magnitude only), `F` frame
+  heartbeat mod 1000, `O` rebase count, `B` rebasing enabled, then the
+  original `R D Q A C T`.
+- `REBASE_DISTANCE` is **temporarily 64** (from 256), so the first rebase
+  fires a few blocks east of spawn.  If rebasing is the fault, the freeze
+  now reproduces seconds from spawn, exactly as `O` flips 0→1.
+- Hold **Z+L+R and press C-right** to toggle rebasing off (`B` shows 0; the
+  hotbar also cycles, harmless).  With it off, translations degrade past
+  ±512 blocks (world geometry garbles progressively) instead of rebasing —
+  ugly but expected, and it cleanly separates "rebase freezes" from
+  "distance freezes".
+
+Protocol: walk east from spawn watching `O` and `X`.  (1) Freeze right as
+`O` first ticks → rebase implicated; repeat with `B 0` to confirm the freeze
+moves far out.  (2) No freeze near `O` ticks but the far freeze still
+happens → note `X`, `F`, and whether `F` was still ticking at the moment of
+freeze; a frozen `F` means no frames were being built (RDP/RSP hang or a
+graphics-thread loop), a ticking `F` over frozen terrain means the streaming
+logic stalled.  Restore `REBASE_DISTANCE 256` and remove the toggle once the
+cause is found.
+
+**Hardware checklist for the next session** (nothing else above has been on
+the console yet):
 
 1. Walk east past block 112 — terrain must appear ahead, mesh and all, and
    the old edge must not stop you.

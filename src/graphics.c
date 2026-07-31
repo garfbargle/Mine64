@@ -115,6 +115,16 @@ int render_origin_z;
 float render_origin_units_x;
 float render_origin_units_z;
 
+/*
+ * Freeze-bisection instrumentation (see the hardware checklist in the
+ * streaming plan).  The console froze after long walks with every streaming
+ * counter healthy, so the diagnostics carry a rebase count and an alive
+ * counter, and rebasing can be switched off from the controller to rule it
+ * in or out without a rebuild.
+ */
+u8 stream_rebase_enabled = TRUE;
+u32 render_rebase_count = 0;
+
 #define BLOCKS_PER_CHUNK (CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE)
 
 /*
@@ -2790,23 +2800,38 @@ static u32 hudStringWidth(const char *text) {
 
 /*
  * Streaming state, on screen, because this console cannot be observed any
- * other way.  Reads, left to right:
+ * other way.  A vertical stack on the left edge, clear of the compass and
+ * the objective panel.  Top to bottom:
  *
+ *   F  frame heartbeat (mod 1000) -- frozen F means no frames are being
+ *      built at all; a ticking F over a stalled world means the pipeline is
+ *      alive and the fault is in streaming logic
+ *   O  times the render origin has rebased
+ *   B  1 while rebasing is enabled (hold Z+L+R, press C-right to toggle)
  *   R  columns resident in the window
  *   D  of those, fully decorated and therefore eligible to be meshed
  *   Q  columns queued for mesh compilation
  *   A  per-cent of the mesh arena still free
- *   C  1 while compacting, when no queued column can be compiled
+ *   C  0 idle, 1 compacting, 2 the last pass could not fit every column
+ *   T  ring columns with no terrain yet (reads as solid invisible walls)
  *
  * The failure this exists to catch is A pinned low with C stuck at 1: the
  * resident set is too large to fit after compaction, so it compacts forever
  * and Q never drains.  Terrain is then generated and walkable but never drawn.
  */
+static u32 diag_frame_heartbeat;
+
+static u32 drawDiagnosticRow(const char *label, u32 value, u32 y) {
+  drawString(label, 6, y);
+  drawUnsigned(value, 16, y);
+  return y + 11;
+}
+
 static void drawStreamingDiagnostics() {
   u32 slot;
   u32 resident = 0, decorated = 0, queued = 0, pending_terrain = 0;
   u32 free_percent;
-  u32 x;
+  u32 y = 6;
 
   for (slot = 0; slot < WINDOW_SLOTS; slot++) {
     if (windowSlotResident(slot)) {
@@ -2836,24 +2861,29 @@ static void drawStreamingDiagnostics() {
   free_percent = (u32) ((column_display_lists[active_column_arena] +
     DISPLAY_LIST_SIZE - column_arena_ends[active_column_arena]) /
     (DISPLAY_LIST_SIZE / 100));
+  diag_frame_heartbeat++;
 
   setHudTextColor(255, 220, 120);
-  drawString("R", 6, 6);
-  x = drawUnsigned(resident, 14, 6);
-  drawString("D", x + 4, 6);
-  x = drawUnsigned(decorated, x + 12, 6);
-  drawString("Q", x + 4, 6);
-  x = drawUnsigned(queued, x + 12, 6);
-  drawString("A", x + 4, 6);
-  x = drawUnsigned(free_percent, x + 12, 6);
-  /* 0 idle, 1 compacting, 2 the last pass could not fit every column. */
-  drawString("C", x + 4, 6);
-  x = drawUnsigned(compacting_columns ? 1 : (compaction_ran_short ? 2 : 0),
-    x + 12, 6);
-  /* Columns inside the ring that still have no blocks at all.  If the player
-     can walk into one, unloaded terrain reads as solid and stops them dead. */
-  drawString("T", x + 4, 6);
-  drawUnsigned(pending_terrain, x + 12, 6);
+  /* Player block position, so a freeze can be reported with its distance.
+     drawUnsigned cannot show a sign; west/north of origin reads as the
+     magnitude, which is enough for bisection. */
+  {
+    int px = floor(players[0].position.x / BLOCK_SIZE);
+    int pz = floor(players[0].position.z / BLOCK_SIZE);
+
+    y = drawDiagnosticRow("X", (u32) (px < 0 ? -px : px), y);
+    y = drawDiagnosticRow("Z", (u32) (pz < 0 ? -pz : pz), y);
+  }
+  y = drawDiagnosticRow("F", diag_frame_heartbeat % 1000, y);
+  y = drawDiagnosticRow("O", render_rebase_count, y);
+  y = drawDiagnosticRow("B", stream_rebase_enabled, y);
+  y = drawDiagnosticRow("R", resident, y);
+  y = drawDiagnosticRow("D", decorated, y);
+  y = drawDiagnosticRow("Q", queued, y);
+  y = drawDiagnosticRow("A", free_percent, y);
+  y = drawDiagnosticRow("C",
+    compacting_columns ? 1 : (compaction_ran_short ? 2 : 0), y);
+  drawDiagnosticRow("T", pending_terrain, y);
   setHudTextColor(255, 255, 255);
 }
 

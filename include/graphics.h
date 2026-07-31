@@ -52,6 +52,11 @@ extern float render_origin_units_z;
    draw(): a frame must never mix origins between its camera and its terrain,
    and draw() rebuilds the camera and entity matrices itself each frame. */
 void graphicsSetRenderOrigin(int block_x, int block_z);
+/* Freeze-bisection switches: rebasing can be toggled from the controller
+   (hold Z+L+R, press C-right) and the diagnostics HUD shows how many times
+   the origin has moved.  Temporary, until the far-walk freeze is found. */
+extern u8 stream_rebase_enabled;
+extern u32 render_rebase_count;
 /* Stop drawing a slot and drop any pending rebuild for it.  Called when the
    residency window rebinds the slot to a different column. */
 void graphicsInvalidateColumnSlot(u32 slot);
