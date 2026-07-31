@@ -807,6 +807,7 @@ static float detectCollision(Player *player, Vector3 velocity, float max_t, int 
      */
     if (++ray_steps >= 24) {
       diag_loop_clamps++;
+      diag_ray_clamps++;
       *collision_axis = step_axis;
       return 0;
     }
@@ -1468,9 +1469,17 @@ static u8 updatePlayer(u8 player_num, float delta) {
        Five keeps the degenerate frame cheap as well as finite. */
     if (++resolve_steps >= 5) {
       diag_loop_clamps++;
+      diag_resolve_clamps++;
       break;
     }
   }
+
+  /* This is based on the final collision-resolved motion, so a player only
+     rests when genuinely stationary (and never while swimming or vaulting).
+     The camera owns its transient phase; gameplay state and saves stay put. */
+  updateCameraIdleSway(player_num, delta,
+    grounded && !swimming && player->vault_time <= 0 &&
+    velocity.x == 0 && velocity.z == 0);
 
   diag_player_step = DIAG_STEP_TARGET;
   updateTargetBlock(player_num);

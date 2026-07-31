@@ -33,6 +33,14 @@
 #define LOADING_CAMERA_HEIGHT 2450.f
 #define LOADING_CAMERA_BOB 120.f
 #define LOADING_WORLD_CENTER (MAX_X * BLOCK_SIZE / 2.f)
+/* World units: deliberately below one pixel at normal interaction distance,
+   but enough lateral travel for a little motion parallax while at rest. */
+#define IDLE_SWAY_SIDE 0.50f
+#define IDLE_SWAY_FORWARD 0.12f
+#define IDLE_SWAY_VERTICAL 0.25f
+#define IDLE_SWAY_DEGREES_PER_FRAME 1.25f
+#define IDLE_SWAY_FADE_IN 36.f
+#define IDLE_SWAY_FADE_OUT 5.f
 
 typedef struct {
   float a;
@@ -75,6 +83,45 @@ static Line2D cull_lines[NUM_CULL_LINES];
 static u8 point_sides[CULL_SPAN + 1][CULL_SPAN + 1];
 static Player loading_camera;
 static u32 loading_preview_frame;
+static float idle_sway_phase[MAX_PLAYERS];
+static float idle_sway_amount[MAX_PLAYERS];
+
+void updateCameraIdleSway(u8 player_num, float delta, u8 standing_still) {
+  float *amount;
+
+  if (player_num >= MAX_PLAYERS) {
+    return;
+  }
+
+  idle_sway_phase[player_num] += delta * IDLE_SWAY_DEGREES_PER_FRAME;
+  if (idle_sway_phase[player_num] >= 360.f) {
+    idle_sway_phase[player_num] -= 360.f;
+  }
+
+  amount = &idle_sway_amount[player_num];
+  if (standing_still) {
+    *amount = min(1.f, *amount + delta / IDLE_SWAY_FADE_IN);
+  } else {
+    /* Leaving the resting pose should feel immediate when the player starts
+       walking, without a visible single-frame pop. */
+    *amount = max(0.f, *amount - delta / IDLE_SWAY_FADE_OUT);
+  }
+}
+
+static Vector3 idleSwayOffset(u8 player_num, Player *player) {
+  float phase = idle_sway_phase[player_num] * M_DTOR;
+  float amount = idle_sway_amount[player_num];
+  Vector3 right = {1, 0, 0};
+  Vector3 forward = {0, 0, -1};
+  Vector3 offset;
+
+  right = rotateY(right, -player->yaw);
+  forward = rotateY(forward, -player->yaw);
+  offset = add(mul(right, sinf(phase) * IDLE_SWAY_SIDE * amount),
+    mul(forward, sinf(phase * .47f + .8f) * IDLE_SWAY_FORWARD * amount));
+  offset.y = sinf(phase * 1.71f + .35f) * IDLE_SWAY_VERTICAL * amount;
+  return offset;
+}
 
 static u8 cameraPointSolid(Vector3 position) {
   int x = floor(position.x / BLOCK_SIZE);
@@ -122,7 +169,7 @@ Vector3 playerCameraPosition(u8 player_num) {
 
   camera.y += player->camera_y_offset;
   if (player->camera_mode != CAMERA_THIRD_PERSON) {
-    return camera;
+    return add(camera, idleSwayOffset(player_num, player));
   }
 
   origin = camera;
