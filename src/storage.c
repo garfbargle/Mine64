@@ -249,32 +249,45 @@ static u32 checksumTrees(u32 checksum) {
 }
 
 u8 saving_available;
+u8 storage_status = STORAGE_NO_CART;
 u8 files_present[3];
 u32 game_file_num;
 char world_names[3][WORLD_NAME_LENGTH + 1];
 
+/*
+ * Every path here must be a legal 8.3 short name: ffconf.h sets FF_USE_LFN to
+ * 0, so FatFs has no long-name support at all and create_name() rejects any
+ * basename past eight characters or extension past three with
+ * FR_INVALID_NAME.  The former "world_112_1.m64" overran both limits, so
+ * f_open and f_stat failed on every save path before touching the card --
+ * saving could never succeed, and f_stat's failure also made every slot read
+ * as empty on the title screen.  The extent tag is kept, shortened, and the
+ * four files now share one basename so the limit is obvious at a glance.
+ *
+ * Nothing needs migrating: no build could ever have written the old names.
+ */
 static char *file_names[] = {
-  "mine64/world_112_1.m64",
-  "mine64/world_112_2.m64",
-  "mine64/world_112_3.m64"
+  "mine64/w112_1.m64",
+  "mine64/w112_2.m64",
+  "mine64/w112_3.m64"
 };
 
 static char *temporary_file_names[] = {
-  "mine64/temp_112_1.tmp",
-  "mine64/temp_112_2.tmp",
-  "mine64/temp_112_3.tmp"
+  "mine64/w112_1.tmp",
+  "mine64/w112_2.tmp",
+  "mine64/w112_3.tmp"
 };
 
 static char *backup_file_names[] = {
-  "mine64/world_112_1.bak",
-  "mine64/world_112_2.bak",
-  "mine64/world_112_3.bak"
+  "mine64/w112_1.bak",
+  "mine64/w112_2.bak",
+  "mine64/w112_3.bak"
 };
 
 static char *name_file_names[] = {
-  "mine64/world_112_1.name",
-  "mine64/world_112_2.name",
-  "mine64/world_112_3.name"
+  "mine64/w112_1.nam",
+  "mine64/w112_2.nam",
+  "mine64/w112_3.nam"
 };
 
 static void setDefaultWorldName(u8 slot) {
@@ -511,6 +524,23 @@ static u8 playerStateValid(Player *player) {
     player->yaw >= 0 && player->yaw < 360;
 }
 
+const char *storageStatusText(void) {
+  switch (storage_status) {
+    case STORAGE_NO_CART:
+      return "NO CART SAVE DEVICE";
+    case STORAGE_CARD_NOT_READY:
+      return "SD CARD NOT READY";
+    case STORAGE_BAD_FILESYSTEM:
+      return "SD MUST BE FAT32";
+    case STORAGE_MOUNT_FAILED:
+      return "SD MOUNT FAILED";
+    case STORAGE_NO_DIRECTORY:
+      return "CANNOT WRITE SD CARD";
+    default:
+      return "SAVING UNAVAILABLE";
+  }
+}
+
 void initStorage() {
   FRESULT res;
   FILINFO info;
@@ -523,10 +553,19 @@ void initStorage() {
   }
 
   if (cart_init() != 0) {
+    storage_status = STORAGE_NO_CART;
     return;
   }
+  /* f_mount with the mount-now flag runs disk_initialize, so it reports the
+     card and the filesystem separately: FR_NOT_READY is the SD card itself
+     failing to come up, FR_NO_FILESYSTEM is a card that reads fine but is not
+     FAT16/FAT32 -- exFAT, the default for cards over 32 GB, lands here
+     because ffconf.h leaves FF_FS_EXFAT at 0. */
   res = f_mount(&fs, "", 1);
   if (res != FR_OK) {
+    storage_status = res == FR_NOT_READY ? STORAGE_CARD_NOT_READY :
+      res == FR_NO_FILESYSTEM ? STORAGE_BAD_FILESYSTEM :
+      STORAGE_MOUNT_FAILED;
     return;
   }
   res = f_stat("mine64", &info);
@@ -534,12 +573,15 @@ void initStorage() {
   if (res == FR_NO_FILE) {
     res = f_mkdir("mine64");
     if (res != FR_OK) {
+      storage_status = STORAGE_NO_DIRECTORY;
       return;
     }
   } else if (res != FR_OK || !(info.fattrib & AM_DIR)) {
+    storage_status = STORAGE_NO_DIRECTORY;
     return;
   }
 
+  storage_status = STORAGE_OK;
   saving_available = TRUE;
   for (i = 0; i < 3; i++) {
     res = f_stat(file_names[i], &info);

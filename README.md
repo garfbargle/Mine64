@@ -118,14 +118,22 @@ rejected as locked by the N64 side.
 
 The menu path is `/Games/Mine64.n64`. The prior ROM is preserved as
 `/Games/Mine64_original.64`. The former 64x64-world saves
-(`mine64/world_*.m64`) are left alone. The
-96x96-world saves (`mine64/world_large_*.m64`) and 128x128-world saves
-(`mine64/world_128_*.m64`) are also preserved. This 112x112-world build uses
-`mine64/world_112_*.m64`, so saves cannot be
-misread with a different packed-world length. Saves are stored on the
-cartridge SD card when libcart detects a supported flash cartridge. Once the
-upload completes, turn the N64 on and select Mine64 from the SummerCart64 SD
-menu.
+(`mine64/world_*.m64`) are left alone. This 112x112-world build uses
+`mine64/w112_*.m64`, so saves cannot be misread with a different packed-world
+length. Saves are stored on the cartridge SD card when libcart detects a
+supported flash cartridge. Once the upload completes, turn the N64 on and
+select Mine64 from the SummerCart64 SD menu.
+
+Every save path must be a legal 8.3 short name. `ffconf.h` sets `FF_USE_LFN`
+to 0, so FatFs rejects a basename over eight characters or an extension over
+three with `FR_INVALID_NAME` before it ever touches the card. The
+`world_large_*`, `world_128_*` and `world_112_*` schemes all overran that
+limit, which is why saving silently stopped working when the world outgrew
+the original 64x64 `world_1.m64` and stayed broken through every later
+extent. The SD card must also be FAT16 or FAT32: `FF_FS_EXFAT` is 0, and
+cards over 32 GB are formatted exFAT by default. When storage does not come
+up, the title screen names the failing step rather than reporting a missing
+cartridge for all of them.
 
 For the usual persistent build-and-save workflow, run the project script from
 the repository root:

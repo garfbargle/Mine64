@@ -387,7 +387,7 @@ static void drawWorldNaming() {
   drawString("CURSOR", 151, 200);
   drawString("START", 227, 200);
   if (!saving_available) {
-    drawCenteredString("NO CART SAVE DEVICE", 205);
+    drawCenteredString(storageStatusText(), 205);
   }
 }
 
@@ -490,7 +490,7 @@ void drawMenu() {
       continue;
     }
     if (current_screen == WORLD_NAMING && !saving_available && i == 5) {
-      text_line = "No cart save device";
+      text_line = storageStatusText();
     } else if (current_screen == MENU && i >= option_lines[0]) {
       u8 world = i - option_lines[0];
       text_line = files_present[world] ? world_names[world] : "New World";
