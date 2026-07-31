@@ -14,6 +14,10 @@ u8 save_failed_message = 0;
 u8 world_incomplete_message = 0;
 u8 player_joined_message = 0;
 u8 player_joined_number = 0;
+/* A control scheme changing under the player needs to say so, or the stick
+   simply stops doing what they expect. */
+u8 stick_turns_message = 0;
+u8 stick_turns_enabled_message = 0;
 
 static char *menu_text[] = {
   "MINE64",
@@ -47,7 +51,8 @@ static const char *world_name_keyboard[] = {
 static char *info_text[] = {
   "Mine64 v0.4",
   "",
-  "Walk: Analog stick",
+  "Walk: Stick up / down",
+  "Turn: Stick left / right",
   "Sprint: Left shoulder",
   "Look around: Analog stick + Z trigger",
   "Use / place / eat: A button",
@@ -55,6 +60,7 @@ static char *info_text[] = {
   "Pickaxe gathers rock / mines faster",
   "Items: C left / right",
   "Camera: C up",
+  "Turn or step sideways: Z trigger + C up",
   "Pack: START or C down",
   "Jump: Right shoulder",
   "Save game: D-Pad",
@@ -75,6 +81,14 @@ static char *saved_text[] = {
 
 static char *save_failed_text[] = {
   "Save failed"
+};
+
+static char *stick_turns_on_text[] = {
+  "Left and right turn you"
+};
+
+static char *stick_turns_off_text[] = {
+  "Left and right step sideways"
 };
 
 static char player_joined_text[] = "Player 1 joined";
@@ -418,6 +432,10 @@ void drawMenu() {
       } else if (save_message_cooldown > 0) {
         text = saved_text;
         n_lines = sizeof(saved_text) / sizeof(char *);
+      } else if (stick_turns_message > 0) {
+        text = stick_turns_enabled_message ?
+          stick_turns_on_text : stick_turns_off_text;
+        n_lines = 1;
       } else {
         player_joined_text[7] = '0' + player_joined_number;
         text = player_joined_lines;
@@ -433,7 +451,8 @@ void drawMenu() {
   }
 
   if (current_screen == GAME && save_message_cooldown == 0 &&
-      save_failed_message == 0 && player_joined_message == 0) {
+      save_failed_message == 0 && player_joined_message == 0 &&
+      stick_turns_message == 0) {
     return;
   }
 
@@ -445,6 +464,9 @@ void drawMenu() {
   }
   if (player_joined_message > 0) {
     player_joined_message--;
+  }
+  if (stick_turns_message > 0) {
+    stick_turns_message--;
   }
 
   beginText();

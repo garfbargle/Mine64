@@ -447,6 +447,7 @@ static void restorePlayerState(Player *player, Vector3 position, float pitch,
   player->pitch = pitch;
   player->yaw = yaw;
   player->body_yaw = yaw;
+  player->stick_turns = TRUE;
   player->walk_time = 0;
   player->walk_swing = 0;
   player->vault_time = 0;

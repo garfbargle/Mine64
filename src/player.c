@@ -17,6 +17,9 @@
 #define START_Z (MAX_Z / 2)
 
 #define STICK_DAMPER 22
+/* Steering while walking wants its own feel from aiming with Z held, so the
+   two sensitivities are separate even where they currently agree. */
+#define TURN_DAMPER 22
 #define MOVE_SPEED (1 / 8.f)
 #define SPRINT_MULTIPLIER 1.5f
 #define JUMP_SPEED (BLOCK_SIZE / 4.5)
@@ -442,6 +445,10 @@ static void spawnPlayer(Player *player, int x, int z) {
   player->pitch = 0;
   player->yaw = 0;
   player->body_yaw = 0;
+  /* A control preference, not world state, so it is set where a player comes
+     into existence rather than saved.  Respawning after a death leaves
+     whatever the player last chose alone. */
+  player->stick_turns = TRUE;
   player->walk_time = 0;
   player->walk_swing = 0;
   player->y_velocity = 0;
@@ -1227,8 +1234,16 @@ static u8 updatePlayer(u8 player_num, float delta) {
   u8 vaulted = FALSE;
 
   if (cont->trigger & U_CBUTTONS) {
-    player->camera_mode = player->camera_mode == CAMERA_FIRST_PERSON ?
-      CAMERA_THIRD_PERSON : CAMERA_FIRST_PERSON;
+    /* Z already means "the camera is mine", so it is the natural modifier for
+       changing what the stick does with the camera. */
+    if (cont->button & Z_TRIG) {
+      player->stick_turns = !player->stick_turns;
+      stick_turns_enabled_message = player->stick_turns;
+      stick_turns_message = 90;
+    } else {
+      player->camera_mode = player->camera_mode == CAMERA_FIRST_PERSON ?
+        CAMERA_THIRD_PERSON : CAMERA_FIRST_PERSON;
+    }
   }
   if (cont->trigger & D_CBUTTONS) {
     openInventory(player_num);
@@ -1256,6 +1271,27 @@ static u8 updatePlayer(u8 player_num, float delta) {
     if (player->pitch > 90 && player->pitch < 180) player->pitch = 90;
     if (player->pitch < 270 && player->pitch > 180) player->pitch = 270;
   } else {
+    if (player->stick_turns) {
+      /* The console has one stick, and it is worth more as a rudder than as a
+         strafe: steering keeps the view pointing wherever the player is headed
+         without the camera ever having to guess at their intent.  A plain
+         deflection is a plain turn rate, so releasing the sideways push stops
+         the turn on the spot instead of unwinding it. */
+      if (stick_x != 0) {
+        player->yaw -= stick_x * delta / TURN_DAMPER;
+        if (player->yaw < 0) player->yaw += 360;
+        else if (player->yaw >= 360) player->yaw -= 360;
+        /* Z-look deliberately turns the head and leaves the body behind.  A
+           steer is the whole player coming about, so the avatar follows even
+           when the turn happens from a standstill -- but only on an actual
+           steer, or releasing Z would snap the body round to match the head. */
+        player->body_yaw = player->yaw;
+      }
+      /* Only the forward axis walks.  If sideways carried any movement of its
+         own, lining up on the block in front of you would mean shuffling away
+         from it. */
+      stick_x = 0;
+    }
     velocity.x += stick_x * cosf(player->yaw * M_DTOR) - stick_y * sinf(player->yaw * M_DTOR);
     velocity.z -= stick_x * sinf(player->yaw * M_DTOR) + stick_y * cosf(player->yaw * M_DTOR);
     velocity.x *= MOVE_SPEED;

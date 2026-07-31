@@ -55,6 +55,9 @@ typedef struct {
   float yaw;
   /* Transient pose state; it is intentionally not stored in save files. */
   float body_yaw;
+  /* Left and right steer rather than step sideways, so the view always points
+     where the player is headed.  Off restores strafing. */
+  u8 stick_turns;
   float walk_time;
   float walk_swing;
   float y_velocity;

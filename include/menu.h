@@ -21,6 +21,8 @@ extern u8 save_failed_message;
 extern u8 world_incomplete_message;
 extern u8 player_joined_message;
 extern u8 player_joined_number;
+extern u8 stick_turns_message;
+extern u8 stick_turns_enabled_message;
 
 void drawMenu();
 void beginText();
