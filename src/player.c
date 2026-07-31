@@ -794,15 +794,18 @@ static float detectCollision(Player *player, Vector3 velocity, float max_t, int 
     }
     /*
      * A frame's move is at most a few blocks, so a legitimate march crosses
-     * a handful of boundaries.  Hundreds means t has stopped advancing --
-     * float precision on an exact boundary can pin it -- and on this console
-     * that is not a stall but a freeze: this loop runs on the graphics
-     * thread, and nothing preempts it.  Give up on the *movement* rather
-     * than the collision: reporting an immediate hit halts the player for a
-     * frame, where the earlier "no collision" reading let them tunnel
-     * through terrain and fall out of the world.  The L row still counts it.
+     * a handful of boundaries -- eight is already generous.  More means t
+     * has stopped advancing (float precision on an exact boundary can pin
+     * it), and on this console that is not a stall but a freeze: this loop
+     * runs on the graphics thread, and nothing preempts it.  The bound is
+     * deliberately tight: a degenerate frame that triggers the guard should
+     * cost microseconds, not the milliseconds a triple-digit march burns
+     * before giving up.  Give up on the *movement* rather than the
+     * collision: reporting an immediate hit halts the player for a frame,
+     * where a "no collision" reading would tunnel them through terrain and
+     * out of the world.  The L row still counts it.
      */
-    if (++ray_steps >= 128) {
+    if (++ray_steps >= 24) {
       diag_loop_clamps++;
       *collision_axis = step_axis;
       return 0;
@@ -1461,8 +1464,9 @@ static u8 updatePlayer(u8 player_num, float delta) {
     /* Three axis hits resolve any legal frame; more means t has stopped
        advancing (a t=0 collision reported against an axis that is already
        zeroed, or float dust) and the loop would otherwise spin the graphics
-       thread forever.  Stop moving this frame and count it on the L row. */
-    if (++resolve_steps >= 8) {
+       thread forever.  Stop moving this frame and count it on the L row.
+       Five keeps the degenerate frame cheap as well as finite. */
+    if (++resolve_steps >= 5) {
       diag_loop_clamps++;
       break;
     }

@@ -204,6 +204,15 @@ u8 worldFixedExtentResident();
 #define STREAM_TERRAIN_RADIUS 12
 #define STREAM_WAYSTONE_RADIUS 11
 #define STREAM_TREE_RADIUS 10
+/* Within this ring the deferred underground carve (caves, ores) has run.
+   Must stay ahead of both the full-detail LOD promote radius and the
+   player's reach; the surface never changes when a column deepens, so the
+   frontier is invisible. */
+#define STREAM_DEEPEN_RADIUS 5
+
+/* TRUE once a resident column's underground has been carved; the full-detail
+   mesh waits for it. */
+u8 worldColumnDeep(int cx, int cz);
 
 /*
  * Wall-clock ceiling for the per-callback streaming and meshing work.

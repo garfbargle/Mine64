@@ -604,6 +604,20 @@ why they land as a pair.
 
 ## Task 5 — Two-ring residency with LOD — in-window LOD and the single arena done; the wide window remains
 
+**Deferred underground generation — done.**  The sprint "bonk" was terrain
+generation losing the race: at radius 12 a chunk crossing bills ~25 fresh
+columns, and the cave carve (two 3D noise samples per underground block) is
+most of each one's cost.  Deep generation is now restructured as *surface
+fill + carve pass* sharing one `carveTerrainColumn`, far columns outside
+the fixed save extent generate surface-only (~3-4× cheaper), and a deepen
+stage carves the underground within `STREAM_DEEPEN_RADIUS` 5 of the player
+-- caves never breach their three-block roof, so the surface is identical
+either way and the frontier is invisible.  The full-detail LOD waits for
+depth (`worldColumnDeep`), the fixed extent always generates deep so saves
+never see uncarved stone, and shared-carve construction makes
+shallow+deepen ≡ deep byte-identical -- the far-lands harness now proves it
+end to end.  Digging can only reach deepened columns (reach ≪ 40 blocks).
+
 **Hardware retune after the first 32×32 run:** radius 12 / cap 160 was
 measurably choppy and the arbitrary mesh order was visible ("terrain paints
 in from the fog toward me").  Now: radii 12/11/10 (view ~80 blocks, twice

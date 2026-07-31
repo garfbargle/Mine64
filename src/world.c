@@ -35,6 +35,11 @@ u32 window_key_fault_slot;
  * and read from.
  */
 static u8 column_state[WINDOW_SLOTS];
+/* Whether the deferred underground carve (caves, ores) has run.  Orthogonal
+   to the build stages: decoration and the shell mesh only touch the surface,
+   so a column can be fully decorated and still shallow until the player
+   comes near enough for the underground to matter. */
+static u8 column_deep[WINDOW_SLOTS];
 
 void windowReset() {
   u32 slot;
@@ -75,6 +80,8 @@ void worldMarkFixedExtentBuilt() {
     for (cz = 0; cz < CHUNKS_Z; cz++) {
       if (windowColumnResident(cx, cz)) {
         column_state[WINDOW_SLOT(cx, cz)] = COLUMN_DECORATED;
+        /* A loaded save carries its full underground. */
+        column_deep[WINDOW_SLOT(cx, cz)] = TRUE;
       }
     }
   }
@@ -118,6 +125,7 @@ void windowAuditKeys(void) {
       graphicsInvalidateColumnSlot(slot);
       window_keys[slot] = COLUMN_KEY_EMPTY;
       column_state[slot] = COLUMN_EMPTY;
+      column_deep[slot] = FALSE;
     }
   }
 }
@@ -139,6 +147,7 @@ u8 *windowClaimColumn(int cx, int cz) {
     }
     window_keys[slot] = key;
     column_state[slot] = COLUMN_EMPTY;
+    column_deep[slot] = FALSE;
   }
   return window_blocks[slot];
 }
@@ -525,7 +534,46 @@ static int world_gen_x;
 static int world_gen_z;
 
 
-static void generateTerrainColumn(int x, int z) {
+static int terrainDirtDepth(float biome) {
+  return 3 + (int) (biome * 2.0f);
+}
+
+/*
+ * The underground: carve the cave fields and place the ore veins into a
+ * block column whose solid fill is already written.  Both the deep generator
+ * and the deferred deepen pass go through this one function, which is what
+ * makes "generate deep directly" and "generate shallow now, deepen on
+ * approach" byte-identical by construction -- the invariant the host harness
+ * checks across every ordering.
+ *
+ * This is also the expensive half of terrain: two 3D noise samples per
+ * underground block.  Deferring it for far columns is what lets streaming
+ * outrun a sprinting player.
+ */
+static void carveTerrainColumn(int x, int z, int height, int dirt_depth) {
+  int y;
+
+  for (y = 1; y < height; y++) {
+    if (isCave(x, y, z, height)) {
+      blockSet(x, y, z, AIR);
+    } else if (y < height - dirt_depth) {
+      if (y < 13 && oreInCell(x, y, z, 5, 7)) {
+        blockSet(x, y, z, IRON_ORE);
+      } else if (y < 23 && oreInCell(x, y, z, 4, 5)) {
+        blockSet(x, y, z, COAL_ORE);
+      }
+    }
+  }
+}
+
+/*
+ * The surface fill: everything a column needs to be walked on, decorated and
+ * shown as a distant shell.  Caves never breach the top three blocks under
+ * the surface (isCave keeps a roof), so a shallow column is walkably
+ * identical to a deep one -- the underground stays unknown until the player
+ * is close enough for it to matter.
+ */
+static void generateTerrainColumn(int x, int z, u8 deep) {
   int y;
   int height, dirt_depth, water_level;
   float biome, slope;
@@ -541,7 +589,7 @@ static void generateTerrainColumn(int x, int z) {
   do_sand = height <= SEA_LEVEL + 1 ||
     (height <= SEA_LEVEL + 3 && biome < 0.42f);
   exposed_stone = height > 21 || slope >= 5;
-  dirt_depth = 3 + (int)(biome * 2.0f);
+  dirt_depth = terrainDirtDepth(biome);
 
   for (y = 0; y < MAX_Y; y++) {
     if (y >= height && y <= water_level) {
@@ -550,16 +598,8 @@ static void generateTerrainColumn(int x, int z) {
       block = AIR;
     } else if (y == 0) {
       block = BEDROCK;
-    } else if (isCave(x, y, z, height)) {
-      block = AIR;
     } else if (y < height - dirt_depth) {
-      if (y < 13 && oreInCell(x, y, z, 5, 7)) {
-        block = IRON_ORE;
-      } else if (y < 23 && oreInCell(x, y, z, 4, 5)) {
-        block = COAL_ORE;
-      } else {
-        block = STONE;
-      }
+      block = STONE;
     } else if (do_sand) {
       block = SAND;
     } else if (exposed_stone && y >= height - 2) {
@@ -571,6 +611,10 @@ static void generateTerrainColumn(int x, int z) {
     }
 
     blockSet(x, y, z, block);
+  }
+
+  if (deep) {
+    carveTerrainColumn(x, z, height, dirt_depth);
   }
 }
 
@@ -610,21 +654,85 @@ static u8 neighboursReached(int cx, int cz, u8 state) {
   return TRUE;
 }
 
+/* The fixed save extent always generates deep: the v10 format packs every
+   block of it, so a shallow column there would write uncarved stone into a
+   player's save. */
+static u8 columnInFixedExtent(int cx, int cz) {
+  return cx >= 0 && cx < CHUNKS_X && cz >= 0 && cz < CHUNKS_Z;
+}
+
+u8 worldColumnDeep(int cx, int cz) {
+  return windowColumnResident(cx, cz) && column_deep[WINDOW_SLOT(cx, cz)];
+}
+
 /* Claim a slot and fill it with bare terrain.  Nothing here reads a
    neighbour, so a column can always take this step alone. */
 void worldGenerateColumnTerrain(int cx, int cz) {
   int base_x = cx * CHUNK_SIZE;
   int base_z = cz * CHUNK_SIZE;
   int bx, bz;
+  u8 deep = columnInFixedExtent(cx, cz);
 
   windowClaimColumn(cx, cz);
   fillHeightPatch(base_x, base_z);
   for (bx = 0; bx < CHUNK_SIZE; bx++) {
     for (bz = 0; bz < CHUNK_SIZE; bz++) {
-      generateTerrainColumn(base_x + bx, base_z + bz);
+      generateTerrainColumn(base_x + bx, base_z + bz, deep);
     }
   }
   column_state[WINDOW_SLOT(cx, cz)] = COLUMN_TERRAIN;
+  column_deep[WINDOW_SLOT(cx, cz)] = deep;
+}
+
+/* Run the deferred underground carve on a shallow column that the player has
+   come near.  The surface is untouched -- caves keep a roof -- so nothing
+   the player can currently see or stand on changes. */
+static void worldDeepenColumn(int cx, int cz) {
+  int base_x = cx * CHUNK_SIZE;
+  int base_z = cz * CHUNK_SIZE;
+  int bx, bz;
+
+  fillHeightPatch(base_x, base_z);
+  for (bx = 0; bx < CHUNK_SIZE; bx++) {
+    for (bz = 0; bz < CHUNK_SIZE; bz++) {
+      int x = base_x + bx;
+      int z = base_z + bz;
+      int water_level;
+      int height = shapedSurfaceHeight(x, z, patchHeight(x, z), &water_level);
+      float biome = perlin2d(x + 883, z + 521, 0.025f, 3);
+
+      carveTerrainColumn(x, z, height, terrainDirtDepth(biome));
+    }
+  }
+  column_deep[WINDOW_SLOT(cx, cz)] = TRUE;
+}
+
+/* Nearest shallow column in the deepen ring, or FALSE when they are all
+   deep.  Same nearest-first shape as the stage scans. */
+static u8 nearestShallowColumn(int pcx, int pcz, int *out_cx, int *out_cz) {
+  int dx, dz;
+  int best_distance = 0;
+  u8 found = FALSE;
+
+  for (dx = -STREAM_DEEPEN_RADIUS; dx <= STREAM_DEEPEN_RADIUS; dx++) {
+    for (dz = -STREAM_DEEPEN_RADIUS; dz <= STREAM_DEEPEN_RADIUS; dz++) {
+      int cx = pcx + dx;
+      int cz = pcz + dz;
+      int distance = dx * dx + dz * dz;
+
+      if (worldColumnState(cx, cz) < COLUMN_TERRAIN ||
+          column_deep[WINDOW_SLOT(cx, cz)]) {
+        continue;
+      }
+      if (!found || distance < best_distance) {
+        best_distance = distance;
+        *out_cx = cx;
+        *out_cz = cz;
+        found = TRUE;
+      }
+    }
+  }
+  return found;
 }
 
 /* Returns FALSE when the column's neighbours are not built far enough yet and
@@ -788,6 +896,7 @@ static void releaseColumnsOutsideRing(int pcx, int pcz) {
     graphicsInvalidateColumnSlot(slot);
     window_keys[slot] = COLUMN_KEY_EMPTY;
     column_state[slot] = COLUMN_EMPTY;
+    column_deep[slot] = FALSE;
   }
 }
 
@@ -838,6 +947,20 @@ void stepWorldStreaming(int pcx, int pcz, u32 terrain_budget,
    * nearest column, which cannot finish until neighbours that never get a turn
    * catch up.
    */
+  /*
+   * Deepen the columns the player is approaching: the deferred underground
+   * carve must land before the near ring's full-detail mesh wants to show
+   * caves, and before the player can dig.  One guaranteed step keeps the
+   * deepen frontier ahead of a sprint without ever stacking a second full
+   * carve into one callback.
+   */
+  stage_did_one = FALSE;
+  while ((!stage_did_one || !streamWorkExpired()) &&
+      nearestShallowColumn(pcx, pcz, &cx, &cz)) {
+    worldDeepenColumn(cx, cz);
+    stage_did_one = TRUE;
+  }
+
   stage_did_one = FALSE;
   while (decorate_budget > 0 && (!stage_did_one || !streamWorkExpired()) &&
       nearestColumnNeeding(pcx, pcz, STREAM_WAYSTONE_RADIUS, COLUMN_WAYSTONED,
@@ -916,6 +1039,7 @@ void beginWorldGeneration() {
   windowClaimFixedExtent();
   for (slot = 0; slot < WINDOW_SLOTS; slot++) {
     column_state[slot] = COLUMN_EMPTY;
+    column_deep[slot] = FALSE;
   }
 
   world_gen_x = 0;

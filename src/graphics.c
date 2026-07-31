@@ -1236,10 +1236,12 @@ static int columnPlayerDistance(int cx, int cz) {
 
 /* The LOD a rebuild should compile now.  The midpoint between the promote and
    demote radii, so a column marked stale by either hysteresis edge settles
-   into a state that edge no longer complains about. */
+   into a state that edge no longer complains about.  A column whose deferred
+   underground has not been carved yet only rates a shell -- a full mesh of it
+   would bake solid stone where the caves belong. */
 static u8 meshLodFor(int cx, int cz) {
-  return columnPlayerDistance(cx, cz) <= MESH_LOD_PROMOTE_RADIUS + 1 ?
-    MESH_LOD_FULL : MESH_LOD_SHELL;
+  return columnPlayerDistance(cx, cz) <= MESH_LOD_PROMOTE_RADIUS + 1 &&
+    worldColumnDeep(cx, cz) ? MESH_LOD_FULL : MESH_LOD_SHELL;
 }
 
 /*
@@ -1868,7 +1870,8 @@ u8 graphicsColumnNeedsMesh(int cx, int cz) {
      from re-meshing on every step. */
   lod = column_mesh_lod[slot];
   distance = columnPlayerDistance(cx, cz);
-  if (lod == MESH_LOD_SHELL && distance <= MESH_LOD_PROMOTE_RADIUS) {
+  if (lod == MESH_LOD_SHELL && distance <= MESH_LOD_PROMOTE_RADIUS &&
+      worldColumnDeep(cx, cz)) {
     return TRUE;
   }
   if (lod == MESH_LOD_FULL && distance >= MESH_LOD_DEMOTE_RADIUS) {
