@@ -425,10 +425,10 @@ static void dropInventorySelection(Player *player, u8 drop_stack) {
     return;
   }
   count = drop_stack ? source->count : 1;
-  x = max(0, min(MAX_X - 1, floor(player->position.x / BLOCK_SIZE)));
+  x = floor(player->position.x / BLOCK_SIZE);
   y = max(0, min(MAX_Y - 1,
     floor((player->position.y - EYE_HEIGHT * BLOCK_SIZE) / BLOCK_SIZE)));
-  z = max(0, min(MAX_Z - 1, floor(player->position.z / BLOCK_SIZE)));
+  z = floor(player->position.z / BLOCK_SIZE);
   if (!spawnDroppedItem(source->item, count, x, y, z)) {
     return;
   }
@@ -582,17 +582,28 @@ void updateTargetBlock(u8 player_num) {
   player->target_z = origin.z / BLOCK_SIZE;
 
   player->target_present = TRUE;
-  while (player->target_x >= MAX_X || player->target_y >= MAX_Y ||
-      player->target_z >= MAX_Z ||
-      !blockGet(player->target_x, player->target_y, player->target_z)) {
+  /*
+   * x and z are no longer bounded, so the ray runs until it meets a block,
+   * leaves the resident world, or exceeds its reach.  y still has a floor and
+   * a ceiling, and a ray above the world simply keeps descending.
+   */
+  while (player->target_y >= MAX_Y ||
+      blockGet(player->target_x, player->target_y, player->target_z) == AIR) {
+    if (player->target_y < MAX_Y &&
+        !windowColumnResident(player->target_x >> CHUNK_SHIFT,
+          player->target_z >> CHUNK_SHIFT)) {
+      /* Ran into terrain that has not streamed in; there is nothing there to
+         aim at yet, and it must not be mined through. */
+      player->target_present = FALSE;
+      break;
+    }
     t = 9999;
 
     rayStepAxis(origin.x, direction.x, player->target_x, &t, &step, 0);
     rayStepAxis(origin.y, direction.y, player->target_y, &t, &step, 1);
     rayStepAxis(origin.z, direction.z, player->target_z, &t, &step, 2);
 
-    if (t > ray_limit || (player->target_x == 0 && step.x < 0) ||
-        (player->target_y == 0 && step.y < 0) || (player->target_z == 0 && step.z < 0)) {
+    if (t > ray_limit || (player->target_y == 0 && step.y < 0)) {
       player->target_present = FALSE;
       break;
     }
@@ -1192,8 +1203,7 @@ static u8 onGround(Player *player) {
   y = min_block.y;
   for (x = min_block.x; x <= max_block.x; x++) {
     for (z = min_block.z; z <= max_block.z; z++) {
-      if (x < 0 || y < 0 || z < 0 || x >= MAX_X || z >= MAX_Z ||
-          (y < MAX_Y && BLOCK_IS_SOLID(blockGet(x, y, z)))) {
+      if (y < 0 || (y < MAX_Y && BLOCK_IS_SOLID(blockGet(x, y, z)))) {
         return TRUE;
       }
     }
@@ -1207,7 +1217,7 @@ static u8 playerInWater(Player *player) {
   int z = floor(player->position.z / BLOCK_SIZE);
   int scan_y;
 
-  if (x < 0 || z < 0 || x >= MAX_X || z >= MAX_Z) {
+  if (!windowColumnResident(x >> CHUNK_SHIFT, z >> CHUNK_SHIFT)) {
     return FALSE;
   }
   /* Position is at eye height, so inspect the body volume beneath it rather

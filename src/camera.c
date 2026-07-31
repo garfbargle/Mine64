@@ -70,7 +70,7 @@ static u8 cameraPointSolid(Vector3 position) {
   int y = floor(position.y / BLOCK_SIZE);
   int z = floor(position.z / BLOCK_SIZE);
 
-  if (x < 0 || z < 0 || x >= MAX_X || z >= MAX_Z || y < 0) {
+  if (y < 0) {
     return TRUE;
   }
   return y < MAX_Y &&

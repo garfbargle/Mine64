@@ -84,9 +84,10 @@ typedef struct {
   u8 crafting_table_open;
   u8 active;
 
-  u8 target_x;
+  /* x and z are unbounded world block coordinates; y still spans 0..31. */
+  int target_x;
   u8 target_y;
-  u8 target_z;
+  int target_z;
   s8 build_offset_x;
   s8 build_offset_y;
   s8 build_offset_z;

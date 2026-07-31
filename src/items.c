@@ -88,7 +88,7 @@ void initDroppedItems() {
   }
 }
 
-u8 spawnDroppedItem(u8 item, u8 count, u8 x, u8 y, u8 z) {
+u8 spawnDroppedItem(u8 item, u8 count, int x, u8 y, int z) {
   u8 i;
   DroppedItem *drop = NULL;
 
@@ -123,7 +123,9 @@ static u8 solidBlockAt(float x, float y, float z) {
   int by = floor(y / BLOCK_SIZE);
   int bz = floor(z / BLOCK_SIZE);
 
-  if (bx < 0 || bz < 0 || bx >= MAX_X || bz >= MAX_Z || by < 0) {
+  /* Unloaded terrain reads as solid, so a drop cannot fall through a column
+     that has not streamed in yet. */
+  if (by < 0) {
     return TRUE;
   }
   if (by >= MAX_Y) {

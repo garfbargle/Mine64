@@ -8,6 +8,15 @@
 u8 window_blocks[WINDOW_SLOTS][COLUMN_BLOCK_BYTES];
 u32 window_keys[WINDOW_SLOTS];
 
+/*
+ * How far a column has been built, per window slot.  The stages themselves are
+ * declared in world.h, next to the functions that advance them; the reason
+ * they exist is that decoration reaches across chunk boundaries, so a column
+ * can only move on once its neighbours are far enough along to be written into
+ * and read from.
+ */
+static u8 column_state[WINDOW_SLOTS];
+
 void windowReset() {
   u32 slot;
 
@@ -36,11 +45,21 @@ void windowClaimFixedExtent() {
 
 u8 *windowClaimColumn(int cx, int cz) {
   u32 slot = WINDOW_SLOT(cx, cz);
+  u32 key = COLUMN_KEY(cx, cz);
 
   /* Rebinding a slot is the eviction: whatever column occupied it is simply
      forgotten.  Callers that need to preserve player edits must have written
      the outgoing column's diff before claiming over it. */
-  window_keys[slot] = COLUMN_KEY(cx, cz);
+  if (window_keys[slot] != key) {
+    if (window_keys[slot] != COLUMN_KEY_EMPTY) {
+      /* Derived state keyed to the outgoing column has to go with it.  Tree
+         records are a small fixed pool, so a walk that never released them
+         would exhaust it and quietly stop growing trees. */
+      treesEvictColumn(windowSlotChunkX(slot), windowSlotChunkZ(slot));
+    }
+    window_keys[slot] = key;
+    column_state[slot] = COLUMN_EMPTY;
+  }
   return window_blocks[slot];
 }
 
@@ -410,27 +429,6 @@ static u8 world_gen_stage = WORLD_GEN_IDLE;
 static int world_gen_x;
 static int world_gen_z;
 
-/*
- * How far a column has been built, per window slot.
- *
- * Decoration reaches across chunk boundaries: a tree writes its canopy up to
- * two blocks into its neighbours, and a waystone reads the ground two blocks
- * east and south before placing its outriggers.  A column may therefore only
- * advance once its neighbours are far enough along to be written into and read
- * from, which is what makes the finished world independent of the order
- * columns happened to stream in.
- *
- * Waystones are a separate stage from trees for the same reason they ran as a
- * separate whole-world pass before: a waystone takes the ground a tree would
- * have rooted in, so every waystone in reach must be placed before any tree
- * decides.
- */
-#define COLUMN_EMPTY 0
-#define COLUMN_TERRAIN 1
-#define COLUMN_WAYSTONED 2
-#define COLUMN_DECORATED 3
-
-static u8 column_state[WINDOW_SLOTS];
 
 static void generateTerrainColumn(int x, int z) {
   int y;

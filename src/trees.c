@@ -74,6 +74,26 @@ void initTrees() {
   }
 }
 
+void treesEvictColumn(int cx, int cz) {
+  u8 i;
+
+  for (i = 0; i < MAX_TREES; i++) {
+    TreeRecord *tree = &trees[i];
+
+    if (tree->base_y == TREE_INACTIVE_Y) {
+      continue;
+    }
+    /* Only a window-relative position survives in a u8 record, which is
+       exactly enough to say which resident column a tree stands in. */
+    if ((((u32) tree->x & (TREE_ROOT_SPAN - 1)) >> CHUNK_SHIFT) ==
+          ((u32) cx & WINDOW_MASK) &&
+        (((u32) tree->z & (TREE_ROOT_SPAN - 1)) >> CHUNK_SHIFT) ==
+          ((u32) cz & WINDOW_MASK)) {
+      retireTree(i);
+    }
+  }
+}
+
 u8 createTree(u8 x, u8 z, u8 base_y, u8 height) {
   u8 i;
   u8 byte;
@@ -120,11 +140,15 @@ void treeAddLeaf(u8 tree_index, u8 x, u8 y, u8 z) {
     return;
   }
   tree = &trees[tree_index];
-  local_x = x - tree->x + 2;
+  /* x and tree->x are both the low byte of an unbounded world coordinate, so
+     the offset must be taken in that same width.  Widening first and
+     subtracting in int gives the wrong answer wherever the two straddle a
+     256-block wrap, which a fixed world could never reach. */
+  local_x = (u8) (x - tree->x + 2);
   local_y = y - tree->canopy_y;
-  local_z = z - tree->z + 2;
-  if (local_x < 0 || local_x >= 5 || local_y < 0 ||
-      local_y >= TREE_LEAF_LAYERS || local_z < 0 || local_z >= 5) {
+  local_z = (u8) (z - tree->z + 2);
+  if (local_x >= 5 || local_y < 0 ||
+      local_y >= TREE_LEAF_LAYERS || local_z >= 5) {
     return;
   }
   bit = local_y * 25 + local_x * 5 + local_z;
@@ -132,13 +156,14 @@ void treeAddLeaf(u8 tree_index, u8 x, u8 y, u8 z) {
 }
 
 static u8 treeOwnsLeafAt(TreeRecord *tree, u8 x, u8 y, u8 z, u8 *bit_out) {
-  int local_x = x - tree->x + 2;
+  /* Same wrapping offset as treeAddLeaf; see the note there. */
+  int local_x = (u8) (x - tree->x + 2);
   int local_y = y - tree->canopy_y;
-  int local_z = z - tree->z + 2;
+  int local_z = (u8) (z - tree->z + 2);
   u8 bit;
 
-  if (local_x < 0 || local_x >= 5 || local_y < 0 ||
-      local_y >= TREE_LEAF_LAYERS || local_z < 0 || local_z >= 5) {
+  if (local_x >= 5 || local_y < 0 ||
+      local_y >= TREE_LEAF_LAYERS || local_z >= 5) {
     return FALSE;
   }
   bit = local_y * 25 + local_x * 5 + local_z;
@@ -154,17 +179,13 @@ static u8 leafOwnedByExistingTree(u8 x, u8 y, u8 z) {
   int root_x, root_z;
 
   for (dx = 0; dx < 5; dx++) {
+    /* Any coordinate is a safe lookup now that the root table wraps into the
+       window, so a tree past the old world extent is still found. */
     root_x = x - 2 + dx;
-    if (root_x < 0 || root_x >= MAX_X) {
-      continue;
-    }
     for (dz = 0; dz < 5; dz++) {
       u8 index;
       u8 bit;
       root_z = z - 2 + dz;
-      if (root_z < 0 || root_z >= MAX_Z) {
-        continue;
-      }
       index = treeIndexAtRoot(root_x, root_z);
       if (index != TREE_NONE &&
           treeOwnsLeafAt(&trees[index], x, y, z, &bit)) {
@@ -375,15 +396,11 @@ void treeBlockDestroyed(u8 x, u8 y, u8 z) {
 
   /* Only tree roots within two horizontal blocks can own this leaf. */
   for (dx = 0; dx < 5; dx++) {
+    /* Any coordinate is a safe lookup now that the root table wraps into the
+       window, so a tree past the old world extent is still found. */
     root_x = x - 2 + dx;
-    if (root_x < 0 || root_x >= MAX_X) {
-      continue;
-    }
     for (dz = 0; dz < 5; dz++) {
       root_z = z - 2 + dz;
-      if (root_z < 0 || root_z >= MAX_Z) {
-        continue;
-      }
       index = treeIndexAtRoot(root_x, root_z);
       if (index != TREE_NONE && trees[index].state == TREE_STATE_STANDING &&
           treeOwnsLeafAt(&trees[index], x, y, z, &leaf_bit)) {

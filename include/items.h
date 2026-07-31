@@ -56,7 +56,7 @@ u8 itemIsPickaxe(u8 item);
 u8 itemIsAxe(u8 item);
 u8 rollLeafDrop(u8 *item);
 void initDroppedItems();
-u8 spawnDroppedItem(u8 item, u8 count, u8 x, u8 y, u8 z);
+u8 spawnDroppedItem(u8 item, u8 count, int x, u8 y, int z);
 void updateDroppedItems(float delta);
 
 #endif /* ITEMS_H */

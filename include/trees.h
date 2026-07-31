@@ -32,6 +32,10 @@ typedef struct {
 extern TreeRecord trees[MAX_TREES];
 
 void initTrees();
+/* Release the trees rooted in a column the window is about to rebind.  The
+   record pool is small and fixed, so a walk that never gave trees back would
+   exhaust it and quietly stop growing new ones. */
+void treesEvictColumn(int cx, int cz);
 void recoverTreesFromWorld();
 u8 createTree(u8 x, u8 z, u8 base_y, u8 height);
 void treeAddLeaf(u8 tree_index, u8 x, u8 y, u8 z);

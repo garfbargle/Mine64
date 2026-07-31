@@ -24,6 +24,12 @@ u64 osGetTime(void) {
 void initTrees() {
 }
 
+/* Eviction only releases tree records, which this harness does not keep, so
+   doing nothing here leaves the blocks it does compare untouched. */
+void treesEvictColumn(int cx, int cz) {
+  (void) cx; (void) cz;
+}
+
 u8 createTree(u8 x, u8 z, u8 base_y, u8 height) {
   (void) x; (void) z; (void) base_y; (void) height;
   return 0;

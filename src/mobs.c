@@ -31,7 +31,7 @@ static u8 mobMaxHealth(u8 type) {
 static u8 mobGroundAt(u8 type, int x, int z, int *ground_y) {
   int y;
 
-  if (x < 0 || z < 0 || x >= MAX_X || z >= MAX_Z) {
+  if (!windowColumnResident(x >> CHUNK_SHIFT, z >> CHUNK_SHIFT)) {
     return FALSE;
   }
   for (y = MAX_Y - 3; y >= 0; y--) {
