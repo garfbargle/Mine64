@@ -18,7 +18,30 @@ static FATFS fs;
 #define LEGACY_COOP_HEADER_SIZE 256
 #define LEGACY_MAX_PLAYERS 2
 #define BUFFER_LEN 512
-#define SAVE_VERSION 10
+#define SAVE_VERSION 11
+
+/*
+ * v11 appends the world seed, and changes nothing else.
+ *
+ * Terrain is a pure function of the coordinate and the seed, which is what
+ * lets an unmodified column be dropped and regenerated instead of saved.  But
+ * no version before this one recorded the seed, so a loaded world generated
+ * everything past the saved extent from whatever seed the session happened to
+ * be carrying -- the title screen's last preview, or nothing at all on a cold
+ * boot straight into Load.  The saved 112x112 extent was never affected,
+ * because it arrives as blocks; everything the player streamed in by walking
+ * out of it was a different world on every load.  Biomes are what makes that
+ * impossible to miss: a desert becomes a forest between one session and the
+ * next.
+ *
+ * The seed goes after the player array, in space the fixed 512-byte header
+ * page already zero-filled, so every v10 offset is untouched and one struct
+ * serves both.  Only the checksum and the seed restore are version-gated.
+ */
+#define SAVE_VERSION_SEED 11
+/* The first version using the four-player Header layout.  v10 and v11 share
+   it, so the load path keys on this rather than on SAVE_VERSION. */
+#define SAVE_VERSION_HEADER 10
 
 typedef struct {
   u32 magic_num;
@@ -51,6 +74,10 @@ typedef struct {
   u32 checksum;
   u32 world_ticks;
   SavedPlayer player[MAX_PLAYERS];
+  /* Appended by v11; see SAVE_VERSION_SEED.  A v10 file's zero-filled tail
+     reads as 0 here, which is why the version -- not the value -- decides
+     whether it means anything. */
+  u32 world_seed;
 } Header;
 
 /* Version 8 is the current four-player header before the world clock.  Keep
@@ -224,12 +251,37 @@ static u32 checksumSave(SavedPlayer *players_to_save, u32 player_count,
   return checksum;
 }
 
-static u32 checksumWorldTicks(u32 checksum, u32 world_ticks) {
+/* Fold one word into the running checksum.  The world clock was the first
+   scalar the header carried outside the player records; the world seed is the
+   second, and both are covered the same way. */
+static u32 checksumWord(u32 checksum, u32 word) {
   u8 byte;
   for (byte = 0; byte < 4; byte++) {
-    checksum = checksumByte(checksum, world_ticks >> (byte * 8));
+    checksum = checksumByte(checksum, word >> (byte * 8));
   }
   return checksum;
+}
+
+/*
+ * Point generation at the seed this world was built from.
+ *
+ * Only v11 and later recorded one; see SAVE_VERSION_SEED.  An older save
+ * cannot be made to remember what it never wrote, but it can at least be made
+ * to answer the same way twice: deriving the fallback from the slot turns
+ * "the outskirts are different every load" into "the outskirts are wrong but
+ * stable", which is the difference between a world you can build in and one
+ * you cannot.  The saved extent is unaffected either way -- it arrives as
+ * blocks, not as a seed.
+ */
+static void restoreWorldSeed(u32 version, const Header *saved) {
+  if (version >= SAVE_VERSION_SEED) {
+    world_seed = saved->world_seed;
+  } else {
+    world_seed = MAGIC_NUM ^ ((u32) game_file_num * 2654435761UL);
+  }
+  /* Nothing reproducible reads the gameplay RNG, but starting it from the
+     same place a new world would keeps the two paths alike. */
+  seed = world_seed;
 }
 
 /* The on-disk tree payload is frozen at the original 96 records even though
@@ -699,13 +751,16 @@ u8 saveGame() {
   header->save_count = save_count + 1;
   header->player_count = active_player_count;
   header->world_ticks = dayCycleWorldTicks();
+  /* What every column outside the saved extent will be regenerated from when
+     this world is loaded again. */
+  header->world_seed = world_seed;
   for (player_num = 0; player_num < active_player_count; player_num++) {
     savePlayerState(&header->player[player_num], &players[player_num]);
   }
   saveWorldDimensions(header);
-  header->checksum = checksumWorldTicks(checksumTrees(
+  header->checksum = checksumWord(checksumWord(checksumTrees(
     checksumSave(header->player, header->player_count, MAX_PLAYERS)),
-    header->world_ticks);
+    header->world_ticks), header->world_seed);
 
   cursor_pos = sizeof(Header);
   while (cursor_pos < BUFFER_LEN) {
@@ -818,22 +873,22 @@ void loadGame() {
   read_ok = readPage(&file);
   if (!read_ok || legacy_header->magic_num != MAGIC_NUM ||
       legacy_header->version > SAVE_VERSION ||
-      (legacy_header->version == SAVE_VERSION &&
+      (legacy_header->version >= SAVE_VERSION_HEADER &&
        buffer_bytes_read < sizeof(Header)) ||
       (legacy_header->version == 8 &&
        buffer_bytes_read < sizeof(HeaderV8)) ||
       (legacy_header->version == 7 &&
        !savedWorldDimensionsMatch(header_v7->player)) ||
-      (legacy_header->version == SAVE_VERSION &&
+      (legacy_header->version >= SAVE_VERSION_HEADER &&
        !savedWorldDimensionsMatch(header->player)) ||
       (legacy_header->version == 8 &&
        !savedWorldDimensionsMatch(header_v8->player)) ||
       (legacy_header->version >= 1 &&
-       ((legacy_header->version == SAVE_VERSION &&
+       ((legacy_header->version >= SAVE_VERSION_HEADER &&
          (header->player_count < 1 || header->player_count > MAX_PLAYERS)) ||
         (legacy_header->version == 8 &&
          (header_v8->player_count < 1 || header_v8->player_count > MAX_PLAYERS)) ||
-        (legacy_header->version < SAVE_VERSION &&
+        (legacy_header->version < SAVE_VERSION_HEADER &&
          (header_v1->player_count < 1 ||
           header_v1->player_count > LEGACY_MAX_PLAYERS))))) {
     f_close(&file);
@@ -884,8 +939,9 @@ void loadGame() {
     players[player_num].break_progress = 0;
   }
   active_player_count = 1;
+  restoreWorldSeed(legacy_header->version, header);
 
-  if (legacy_header->version == SAVE_VERSION) {
+  if (legacy_header->version >= SAVE_VERSION_HEADER) {
     expected_checksum = header->checksum;
     computed_checksum = checksumPlayers(header->player, header->player_count,
       MAX_PLAYERS);
@@ -1124,9 +1180,14 @@ void loadGame() {
   }
 
   f_close(&file);
-  if (legacy_header->version == SAVE_VERSION) {
-    computed_checksum = checksumWorldTicks(computed_checksum,
-      header->world_ticks);
+  /* Each scalar the header grew is folded in only from the version that
+     started writing it, so an older save still verifies against exactly the
+     bytes it was written with. */
+  if (legacy_header->version >= SAVE_VERSION_HEADER) {
+    computed_checksum = checksumWord(computed_checksum, header->world_ticks);
+  }
+  if (legacy_header->version >= SAVE_VERSION_SEED) {
+    computed_checksum = checksumWord(computed_checksum, header->world_seed);
   }
   if (!read_ok ||
       (full_inventory_saved && computed_checksum != expected_checksum) ||

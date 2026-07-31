@@ -451,14 +451,44 @@ static void checkFarLands(void) {
   expectIdenticalIn("evicted terrain regenerates identically on return",
     walked, direct, FAR_SNAPSHOT_BYTES);
 
-  /* The decoration the fixed-extent clamps used to strip out here. */
   for (i = 0; i < FAR_SNAPSHOT_BYTES; i++) {
-    if (walked[i] == WOOD) {
-      trunks++;
-    } else if (walked[i] == LEAVES) {
-      leaves++;
-    } else if (walked[i] == BLOCK_NOT_RESIDENT) {
+    if (walked[i] == BLOCK_NOT_RESIDENT) {
       not_resident++;
+    }
+  }
+
+  /*
+   * The decoration the fixed-extent clamps used to strip out here.
+   *
+   * Counted across the whole decorated ring rather than the snapshot patch.
+   * The patch is nine chunks of one spot, and with biomes a spot is allowed
+   * to be a desert -- which is treeless by design, because trySpawnTree
+   * plants only on grass.  This asks the question the check is actually for
+   * ("does anything decorate this far out?") rather than betting the answer
+   * on one 72-block square of a particular seed's climate.
+   */
+  {
+    int dx, dz, bx, bz, y;
+
+    for (dx = -STREAM_TREE_RADIUS; dx <= STREAM_TREE_RADIUS; dx++) {
+      for (dz = -STREAM_TREE_RADIUS; dz <= STREAM_TREE_RADIUS; dz++) {
+        for (bx = 0; bx < CHUNK_SIZE; bx++) {
+          for (bz = 0; bz < CHUNK_SIZE; bz++) {
+            int x = (FAR_CX + dx) * CHUNK_SIZE + bx;
+            int z = (FAR_CZ + dz) * CHUNK_SIZE + bz;
+
+            for (y = 0; y < MAX_Y; y++) {
+              u8 block = blockGet(x, y, z);
+
+              if (block == WOOD) {
+                trunks++;
+              } else if (block == LEAVES) {
+                leaves++;
+              }
+            }
+          }
+        }
+      }
     }
   }
   if (trunks > 0 && leaves > trunks) {

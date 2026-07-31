@@ -1001,8 +1001,16 @@ static void stampWaystonesColumn(int cx, int cz) {
   }
 }
 
-/* TRUE when a tree roots at this column.  The perlin field sets the local
-   density and the hash decides whether this particular column draws one. */
+/*
+ * TRUE when a tree roots at this column.  The perlin field sets the local
+ * density and the hash decides whether this particular column draws one.
+ *
+ * Biomes deliberately do not appear here.  trySpawnTree plants only on GRASS,
+ * so desert, highland and scree refuse trees on their own -- for free, and
+ * without this stage needing a height patch it does not have.  Forest and
+ * plains share a palette and are separated by this field's own variation,
+ * which is why the biome does not scale it either.
+ */
 static u8 treeSeededAt(int x, int z) {
   float density = perlin2d(x, z, 0.02f, 2) * 8.f - 2.f;
 
@@ -1029,8 +1037,132 @@ static int world_gen_x;
 static int world_gen_z;
 
 
-static int terrainDirtDepth(float biome) {
-  return 3 + (int) (biome * 2.0f);
+/*
+ * Biomes.
+ *
+ * A biome is never stored.  Like every other decision generation makes it is
+ * re-derived from the coordinate and the seed, so an evicted column comes back
+ * identical -- which is the property the whole streaming design rests on.
+ *
+ * It is also derived entirely from signals the column has already computed:
+ * the climate field that used to set nothing but the dirt depth, the shaped
+ * surface height, and the local slope.  Classifying therefore costs no noise
+ * sample that was not already being paid for.
+ *
+ * With all sixteen block IDs spoken for there is no room for biome-specific
+ * blocks, so a biome is a palette drawn from what already exists -- which
+ * block the surface shows, what lies under it, and how thick that band is.
+ * Four of the five read differently at draw distance (grass, sand, stone,
+ * cobblestone); plains and forest share a palette and are told apart by tree
+ * density, which the tree field already varies on its own.
+ */
+#define BIOME_PLAINS   0
+#define BIOME_FOREST   1
+#define BIOME_DESERT   2
+#define BIOME_HIGHLAND 3
+#define BIOME_SCREE    4
+#define BIOME_COUNT    5
+
+typedef struct {
+  u8 surface;    /* the one exposed top block */
+  u8 subsurface; /* the band between that surface and the stone beneath it */
+  u8 depth;      /* how thick the band is */
+} BiomePalette;
+
+static const BiomePalette biome_palettes[BIOME_COUNT] = {
+  {GRASS,       DIRT,  3},  /* plains                            */
+  {GRASS,       DIRT,  5},  /* forest: deeper soil under the trees */
+  {SAND,        SAND,  4},  /* desert                            */
+  {STONE,       STONE, 3},  /* highland: bare rock               */
+  {COBBLESTONE, STONE, 2}   /* scree: weathered, broken rock     */
+};
+
+/*
+ * The climate field.  This is the sample that used to be called `biome` and
+ * fed only terrainDirtDepth.  Widening it from 0.025 to 0.006 turns its
+ * ~40-block patches into ~170-block regions, which is the scale a biome has
+ * to be for walking out of one to mean anything.  Measured over a 800x800
+ * block area the field spans 0.14 to 0.87 about a mean of 0.505, which is
+ * where the thresholds below come from.
+ *
+ * Widening it also broadens what it already governed -- soil depth, and how
+ * far sand climbs a dry bank -- which is the intended trade: those were
+ * per-patch details and are now per-region ones.
+ */
+static float climateAt(int x, int z) {
+  return perlin2d(x + 883, z + 521, 0.006f, 3);
+}
+
+/*
+ * Bare rock outranks climate: a slope too steep or a summit too high holds no
+ * soil whatever the weather, which is the rule the old `exposed_stone` test
+ * encoded and this keeps.  Climate then splits that rock into clean stone and
+ * weathered scree, and splits the ground that does hold soil into desert,
+ * plains and forest.
+ *
+ * The cuts fall at roughly 14% desert, 59% plains and 27% forest, so plains
+ * stays the broad and mostly level route through the world that terrainHeight
+ * is shaped to provide.
+ */
+static u8 biomeAt(int height, float slope, float climate) {
+  if (height > 21 || slope >= 5.f) {
+    return climate < 0.45f ? BIOME_SCREE : BIOME_HIGHLAND;
+  }
+  if (climate < 0.32f) {
+    return BIOME_DESERT;
+  }
+  return climate > 0.62f ? BIOME_FOREST : BIOME_PLAINS;
+}
+
+/*
+ * Everything the surface fill and the deferred underground carve have to
+ * agree on for one block column.
+ *
+ * They used to sample the climate field independently, and stayed consistent
+ * only because the two copies happened to be spelled the same way.  The dirt
+ * depth it yields decides where carveTerrainColumn is allowed to place ore,
+ * so any divergence would make a column that was deepened later differ from
+ * one generated deep.  Nothing tests that: the harness compares streamed
+ * worlds against streamed worlds, and every column takes the same route
+ * through shallow-then-deepen, so a systematic disagreement between the two
+ * halves would cancel out and pass.  Structure is the guarantee instead --
+ * one function answers for both callers, so they cannot drift apart.
+ *
+ * Only valid while the height patch covering x/z is filled: the slope test
+ * reads the four neighbouring block columns.
+ */
+typedef struct {
+  int height;
+  int water_level;
+  int dirt_depth;
+  u8 surface;
+  u8 subsurface;
+} ColumnProfile;
+
+static void columnProfile(int x, int z, ColumnProfile *profile) {
+  const BiomePalette *palette;
+  float slope;
+  u8 biome;
+
+  profile->height = shapedSurfaceHeight(x, z, patchHeight(x, z),
+    &profile->water_level);
+  slope = absolute((float) (patchHeight(x + 1, z) - patchHeight(x - 1, z))) +
+    absolute((float) (patchHeight(x, z + 1) - patchHeight(x, z - 1)));
+  biome = biomeAt(profile->height, slope, climateAt(x, z));
+  palette = &biome_palettes[biome];
+  profile->surface = palette->surface;
+  profile->subsurface = palette->subsurface;
+  profile->dirt_depth = palette->depth;
+
+  /* Shorelines are sand in every biome, and a desert carries its sand a
+     little further up the bank.  This is the one place the palette does not
+     get the last word: at the waterline it is the water the eye reads, not
+     the climate. */
+  if (profile->height <= SEA_LEVEL + 1 ||
+      (biome == BIOME_DESERT && profile->height <= SEA_LEVEL + 3)) {
+    profile->surface = SAND;
+    profile->subsurface = SAND;
+  }
 }
 
 /*
@@ -1069,47 +1201,37 @@ static void carveTerrainColumn(int x, int z, int height, int dirt_depth) {
  * is close enough for it to matter.
  */
 static void generateTerrainColumn(int x, int z, u8 deep) {
+  ColumnProfile profile;
   int y;
-  int height, dirt_depth, water_level;
-  float biome, slope;
-  u8 block, do_sand, exposed_stone;
+  u8 block;
 
-  height = shapedSurfaceHeight(x, z, patchHeight(x, z), &water_level);
-  biome = perlin2d(x + 883, z + 521, 0.025f, 3);
-  slope = absolute((float)(patchHeight(x + 1, z) - patchHeight(x - 1, z))) +
-    absolute((float)(patchHeight(x, z + 1) - patchHeight(x, z - 1)));
-  /* Sand belongs at shorelines and a few shallow lowland patches.  Do
-   * not let a broad biome signal turn hills or mountain shoulders into
-   * implausible vertical sand stacks. */
-  do_sand = height <= SEA_LEVEL + 1 ||
-    (height <= SEA_LEVEL + 3 && biome < 0.42f);
-  exposed_stone = height > 21 || slope >= 5;
-  dirt_depth = terrainDirtDepth(biome);
+  columnProfile(x, z, &profile);
 
+  /*
+   * The biome resolves to three block IDs and a depth before the loop starts,
+   * so what used to be a seven-way chain of terrain special cases is now five
+   * comparisons against values already in registers.  Bare rock reads as
+   * stone through the whole band rather than as the old two-block cap over
+   * dirt, which is both simpler and what an exposed summit should look like.
+   */
   for (y = 0; y < MAX_Y; y++) {
-    if (y >= height && y <= water_level) {
-      block = WATER;
-    } else if (y >= height)  {
-      block = AIR;
+    if (y >= profile.height) {
+      block = y <= profile.water_level ? WATER : AIR;
     } else if (y == 0) {
       block = BEDROCK;
-    } else if (y < height - dirt_depth) {
+    } else if (y < profile.height - profile.dirt_depth) {
       block = STONE;
-    } else if (do_sand) {
-      block = SAND;
-    } else if (exposed_stone && y >= height - 2) {
-      block = STONE;
-    } else if (y == height - 1) {
-      block = GRASS;
+    } else if (y == profile.height - 1) {
+      block = profile.surface;
     } else {
-      block = DIRT;
+      block = profile.subsurface;
     }
 
     blockSet(x, y, z, block);
   }
 
   if (deep) {
-    carveTerrainColumn(x, z, height, dirt_depth);
+    carveTerrainColumn(x, z, profile.height, profile.dirt_depth);
   }
 }
 
@@ -1190,13 +1312,14 @@ static void worldDeepenColumn(int cx, int cz) {
   fillHeightPatch(base_x, base_z);
   for (bx = 0; bx < CHUNK_SIZE; bx++) {
     for (bz = 0; bz < CHUNK_SIZE; bz++) {
-      int x = base_x + bx;
-      int z = base_z + bz;
-      int water_level;
-      int height = shapedSurfaceHeight(x, z, patchHeight(x, z), &water_level);
-      float biome = perlin2d(x + 883, z + 521, 0.025f, 3);
+      ColumnProfile profile;
 
-      carveTerrainColumn(x, z, height, terrainDirtDepth(biome));
+      /* Same profile the surface fill used, from the same function, so the
+         dirt depth the ore placement keys off cannot disagree with the one
+         the blocks above it were written from. */
+      columnProfile(base_x + bx, base_z + bz, &profile);
+      carveTerrainColumn(base_x + bx, base_z + bz, profile.height,
+        profile.dirt_depth);
     }
   }
   column_deep[WINDOW_SLOT(cx, cz)] = TRUE;
