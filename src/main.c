@@ -229,8 +229,31 @@ void callbackGfx(int pendingGfx) {
 
       /* Spread streaming and meshing over frames instead of letting one
          callback spend 100+ ms: the run-5 quicksand was B tracking W at
-         ~143 ms, all of it CPU work in this block. */
-      stream_work_deadline = gated_start + OS_USEC_TO_CYCLES(10000);
+         ~143 ms, all of it CPU work in this block.
+         The exception is a gap the player is practically standing on: the
+         stage pipeline (terrain, waystones, trees, mesh) at one guaranteed
+         step each per frame takes seconds to finish a fresh row, and that
+         is the "walk to the edge and wait" complaint.  When anything within
+         two chunks of the player is unbuilt or unmeshed, trade a brief
+         hitch for closing the hole at more than double the rate. */
+      {
+        int pcx = player_block_x >> CHUNK_SHIFT;
+        int pcz = player_block_z >> CHUNK_SHIFT;
+        int dx, dz;
+        u8 urgent = FALSE;
+
+        for (dx = -2; dx <= 2 && !urgent; dx++) {
+          for (dz = -2; dz <= 2; dz++) {
+            if (worldColumnState(pcx + dx, pcz + dz) < COLUMN_DECORATED ||
+                graphicsColumnNeedsMesh(pcx + dx, pcz + dz)) {
+              urgent = TRUE;
+              break;
+            }
+          }
+        }
+        stream_work_deadline = gated_start +
+          OS_USEC_TO_CYCLES(urgent ? 25000 : 10000);
+      }
 
       /*
        * Re-centre the render origin before it drifts out of the s15.16 Mtx

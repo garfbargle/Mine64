@@ -602,7 +602,33 @@ throughput**. This does not pay for itself alone — the current fixed world
 cannot absorb the memory. It only works together with task 5's LOD, which is
 why they land as a pair.
 
-## Task 5 — Two-ring residency with LOD — in-window half done; view distance remains
+## Task 5 — Two-ring residency with LOD — in-window LOD and the single arena done; the wide window remains
+
+**Single-arena rewrite — done, not yet hardware-verified.**  The
+double-buffered pair and the whole compaction machinery are gone.  One
+1 MiB arena, first-fit blocks (one per column: baked vertex region first,
+then per-texture command segments), and a relocation defrag that slides one
+block per callback into the lowest gap -- safe because every mutation runs
+at `pendingGfx == 0` and finishes before that callback's `draw()`.  The
+patcher fixes the moved block's own gSPVertex addresses (range-checked, so
+a shell's static-table references are untouched) and the per-texture start
+pointers.  World builds emit a new block *generation* behind staged
+pointers while the outgoing world renders on, then publish by pointer-copy
+and free the old generation -- a shell preview plus a full game mesh share
+the arena comfortably.  Allocation failure keeps the old mesh, keeps the
+dirty mark, and arms a 60-frame backoff.  Link headroom went 336 KiB →
+**1351 KiB**: the megabyte the 32×32 window needs.
+
+Also landed: the "walk to the edge and wait ~3 s" fix -- the stage pipeline
+gets a 25 ms deadline instead of 10 ms whenever a column within two chunks
+of a player is unbuilt or unmeshed, and streaming ranking is biased two
+chunks toward the player's smoothed heading.
+
+Hardware checks for this build: terrain integrity after long walks (defrag
+relocation is the new risk -- garbled or vanishing columns would implicate
+the patcher), menu↔game and preview↔preview transitions (generation
+staging), the A row on the single arena, C now showing allocated block
+count, and whether the edge wait is gone.
 
 The LOD split and per-column format landed with task 4 above.  What remains
 is the actual view-distance increase, and the RAM math forces an order:

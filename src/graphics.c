@@ -40,59 +40,73 @@ Gfx *dlp;
 u32 dl_no = 0;
 Gfx frame_display_lists[NUM_DISPLAY_LISTS][FRAME_DISPLAY_LIST_SIZE];
 
-/* Keep a complete, immutable mesh arena on screen while a replacement is
- * compacted incrementally into the other arena.  This eliminates the old
- * gameplay-time RSP wait and full-world rebuild when append-only updates ran
- * low on space. */
-#define NUM_COLUMN_ARENAS 2
+/*
+ * One mesh arena, managed as first-fit blocks with incremental relocation
+ * defrag -- the double-buffered pair it replaces cost a second megabyte of
+ * RDRAM purely so a multi-frame compaction could rebuild into memory the
+ * RSP was not reading.  The reasoning that makes one arena safe: every
+ * mutation here runs from the graphics callback with pendingGfx == 0, when
+ * no task is in flight, and finishes before draw() submits the next one --
+ * so memory can move, provided every pointer that names it is fixed in the
+ * same callback.
+ *
+ * A column's mesh is one contiguous block: the baked vertex data first,
+ * then the command segments for each texture bank.  Keeping data and
+ * commands segregated is what makes relocation possible at all -- the
+ * patcher walks only the command region, so vertex bytes are never
+ * misread as opcodes.
+ *
+ * Defrag slides one block per callback into the lowest free gap.  There is
+ * no compaction pass, no second arena, and no stop-the-world: a fully
+ * fragmented arena heals over a few dozen frames while the game runs.
+ */
+#define MESH_ARENA_SIZE 131072
+static Gfx mesh_arena[MESH_ARENA_SIZE];
+
+typedef struct {
+  u32 start;      /* Gfx offset into mesh_arena */
+  u32 length;     /* total Gfx, vertex region included */
+  u32 verts;      /* leading Gfx of vertex data the patcher must skip */
+  u16 slot;
+  u8 generation;  /* which world build owns it; see the staging notes */
+} MeshBlock;
+
+/* Two generations can coexist mid world-build: every live column plus every
+   staged replacement. */
+#define MAX_MESH_BLOCKS (WINDOW_SLOTS * 2)
+static MeshBlock mesh_blocks[MAX_MESH_BLOCKS];  /* sorted by start */
+static u16 mesh_block_count;
+static u32 mesh_arena_used;
+/* The generation whose blocks the live pointers reference, and the one a
+   world build is currently emitting.  Equal outside a build. */
+static u8 mesh_generation;
+static u8 mesh_building_generation;
+
 /*
  * One column a frame was sized for the occasional block edit in a world that
  * never moved.  Streaming queues a whole row of columns every time the player
  * crosses a chunk boundary, and at one a frame that is most of a second of
  * terrain trailing behind them.
- *
- * Compaction gets its own, larger budget because it blocks everything: while
- * it runs no queued column is compiled at all, so the player sees new terrain
- * simply stop arriving until it finishes.  Most of the slots it walks are not
- * finished columns and cost nothing to skip.
  */
 #define MESH_REBUILD_BUDGET 3
-/*
- * Compaction budgets count what they cost, not slots.  The old single budget
- * of six charged empty slots and full column rebuilds alike, so a frame that
- * happened upon six finished ring columns did six greedy meshes plus seam
- * refinement in one callback -- tens of milliseconds of hitch -- while frames
- * over empty window space did nothing and still only advanced six slots.
- * Charging rebuilds and slot walking separately bounds the worst frame at two
- * rebuilds without making the pass take longer over the empty stretches.
- */
-#define MESH_COMPACTION_REBUILDS_PER_FRAME 2
-#define MESH_COMPACTION_SLOTS_PER_FRAME 64
-#define MESH_COMPACTION_RESERVE (DISPLAY_LIST_SIZE / 10)
-/*
- * Frames to wait after a compaction publishes before another may start.  A
- * pass that ran short proved the resident working set does not fit, and a
- * pass that completed with the arena still under reserve proved the same
- * thing; recompacting either immediately reclaims nothing and costs the whole
- * pass again, forever -- the game keeps running but new terrain never gets a
- * turn to compile.  The pause gives the ring time to move on and the failure
- * a shape the player survives: some far columns arrive late instead of the
- * console silently spending every frame remeshing.
- */
-#define MESH_COMPACTION_COOLDOWN_FRAMES 120
+/* Frames to skip rebuild attempts after an allocation failure.  Retrying
+   every frame would pay the full greedy mesh before failing again. */
+#define MESH_ALLOC_COOLDOWN_FRAMES 60
 /* Headroom the terrain passes leave for the HUD, menu text and trailing sync. */
 #define FRAME_COMMAND_TAIL_RESERVE 2048
-static Gfx column_display_lists[NUM_COLUMN_ARENAS][DISPLAY_LIST_SIZE];
-Gfx *column_dlp;
 /*
  * Per-column tables are indexed by window slot, not by a position in a fixed
  * world.  A slot is the only name a column still has once the world stops
  * having edges, and it is what stays valid when the window scrolls and rebinds
  * the slot to a different column.
+ *
+ * The staged set exists for world builds: the outgoing world keeps rendering
+ * from the live pointers while the incoming one is emitted, and a completed
+ * build publishes by copying staged over live and freeing the old
+ * generation's blocks.
  */
-static Gfx *column_starts[NUM_COLUMN_ARENAS][NUM_TEXTURES][WINDOW_SLOTS];
-static Gfx *column_arena_ends[NUM_COLUMN_ARENAS];
-static u8 active_column_arena;
+static Gfx *column_starts[NUM_TEXTURES][WINDOW_SLOTS];
+static Gfx *staged_starts[NUM_TEXTURES][WINDOW_SLOTS];
 /* Hard ceiling for terrain branches within one frame list.  Release builds
    compile out assert(), so an overflow here would silently run past this
    frame's buffer into the next one and hand the RSP a corrupt list -- which
@@ -109,29 +123,15 @@ static u8 building_scenic;
    scenic pass resolves it once per column instead of rescanning the full
    height for every candidate quad. */
 static u8 surface_heights[CHUNK_SIZE][CHUNK_SIZE];
-static u8 column_build_arena;
-static u8 column_display_list_full;
 static u8 dirty_columns[WINDOW_SLOTS];
 static u16 dirty_column_cursor;
-static u8 compacting_columns;
-static u16 compaction_column_cursor;
-/* Set when a compaction pass could not fit every resident column. */
-static u8 compaction_ran_short;
-/* Frames remaining before another compaction may start; see the cooldown
-   constant above for why publishing one always arms this. */
-static u8 compaction_cooldown;
-/* Whether a slot has compiled geometry, tracked per arena.  A column can be
-   finished generating yet have no mesh -- it drifted out of the mesh ring and
-   was dropped by a compaction, or its slot was invalidated.
-
-   Per arena is load-bearing: a compaction builds into the arena that is off
-   screen, and while it runs the on-screen arena still has every mesh it ever
-   had.  A single shared array cleared at compaction start told the streaming
-   ring scan that every column had lost its mesh, so it queued the whole ring
-   dirty; those rebuilds then re-orphaned most of the freshly compacted arena,
-   dragging it straight back under its reserve -- a compaction that feeds
-   itself forever, on the exact long walks streaming exists to serve. */
-static u8 column_meshed[NUM_COLUMN_ARENAS][WINDOW_SLOTS];
+/* Frames left before rebuilds may be attempted after the arena refused an
+   allocation; the dirty marks and the ring scan keep the need alive. */
+static u8 mesh_alloc_cooldown;
+/* Whether a slot has compiled geometry behind the live pointers, and the
+   staged equivalent a world build publishes. */
+static u8 column_meshed[WINDOW_SLOTS];
+static u8 staged_meshed[WINDOW_SLOTS];
 
 static Gfx empty_column_display_list[] = {
   gsSPEndDisplayList()
@@ -987,35 +987,146 @@ void loadTexture(Texture *texture) {
   }
 }
 
-static Gfx *columnArenaStart(void) {
-  return column_display_lists[column_build_arena];
-}
+/* Index into mesh_blocks of the block for (slot, generation), or -1. */
+static int meshBlockFind(u16 slot, u8 generation) {
+  u16 i;
 
-static u32 columnArenaFree(void) {
-  return columnArenaStart() + DISPLAY_LIST_SIZE - column_dlp;
-}
-
-static void beginColumnArenaBuild(u8 arena) {
-  column_build_arena = arena;
-  column_dlp = column_display_lists[arena];
-  column_display_list_full = FALSE;
-}
-
-static void resetColumnArenaBuild(u8 arena) {
-  u16 slot;
-  u8 texture;
-
-  beginColumnArenaBuild(arena);
-  for (texture = 0; texture < NUM_TEXTURES; texture++) {
-    for (slot = 0; slot < WINDOW_SLOTS; slot++) {
-      column_starts[arena][texture][slot] = empty_column_display_list;
+  for (i = 0; i < mesh_block_count; i++) {
+    if (mesh_blocks[i].slot == slot &&
+        mesh_blocks[i].generation == generation) {
+      return i;
     }
   }
-  /* Only this arena's meshes are discarded; the other arena -- usually the
-     one on screen -- keeps every mesh it had, and its flags must keep saying
-     so or the streaming ring scan re-queues the entire ring. */
-  for (slot = 0; slot < WINDOW_SLOTS; slot++) {
-    column_meshed[arena][slot] = FALSE;
+  return -1;
+}
+
+static void meshBlockRemove(u16 index) {
+  u16 i;
+
+  mesh_arena_used -= mesh_blocks[index].length;
+  for (i = index; i + 1 < mesh_block_count; i++) {
+    mesh_blocks[i] = mesh_blocks[i + 1];
+  }
+  mesh_block_count--;
+}
+
+static void meshBlockFree(u16 slot, u8 generation) {
+  int index = meshBlockFind(slot, generation);
+
+  if (index >= 0) {
+    meshBlockRemove((u16) index);
+  }
+}
+
+/*
+ * First-fit into the lowest gap.  The list is sorted by start, so gaps are
+ * simply the space between consecutive blocks; defrag squeezes them out one
+ * block per frame, which keeps first-fit from ever fragmenting for long.
+ * Returns the Gfx offset, or -1 when nothing fits.
+ */
+static s32 meshBlockAlloc(u32 length, u32 verts, u16 slot, u8 generation) {
+  u32 prev_end = 0;
+  u16 i, insert_at;
+  u32 start;
+
+  if (mesh_block_count >= MAX_MESH_BLOCKS) {
+    return -1;
+  }
+  insert_at = mesh_block_count;
+  start = MESH_ARENA_SIZE;  /* sentinel: no gap found */
+  for (i = 0; i < mesh_block_count; i++) {
+    if (mesh_blocks[i].start - prev_end >= length) {
+      insert_at = i;
+      start = prev_end;
+      break;
+    }
+    prev_end = mesh_blocks[i].start + mesh_blocks[i].length;
+  }
+  if (start == MESH_ARENA_SIZE) {
+    if (MESH_ARENA_SIZE - prev_end < length) {
+      return -1;
+    }
+    start = prev_end;
+  }
+  for (i = mesh_block_count; i > insert_at; i--) {
+    mesh_blocks[i] = mesh_blocks[i - 1];
+  }
+  mesh_blocks[insert_at].start = start;
+  mesh_blocks[insert_at].length = length;
+  mesh_blocks[insert_at].verts = verts;
+  mesh_blocks[insert_at].slot = slot;
+  mesh_blocks[insert_at].generation = generation;
+  mesh_block_count++;
+  mesh_arena_used += length;
+  return (s32) start;
+}
+
+/*
+ * Slide one block down into the lowest gap.  Only ever called from the
+ * graphics callback with no task in flight, and every pointer that names
+ * the block -- the per-texture starts and the vertex addresses embedded in
+ * its own gSPVertex commands -- is rewritten before this callback's draw()
+ * submits, so no frame observes the move.
+ */
+#define G_VTX_OPCODE 0x01
+
+static void meshDefragStep(void) {
+  u32 prev_end = 0;
+  u16 i;
+  u8 texture;
+
+  for (i = 0; i < mesh_block_count; i++) {
+    MeshBlock *block = &mesh_blocks[i];
+    u32 gap = block->start - prev_end;
+    s32 delta_bytes;
+    u32 word;
+    Gfx *cmd, *cmd_end;
+
+    if (gap == 0) {
+      prev_end = block->start + block->length;
+      continue;
+    }
+    delta_bytes = -(s32) (gap * sizeof (Gfx));
+    /* dst < src with possible overlap; copying forward is safe. */
+    {
+      u64 *dst = (u64 *) (mesh_arena + prev_end);
+      u64 *src = (u64 *) (mesh_arena + block->start);
+      u32 words = block->length;
+
+      for (word = 0; word < words; word++) {
+        dst[word] = src[word];
+      }
+    }
+    /* Patch the vertex loads whose addresses fall inside the block that
+       just moved -- a full-detail column's baked vertices travel with it.
+       A shell column's vertex loads reference the shared static tables,
+       which sit outside the old range and must be left alone. */
+    {
+      u32 old_lo = (u32) (mesh_arena + block->start);
+      u32 old_hi = old_lo + block->length * sizeof (Gfx);
+
+      cmd = mesh_arena + prev_end + block->verts;
+      cmd_end = mesh_arena + prev_end + block->length;
+      for (; cmd < cmd_end; cmd++) {
+        if ((cmd->words.w0 >> 24) == G_VTX_OPCODE &&
+            cmd->words.w1 >= old_lo && cmd->words.w1 < old_hi) {
+          cmd->words.w1 = (u32) ((s32) cmd->words.w1 + delta_bytes);
+        }
+      }
+    }
+    /* Re-aim whichever pointer set references this block. */
+    {
+      Gfx *(*starts)[WINDOW_SLOTS] =
+        block->generation == mesh_generation ? column_starts : staged_starts;
+
+      for (texture = 0; texture < NUM_TEXTURES; texture++) {
+        if (starts[texture][block->slot] != empty_column_display_list) {
+          starts[texture][block->slot] -= gap;
+        }
+      }
+    }
+    block->start = prev_end;
+    return;
   }
 }
 
@@ -1082,7 +1193,8 @@ static void buildFaceTextureTable(void) {
 #define MESH_LOD_SHELL 1
 #define MESH_LOD_PROMOTE_RADIUS 3
 #define MESH_LOD_DEMOTE_RADIUS 5
-static u8 column_mesh_lod[NUM_COLUMN_ARENAS][WINDOW_SLOTS];
+static u8 column_mesh_lod[WINDOW_SLOTS];
+static u8 staged_mesh_lod[WINDOW_SLOTS];
 
 /* Chebyshev chunk distance from a column to the nearest active player --
    every LOD and compaction decision keys off this, so split-screen terrain
@@ -1236,29 +1348,42 @@ static void resolveColumnQuads(int cx, int cz, u8 lod) {
    buffer exactly. */
 #define BAKED_QUADS_PER_BATCH 8
 
-static u8 makeColumnTextureDL(u32 slot, u8 texture, u8 lod, Gfx **new_start) {
+/* Gfx cost of one texture's command segment; the vertex data is accounted
+   separately as the block's leading region. */
+static u32 textureSegmentSize(u16 n, u8 lod) {
+  if (n == 0) {
+    return 0;
+  }
+  if (lod == MESH_LOD_SHELL) {
+    return (u32) n * 4 + 1;
+  }
+  return 1 + ((u32) n + BAKED_QUADS_PER_BATCH - 1) / BAKED_QUADS_PER_BATCH +
+    (u32) n + 1;
+}
+
+/* Emit one texture's segment at the cursors; returns the segment entry (or
+   the shared empty list).  The caller sized the block, so this cannot run
+   out of room. */
+static Gfx *emitColumnTextureDL(u32 slot, u8 texture, u8 lod,
+    Vtx **verts_cursor, Gfx **cmds_cursor) {
   u16 n = column_baked_counts[texture];
   u16 i, emitted, batch_n;
-  u32 needed;
   Vtx *verts;
-  Gfx *cmds;
+  Gfx *cmds = *cmds_cursor;
+  Gfx *segment_start;
 
   if (n == 0) {
     /* Most columns use only a subset of the texture bank.  Sharing one empty
        list saves an EndDisplayList command for every absent material. */
-    *new_start = empty_column_display_list;
-    return TRUE;
+    return empty_column_display_list;
   }
 
   if (lod == MESH_LOD_SHELL) {
     /* The compact matrix-pair format: cheap in memory, two matrix ops a
        quad on the RSP -- affordable precisely because a shell column has so
-       few quads. */
-    if (columnArenaFree() < (u32) n * 4 + 1) {
-      column_display_list_full = TRUE;
-      return FALSE;
-    }
-    *new_start = column_dlp;
+       few quads.  Its vertex loads reference the shared static tables, so
+       relocation never touches them. */
+    segment_start = cmds;
     for (i = 0; i < column_baked_total; i++) {
       BakedQuad *q = &column_baked[i];
       u32 b;
@@ -1268,36 +1393,29 @@ static u8 makeColumnTextureDL(u32 slot, u8 texture, u8 lod, Gfx **new_start) {
       }
       b = (u32) q->x * CHUNK_SIZE * CHUNK_SIZE +
         (u32) (q->y & CHUNK_MASK) * CHUNK_SIZE + q->z;
-      gSPMatrix(column_dlp++,
+      gSPMatrix(cmds++,
         OS_K0_TO_PHYSICAL(&c_models[slot][q->y >> CHUNK_SHIFT]),
         G_MTX_MODELVIEW | G_MTX_LOAD | G_MTX_NOPUSH);
-      gSPMatrix(column_dlp++, OS_K0_TO_PHYSICAL(b_models + b),
+      gSPMatrix(cmds++, OS_K0_TO_PHYSICAL(b_models + b),
         G_MTX_MODELVIEW | G_MTX_MUL | G_MTX_NOPUSH);
-      gSPVertex(column_dlp++, q->water_top ?
+      gSPVertex(cmds++, q->water_top ?
         WATER_TOP_QUAD_ADDR(q->width, q->height) :
         QUAD_ADDR(q->face, q->width, q->height), 4, 0);
-      gSP1Quadrangle(column_dlp++, 3, 2, 1, 0, 0);
+      gSP1Quadrangle(cmds++, 3, 2, 1, 0, 0);
     }
-    gSPEndDisplayList(column_dlp++);
-    return TRUE;
+    gSPEndDisplayList(cmds++);
+    *cmds_cursor = cmds;
+    return segment_start;
   }
 
   /*
-   * Baked-vertex form.  The vertex block sits first in the allocation and is
-   * never executed: the published pointer enters at the command stream after
-   * it.  Vertices are column-local (y spans all four chunks, 0..2047 units),
-   * so one matrix serves the whole column and batches cross chunk seams
-   * freely.  A Vtx is two Gfx of arena space.
+   * Baked-vertex form.  The vertices go to the block's leading data region
+   * and are never executed; the published pointer enters at the command
+   * stream.  Vertices are column-local (y spans all four chunks, 0..2047
+   * units), so one matrix serves the whole column and batches cross chunk
+   * seams freely.  A Vtx is two Gfx of arena space.
    */
-  needed = (u32) n * 8 + 1 +
-    ((u32) n + BAKED_QUADS_PER_BATCH - 1) / BAKED_QUADS_PER_BATCH +
-    (u32) n + 1;
-  if (columnArenaFree() < needed) {
-    column_display_list_full = TRUE;
-    return FALSE;
-  }
-  verts = (Vtx *) column_dlp;
-  cmds = column_dlp + (u32) n * 8;
+  verts = *verts_cursor;
   emitted = 0;
   for (i = 0; i < column_baked_total; i++) {
     BakedQuad *q = &column_baked[i];
@@ -1319,8 +1437,9 @@ static u8 makeColumnTextureDL(u32 slot, u8 texture, u8 lod, Gfx **new_start) {
     }
     emitted++;
   }
+  *verts_cursor = verts + (u32) n * 4;
 
-  *new_start = cmds;
+  segment_start = cmds;
   gSPMatrix(cmds++, OS_K0_TO_PHYSICAL(&c_models[slot][0]),
     G_MTX_MODELVIEW | G_MTX_LOAD | G_MTX_NOPUSH);
   for (i = 0; i < n; i += BAKED_QUADS_PER_BATCH) {
@@ -1335,16 +1454,35 @@ static u8 makeColumnTextureDL(u32 slot, u8 texture, u8 lod, Gfx **new_start) {
     }
   }
   gSPEndDisplayList(cmds++);
-  column_dlp = cmds;
-  return TRUE;
+  *cmds_cursor = cmds;
+  return segment_start;
 }
+
+static u8 mesh_build_active;
+static u16 mesh_build_cursor;
+static u8 mesh_build_surface_only;
+static u8 mesh_build_complete;
 
 static u8 makeColumnDisplayLists(int cx, int cz) {
   u8 texture, cy;
   u32 slot = WINDOW_SLOT(cx, cz);
-  Gfx *column_start = column_dlp;
-  Gfx *new_starts[NUM_TEXTURES];
   u8 lod = building_scenic ? MESH_LOD_SHELL : meshLodFor(cx, cz);
+  /* World builds emit the incoming world's generation behind staged
+     pointers; gameplay rebuilds replace the live column directly. */
+  u8 generation = mesh_build_active ?
+    mesh_building_generation : mesh_generation;
+  Gfx *(*starts)[WINDOW_SLOTS] =
+    mesh_build_active ? staged_starts : column_starts;
+  u8 *meshed = mesh_build_active ? staged_meshed : column_meshed;
+  u8 *lods = mesh_build_active ? staged_mesh_lod : column_mesh_lod;
+  u32 old_start = 0;
+  u8 had_old = FALSE;
+  u32 total_cmds = 0;
+  u32 total_verts;
+  s32 block_start;
+  Vtx *verts_cursor;
+  Gfx *cmds_cursor;
+  int old_index;
 
   /* The slot may have held a different column until now, so its translations
      are rewritten here rather than prebaked once for a fixed world.  Doing it
@@ -1391,60 +1529,113 @@ static u8 makeColumnDisplayLists(int cx, int cz) {
   makeColumnGeometry(cx, cz);
   resolveColumnQuads(cx, cz, lod);
 
-  /* Do not publish any new pointer until every material in the replacement
-     column fits. Previous RSP tasks can keep reading the old immutable lists,
-     and an overflow can safely roll this unpublished append back. */
   for (texture = 0; texture < NUM_TEXTURES; texture++) {
-    if (!makeColumnTextureDL(slot, texture, lod, &new_starts[texture])) {
-      column_dlp = column_start;
-      column_display_list_full = TRUE;
+    total_cmds += textureSegmentSize(column_baked_counts[texture], lod);
+  }
+  total_verts = lod == MESH_LOD_FULL ? (u32) column_baked_total * 8 : 0;
+
+  /*
+   * Allocate the replacement before releasing the old block: on failure the
+   * column keeps its previous mesh and the dirty mark keeps the need alive.
+   * The old block is remembered by its start so the right one is freed when
+   * two blocks briefly share this slot and generation.
+   */
+  old_index = meshBlockFind((u16) slot, generation);
+  if (old_index >= 0) {
+    had_old = TRUE;
+    old_start = mesh_blocks[old_index].start;
+  }
+  if (total_cmds == 0) {
+    /* An all-air column's mesh is legitimately empty. */
+    block_start = -1;
+  } else {
+    block_start = meshBlockAlloc(total_verts + total_cmds, total_verts,
+      (u16) slot, generation);
+    if (block_start < 0) {
       return FALSE;
     }
   }
-  for (texture = 0; texture < NUM_TEXTURES; texture++) {
-    column_starts[column_build_arena][texture][slot] = new_starts[texture];
+  if (had_old) {
+    u16 i;
+
+    for (i = 0; i < mesh_block_count; i++) {
+      if (mesh_blocks[i].slot == slot &&
+          mesh_blocks[i].generation == generation &&
+          mesh_blocks[i].start == old_start) {
+        meshBlockRemove(i);
+        break;
+      }
+    }
   }
-  column_meshed[column_build_arena][slot] = TRUE;
-  column_mesh_lod[column_build_arena][slot] = lod;
+
+  if (total_cmds == 0) {
+    for (texture = 0; texture < NUM_TEXTURES; texture++) {
+      starts[texture][slot] = empty_column_display_list;
+    }
+  } else {
+    verts_cursor = (Vtx *) (mesh_arena + block_start);
+    cmds_cursor = mesh_arena + block_start + total_verts;
+    for (texture = 0; texture < NUM_TEXTURES; texture++) {
+      starts[texture][slot] =
+        emitColumnTextureDL(slot, texture, lod, &verts_cursor, &cmds_cursor);
+    }
+  }
+  meshed[slot] = TRUE;
+  lods[slot] = lod;
   return TRUE;
 }
 
-static u8 mesh_build_active;
-static u16 mesh_build_cursor;
-static u8 mesh_build_arena;
-static u8 mesh_build_surface_only;
-static u8 mesh_build_complete;
+/* Drop every block belonging to a generation -- an abandoned build's
+   leftovers, or the outgoing world at publish. */
+static void meshFreeGeneration(u8 generation) {
+  u16 i = 0;
+
+  while (i < mesh_block_count) {
+    if (mesh_blocks[i].generation == generation) {
+      meshBlockRemove(i);
+    } else {
+      i++;
+    }
+  }
+}
 
 /*
- * A complete mesh rebuild rewrites an arena the RSP executes terrain from, so
- * it may only run while no graphics task is in flight.  callbackGfx guarantees
- * that by stepping it only when NuSystem reports pendingGfx == 0, and by
- * submitting the next frame afterwards rather than before.
+ * A world build emits the incoming world's columns as a new block
+ * generation behind the staged pointer set, while the outgoing world keeps
+ * rendering untouched from the live set -- both worlds share the one arena,
+ * which a shell preview plus a full game mesh fit comfortably.  Publication
+ * copies staged over live and frees the old generation.
  *
- * Do not wait for the RSP here.  nuGfxTaskAllEndWait() busy-spins on
- * nuGfxTaskSpool, and this runs on the NuSystem graphics thread at priority
- * 50.  The completion that clears that counter is posted by the scheduler's
- * own graphics thread at priority 17, which can never preempt a busy-wait at
- * 50, so the wait deadlocks the console instead of ending.
- *
- * The build always targets the arena that is not on screen and publishes it
- * only when complete, so the outgoing world keeps rendering throughout.
+ * This may only run while no graphics task is in flight; callbackGfx
+ * guarantees that by stepping it only when NuSystem reports pendingGfx == 0.
+ * Do not wait for the RSP here: nuGfxTaskAllEndWait() busy-spins at
+ * priority 50 on a counter cleared at priority 17, which deadlocks.
  */
 void beginWorldMeshBuild(u8 surface_only) {
   u16 slot;
+  u8 texture;
 
-  compacting_columns = FALSE;
-  compaction_cooldown = 0;
   dirty_column_cursor = 0;
+  mesh_alloc_cooldown = 0;
   for (slot = 0; slot < WINDOW_SLOTS; slot++) {
     dirty_columns[slot] = FALSE;
+    staged_meshed[slot] = FALSE;
   }
-  mesh_build_arena = active_column_arena ^ 1;
+  for (texture = 0; texture < NUM_TEXTURES; texture++) {
+    for (slot = 0; slot < WINDOW_SLOTS; slot++) {
+      staged_starts[texture][slot] = empty_column_display_list;
+    }
+  }
+  /* A build replacing an unfinished build inherits its abandoned blocks;
+     free them before claiming the next generation number. */
+  if (mesh_building_generation != mesh_generation) {
+    meshFreeGeneration(mesh_building_generation);
+  }
+  mesh_building_generation = (u8) (mesh_generation + 1);
   mesh_build_surface_only = surface_only;
   mesh_build_cursor = 0;
   mesh_build_complete = TRUE;
   mesh_build_active = TRUE;
-  resetColumnArenaBuild(mesh_build_arena);
 }
 
 u8 worldMeshBuildProgress() {
@@ -1458,16 +1649,14 @@ u8 worldMeshBuildComplete() {
   return mesh_build_complete;
 }
 
-/* Returns TRUE once the arena has been published. */
+/* Returns TRUE once the staged world has been published. */
 u8 stepWorldMeshBuild(u16 columns) {
   if (!mesh_build_active) {
     return TRUE;
   }
-  /* resetColumnArenaBuild left column_dlp at the target arena; nothing else
-     touches it while a build is running, because the incremental gameplay
-     rebuild only runs from the GAME branch of draw().  The scenic flag
-     forces every column to the shell LOD and hides the fixed world's outer
-     wall; a gameplay build picks LOD per column from player distance. */
+  /* The scenic flag forces every column to the shell LOD and hides the
+     fixed world's outer wall; a gameplay build picks LOD per column from
+     player distance. */
   building_scenic = mesh_build_surface_only;
   while (columns > 0 && mesh_build_cursor < CHUNKS_X * CHUNKS_Z) {
     u8 cx = mesh_build_cursor / CHUNKS_Z;
@@ -1484,8 +1673,24 @@ u8 stepWorldMeshBuild(u16 columns) {
   building_scenic = FALSE;
 
   if (mesh_build_cursor >= CHUNKS_X * CHUNKS_Z) {
-    column_arena_ends[mesh_build_arena] = column_dlp;
-    active_column_arena = mesh_build_arena;
+    u8 texture;
+    u16 slot;
+    u8 old_generation = mesh_generation;
+
+    /* Publish: the staged set becomes the world on screen, and the old
+       generation's blocks go back to the allocator.  Runs with no task in
+       flight, so the swap is invisible. */
+    for (texture = 0; texture < NUM_TEXTURES; texture++) {
+      for (slot = 0; slot < WINDOW_SLOTS; slot++) {
+        column_starts[texture][slot] = staged_starts[texture][slot];
+      }
+    }
+    for (slot = 0; slot < WINDOW_SLOTS; slot++) {
+      column_meshed[slot] = staged_meshed[slot];
+      column_mesh_lod[slot] = staged_mesh_lod[slot];
+    }
+    mesh_generation = mesh_building_generation;
+    meshFreeGeneration(old_generation);
     mesh_build_active = FALSE;
     return TRUE;
   }
@@ -1542,24 +1747,21 @@ void graphicsSetRenderOrigin(int block_x, int block_z) {
 }
 
 void graphicsInvalidateColumnSlot(u32 slot) {
-  u8 arena, texture;
+  u8 texture;
 
   /*
-   * Both arenas still hold a mesh describing the column that just left, and
-   * c_models[slot] still translates to where it used to be.  Point the slot at
-   * the shared empty list so nothing draws until the incoming column has been
-   * compiled -- otherwise the old geometry renders at the old place, which
-   * reads as terrain smeared across the world.
-   *
-   * Only the pointers change; the display lists themselves are untouched, so
-   * a task already submitted keeps reading valid commands.
+   * The arena still holds a mesh describing the column that just left, and
+   * c_models[slot] still translates to where it used to be.  Point the slot
+   * at the shared empty list and give the block back to the allocator --
+   * nothing draws there until the incoming column has been compiled,
+   * otherwise the old geometry renders at the old place, which reads as
+   * terrain smeared across the world.
    */
-  for (arena = 0; arena < NUM_COLUMN_ARENAS; arena++) {
-    for (texture = 0; texture < NUM_TEXTURES; texture++) {
-      column_starts[arena][texture][slot] = empty_column_display_list;
-    }
-    column_meshed[arena][slot] = FALSE;
+  for (texture = 0; texture < NUM_TEXTURES; texture++) {
+    column_starts[texture][slot] = empty_column_display_list;
   }
+  column_meshed[slot] = FALSE;
+  meshBlockFree((u16) slot, mesh_generation);
   /* Any pending rebuild referred to the departed column. */
   dirty_columns[slot] = FALSE;
 }
@@ -1616,28 +1818,6 @@ static u8 takeDirtyColumn(int *cx, int *cz) {
   return FALSE;
 }
 
-static void startColumnCompaction(void) {
-  /* Keep dirty marks until a complete replacement arena is active. If this
-     rebuild cannot fit, the old arena remains valid and no edit is forgotten. */
-  compaction_column_cursor = 0;
-  compacting_columns = TRUE;
-  resetColumnArenaBuild(active_column_arena ^ 1);
-}
-
-/*
- * Only columns inside the mesh ring are worth arena space.  Without this bound
- * a compaction rebuilds every column that has ever finished generating, which
- * near spawn is the whole starting world on top of everything streamed since
- * -- more than the arena holds, so the pass runs short every time and terrain
- * updates never get a turn.
- */
-static u8 columnInMeshRing(u32 slot) {
-  /* Nearest active player, not player one: in split-screen a compaction
-     keyed to one player would silently drop the terrain under the others. */
-  return columnPlayerDistance(windowSlotChunkX(slot),
-    windowSlotChunkZ(slot)) <= STREAM_TREE_RADIUS;
-}
-
 u8 graphicsColumnNeedsMesh(int cx, int cz) {
   u32 slot;
   u8 lod;
@@ -1647,17 +1827,14 @@ u8 graphicsColumnNeedsMesh(int cx, int cz) {
     return FALSE;
   }
   slot = WINDOW_SLOT(cx, cz);
-  /* The active arena is the one the player is looking at, so it is the only
-     authority on whether a column is visibly missing.  The build arena's
-     flags are a work list mid-compaction, not the on-screen truth. */
-  if (!column_meshed[active_column_arena][slot]) {
+  if (!column_meshed[slot]) {
     return TRUE;
   }
   /* A meshed column is still stale when the player has crossed its LOD
      boundary: a shell they walked up to, or a full mesh they left behind.
      The promote/demote gap is the hysteresis that keeps a boundary column
      from re-meshing on every step. */
-  lod = column_mesh_lod[active_column_arena][slot];
+  lod = column_mesh_lod[slot];
   distance = columnPlayerDistance(cx, cz);
   if (lod == MESH_LOD_SHELL && distance <= MESH_LOD_PROMOTE_RADIUS) {
     return TRUE;
@@ -1671,79 +1848,23 @@ u8 graphicsColumnNeedsMesh(int cx, int cz) {
 static void processColumnDisplayListUpdates(int can_reclaim_mesh_arena) {
   u8 budget;
 
-  if (compacting_columns) {
-    u8 rebuilt = 0;
-    u16 walked = 0;
-
-    /* The deadline stops a second expensive rebuild, never the first, so a
-       compaction always makes progress and still finishes. */
-    while (rebuilt < MESH_COMPACTION_REBUILDS_PER_FRAME &&
-        walked < MESH_COMPACTION_SLOTS_PER_FRAME &&
-        compaction_column_cursor < WINDOW_SLOTS &&
-        !(rebuilt > 0 && streamWorkExpired())) {
-      u32 slot = compaction_column_cursor;
-      /* Walks slots, and rebuilds only the columns that are actually there and
-         finished.  resetColumnArenaBuild already emptied the rest. */
-      if (windowSlotResident(slot) && columnInMeshRing(slot)) {
-        int cx = windowSlotChunkX(slot);
-        int cz = windowSlotChunkZ(slot);
-        if (worldColumnState(cx, cz) == COLUMN_DECORATED) {
-          if (!makeColumnDisplayLists(cx, cz)) {
-            /*
-             * Out of room part way through.  Publish what fits rather than
-             * discarding the pass: every slot in this arena is valid, either
-             * freshly built or pointing at the shared empty list, so the world
-             * renders with its last columns missing.
-             *
-             * Discarding instead was a trap.  The arena is still below its
-             * reserve next frame, so compaction restarts, fails at the same
-             * column, and discards again -- terrain stops updating for good,
-             * and no amount of waiting recovers it.  Missing far columns that
-             * fill in once the ring moves is a far better failure.
-             */
-            column_arena_ends[column_build_arena] = column_dlp;
-            active_column_arena = column_build_arena;
-            compacting_columns = FALSE;
-            compaction_ran_short = TRUE;
-            compaction_cooldown = MESH_COMPACTION_COOLDOWN_FRAMES;
-            return;
-          }
-          rebuilt++;
-        }
-      }
-      compaction_column_cursor++;
-      walked++;
-    }
-    if (compaction_column_cursor == WINDOW_SLOTS) {
-      compaction_ran_short = FALSE;
-      column_arena_ends[column_build_arena] = column_dlp;
-      active_column_arena = column_build_arena;
-      compacting_columns = FALSE;
-      compaction_cooldown = MESH_COMPACTION_COOLDOWN_FRAMES;
-    }
+  if (!can_reclaim_mesh_arena) {
     return;
   }
+  /* One block per callback slides into the lowest gap; a fragmented arena
+     heals over a few dozen frames with no pass, no second arena, and no
+     stop-the-world. */
+  meshDefragStep();
 
-  if (compaction_cooldown > 0) {
-    compaction_cooldown--;
-  }
-
-  column_build_arena = active_column_arena;
-  column_dlp = column_arena_ends[active_column_arena];
-  column_display_list_full = FALSE;
-  if (columnArenaFree() < MESH_COMPACTION_RESERVE) {
-    /* The old arena can become the inactive build target only after every
-     * submitted RSP task has finished reading it. */
-    if (can_reclaim_mesh_arena && compaction_cooldown == 0) {
-      startColumnCompaction();
-    }
+  if (mesh_alloc_cooldown > 0) {
+    mesh_alloc_cooldown--;
     return;
   }
 
   for (budget = 0; budget < MESH_REBUILD_BUDGET; budget++) {
     int cx, cz;
-    /* Same shape as the compaction bound: the first rebuild always runs, so
-       edits are never starved; the deadline sheds only the extras. */
+    /* The first rebuild always runs, so edits are never starved; the
+       deadline sheds only the extras. */
     if (budget > 0 && streamWorkExpired()) {
       break;
     }
@@ -1751,16 +1872,11 @@ static void processColumnDisplayListUpdates(int can_reclaim_mesh_arena) {
       break;
     }
     if (!makeColumnDisplayLists(cx, cz)) {
-      /* takeDirtyColumn clears the mark; restore it because the live column
-         pointers were deliberately left unchanged on failure. */
+      /* Allocation failed: the column keeps its old mesh and its mark.
+         Back off so the retry does not pay a full greedy mesh every frame
+         while eviction and defrag make room. */
       markColumnDirty(cx, cz);
-      if (can_reclaim_mesh_arena && compaction_cooldown == 0) {
-        startColumnCompaction();
-      }
-      break;
-    }
-    column_arena_ends[active_column_arena] = column_dlp;
-    if (column_display_list_full || columnArenaFree() < MESH_COMPACTION_RESERVE) {
+      mesh_alloc_cooldown = MESH_ALLOC_COOLDOWN_FRAMES;
       break;
     }
   }
@@ -1789,8 +1905,7 @@ void drawTextured(u8 texture, u8 player_num) {
         frame_overflows++;
         return;
       }
-      gSPDisplayList(dlp++,
-        column_starts[active_column_arena][texture][slot]);
+      gSPDisplayList(dlp++, column_starts[texture][slot]);
     }
   }
 }
@@ -3333,9 +3448,7 @@ static void drawStreamingDiagnostics() {
       }
     }
   }
-  free_percent = (u32) ((column_display_lists[active_column_arena] +
-    DISPLAY_LIST_SIZE - column_arena_ends[active_column_arena]) /
-    (DISPLAY_LIST_SIZE / 100));
+  free_percent = (MESH_ARENA_SIZE - mesh_arena_used) / (MESH_ARENA_SIZE / 100);
   diag_frame_heartbeat++;
 
   setHudTextColor(255, 220, 120);
@@ -3358,8 +3471,9 @@ static void drawStreamingDiagnostics() {
   y = drawDiagnosticRow("D", decorated, y);
   y = drawDiagnosticRow("Q", queued, y);
   y = drawDiagnosticRow("A", free_percent, y);
-  y = drawDiagnosticRow("C",
-    compacting_columns ? 1 : (compaction_ran_short ? 2 : 0), y);
+  /* Allocated mesh blocks; alongside A this shows arena pressure now that
+     compaction no longer exists to get stuck. */
+  y = drawDiagnosticRow("C", mesh_block_count, y);
   y = drawDiagnosticRow("T", pending_terrain, y);
   /* Worst frame gap and worst gated-CPU cost in the window, in tenths of a
      millisecond: W 166 is a clean 60 Hz frame, W 1000 is 10 fps.  B close to
@@ -3645,12 +3759,23 @@ void initGraphics() {
     }
   }
 
-  active_column_arena = 0;
-  compacting_columns = FALSE;
   /* Point every column at the shared empty list before the first world is
      compiled.  drawTextured branches to these pointers unconditionally, and
-     until the arena is reset they are still NULL from BSS -- any terrain draw
-     before the first build would send the RSP to address zero. */
-  resetColumnArenaBuild(active_column_arena);
-  column_arena_ends[active_column_arena] = column_dlp;
+     they are still NULL from BSS -- any terrain draw before the first build
+     would send the RSP to address zero. */
+  {
+    u8 texture;
+    u16 slot;
+
+    for (texture = 0; texture < NUM_TEXTURES; texture++) {
+      for (slot = 0; slot < WINDOW_SLOTS; slot++) {
+        column_starts[texture][slot] = empty_column_display_list;
+        staged_starts[texture][slot] = empty_column_display_list;
+      }
+    }
+  }
+  mesh_block_count = 0;
+  mesh_arena_used = 0;
+  mesh_generation = 0;
+  mesh_building_generation = 0;
 }

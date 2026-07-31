@@ -4,7 +4,6 @@
 #define SCREEN_HT 240
 #define SCREEN_WD 320
 
-#define DISPLAY_LIST_SIZE 131072
 #define NUM_DISPLAY_LISTS 2
 /* World, targeting, and HUD share one RSP task.  Sized with deliberate
  * headroom over the three independent command buffers this replaced. */
