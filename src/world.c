@@ -5,6 +5,8 @@
 #include "math.h"
 #include "trees.h"
 #include "graphics.h"
+#include "details.h"
+#include "edits.h"
 
 u8 window_blocks[WINDOW_SLOTS][COLUMN_BLOCK_BYTES];
 u32 window_keys[WINDOW_SLOTS];
@@ -143,6 +145,8 @@ u8 *windowClaimColumn(int cx, int cz) {
          records are a small fixed pool, so a walk that never released them
          would exhaust it and quietly stop growing trees. */
       treesEvictColumn(windowSlotChunkX(slot), windowSlotChunkZ(slot));
+      detailsEvictGeneratedColumn(windowSlotChunkX(slot),
+        windowSlotChunkZ(slot));
       graphicsInvalidateColumnSlot(slot);
     }
     window_keys[slot] = key;
@@ -187,6 +191,11 @@ static int clampHeight(int height) {
 #define HASH_SALT_TREE_CANOPY 0x2545F491UL
 #define HASH_SALT_WAYSTONE 0x165667B1UL
 #define HASH_SALT_WAYSTONE_HEIGHT 0x27D4EB2FUL
+#define HASH_SALT_STRUCTURE_KIND 0xA24BAED5UL
+#define HASH_SALT_STRUCTURE_X 0x9FB21C65UL
+#define HASH_SALT_STRUCTURE_Z 0xC2B2AE35UL
+#define HASH_SALT_STRUCTURE_VARIANT 0xD1B54A35UL
+#define HASH_SALT_STRUCTURE_BLOCK 0x94D049BBUL
 
 static u32 coordinateHash(int x, int y, int z, u32 salt) {
   u32 value = (u32) x * 0x8DA6B343UL;
@@ -446,65 +455,550 @@ u8 tryPlantTree(int x, int y, int z) {
   return TRUE;
 }
 
-static int exposedGrassY(int x, int z) {
+/*
+ * Structures use a deliberately coarse 64x64 macrocell grid.  A cell has at
+ * most one candidate, kept well inside its bounds, so a target chunk only has
+ * one plan to consider.  More importantly, a chunk stamps only its own 8x8
+ * intersection of that plan.  No cottage reaches over and writes a neighbour:
+ * shuffled generation and eviction therefore reproduce the same bytes without
+ * an oversized resident margin or a stored structure map.
+ */
+#define STRUCTURE_CELL_SHIFT 6
+#define STRUCTURE_CELL_SIZE (1 << STRUCTURE_CELL_SHIFT)
+
+#define STRUCTURE_NONE 0
+#define STRUCTURE_HAMLET 1
+#define STRUCTURE_RUIN 2
+
+#define HAMLET_RADIUS 18
+#define RUIN_RADIUS 10
+#define TREE_CANOPY_RADIUS 2
+
+typedef struct {
+  int cell_x;
+  int cell_z;
+  int anchor_x;
+  int anchor_z;
+  int ground_y;
+  u32 seed;
+  u8 kind;
+  u8 variant;
+} StructurePlan;
+
+/* A tiny direct-mapped cache avoids repeating the site's noise samples for
+   every chunk intersecting a hamlet.  It is only an arithmetic memo: cache
+   hits and misses produce the same plan. */
+#define STRUCTURE_PLAN_CACHE_SIZE 8
+static StructurePlan structure_plan_cache[STRUCTURE_PLAN_CACHE_SIZE];
+static u8 structure_plan_valid[STRUCTURE_PLAN_CACHE_SIZE];
+
+static const int hamlet_house_centers[4][2] = {
+  {-11, -10}, {11, -10}, {-11, 11}, {11, 11}
+};
+static const int ruin_site_samples[5][2] = {
+  {0, 0}, {-6, -6}, {6, -6}, {-6, 6}, {6, 6}
+};
+
+static int intAbsolute(int value) {
+  return value < 0 ? -value : value;
+}
+
+static void hamletHouseCenter(const StructurePlan *plan, int house,
+    int *house_x, int *house_z) {
+  u32 hash = coordinateHash(plan->anchor_x, house, plan->anchor_z,
+    HASH_SALT_STRUCTURE_VARIANT);
+
+  *house_x = hamlet_house_centers[house][0] + (int) (hash % 3u) - 1;
+  *house_z = hamlet_house_centers[house][1] +
+    (int) ((hash >> 8) % 3u) - 1;
+}
+
+static void resetStructurePlanCache(void) {
+  int i;
+
+  for (i = 0; i < STRUCTURE_PLAN_CACHE_SIZE; i++) {
+    structure_plan_valid[i] = FALSE;
+  }
+}
+
+/* Return the unmodified terrain's exposed surface, rejecting water and peaks
+   too high to leave vertical room for a roof.  This never reads resident block
+   data, so deciding whether a town exists cannot depend on streaming order. */
+static u8 structureSurfaceSample(int x, int z, int *surface_y) {
+  int natural_height = terrainHeight(x, z);
+  int water_level;
+  int height = shapedSurfaceHeight(x, z, natural_height, &water_level);
+
+  if (water_level >= 0 || height < SEA_LEVEL + 1 || height > MAX_Y - 7) {
+    return FALSE;
+  }
+  *surface_y = height - 1;
+  return TRUE;
+}
+
+static u8 structureSiteSuitable(StructurePlan *plan) {
+  int allowed_relief = plan->kind == STRUCTURE_HAMLET ? 3 : 4;
+  int sample;
+  int min_y = MAX_Y;
+  int max_y = -1;
+  int sum_y = 0;
+
+  /* The centre and four actual cottage sites catch bad ground without nine
+     conservative edge samples rejecting an otherwise lovely riverside town. */
+  for (sample = 0; sample < 5; sample++) {
+    int y;
+    int sample_x;
+    int sample_z;
+
+    if (sample == 0) {
+      sample_x = 0;
+      sample_z = 0;
+    } else if (plan->kind == STRUCTURE_HAMLET) {
+      hamletHouseCenter(plan, sample - 1, &sample_x, &sample_z);
+    } else {
+      sample_x = ruin_site_samples[sample][0];
+      sample_z = ruin_site_samples[sample][1];
+    }
+
+    if (!structureSurfaceSample(plan->anchor_x + sample_x,
+        plan->anchor_z + sample_z, &y)) {
+      return FALSE;
+    }
+    if (y < min_y) {
+      min_y = y;
+    }
+    if (y > max_y) {
+      max_y = y;
+    }
+    sum_y += y;
+  }
+  if (max_y - min_y > allowed_relief) {
+    return FALSE;
+  }
+
+  /* The average minimizes both cut and fill, while the relief test above
+     keeps every foundation at most a couple of blocks deep. */
+  plan->ground_y = (sum_y + 2) / 5;
+  return TRUE;
+}
+
+static const StructurePlan *structurePlanForCell(int cell_x, int cell_z) {
+  u32 cache_hash = (u32) cell_x * 0x9E3779B9UL ^
+    (u32) cell_z * 0x85EBCA6BUL;
+  u32 slot = cache_hash & (STRUCTURE_PLAN_CACHE_SIZE - 1);
+  StructurePlan *plan = &structure_plan_cache[slot];
+  u32 kind_hash;
+  u32 offset_hash;
+  u32 roll;
+
+  if (structure_plan_valid[slot] && plan->cell_x == cell_x &&
+      plan->cell_z == cell_z && plan->seed == world_seed) {
+    return plan;
+  }
+
+  plan->cell_x = cell_x;
+  plan->cell_z = cell_z;
+  plan->seed = world_seed;
+  plan->kind = STRUCTURE_NONE;
+  plan->ground_y = 0;
+
+  kind_hash = coordinateHash(cell_x, 0, cell_z,
+    HASH_SALT_STRUCTURE_KIND);
+  roll = kind_hash & 15u;
+  if (roll < 7u) {
+    plan->kind = STRUCTURE_HAMLET;
+  } else if (roll < 9u) {
+    plan->kind = STRUCTURE_RUIN;
+  }
+
+  offset_hash = coordinateHash(cell_x, 1, cell_z,
+    HASH_SALT_STRUCTURE_X);
+  plan->anchor_x = cell_x * STRUCTURE_CELL_SIZE +
+    STRUCTURE_CELL_SIZE / 2 + (int) (offset_hash % 11u) - 5;
+  offset_hash = coordinateHash(cell_x, 2, cell_z,
+    HASH_SALT_STRUCTURE_Z);
+  plan->anchor_z = cell_z * STRUCTURE_CELL_SIZE +
+    STRUCTURE_CELL_SIZE / 2 + (int) (offset_hash % 11u) - 5;
+  plan->variant = (u8) (coordinateHash(cell_x, 3, cell_z,
+    HASH_SALT_STRUCTURE_VARIANT) & 7u);
+
+  if (plan->kind != STRUCTURE_NONE && !structureSiteSuitable(plan)) {
+    plan->kind = STRUCTURE_NONE;
+  }
+  structure_plan_valid[slot] = TRUE;
+  return plan;
+}
+
+static int structureTopSolidY(int x, int z) {
   int y;
 
-  /* A non-resident column reads BLOCK_NOT_RESIDENT -- neither GRASS nor AIR
-     -- so the scan below already answers -1 for ground outside the streamed
-     world, which is what keeps a waystone from running off the loaded edge. */
-  for (y = MAX_Y - 2; y >= 0; y--) {
-    if (blockGet(x, y, z) == GRASS && blockGet(x, y + 1, z) == AIR) {
-      return y;
-    }
-    if (blockGet(x, y, z) != AIR) {
+  for (y = MAX_Y - 1; y >= 0; y--) {
+    u8 block = blockGet(x, y, z);
+
+    if (block == BLOCK_NOT_RESIDENT) {
       return -1;
+    }
+    if (block != AIR && block != WATER) {
+      return y;
     }
   }
   return -1;
 }
 
-/*
- * Sparse mossy waystones give a large procedural world memorable bearings and
- * imply history without storing a village simulation or structure map.
- *
- * This used to draw ten landmarks from the RNG and retry each up to 32 times
- * until it hit suitable ground, which asks a question -- "where are the ten
- * waystones" -- that a single column cannot answer about itself.  Density is
- * now a property of area rather than a count, which is also the only form that
- * means anything once the world stops having a fixed size.
- *
- * One candidate per this many columns.  Most candidates are rejected by the
- * ground test below, so the surviving density is a good deal sparser: this is
- * tuned to land near the ten-per-112x112-world the fixed size used to give.
- */
+static u8 agedStoneAt(int x, int y, int z) {
+  return coordinateHash(x, y, z, HASH_SALT_STRUCTURE_BLOCK) % 5u == 0u ?
+    MOSSY_COBBLESTONE : COBBLESTONE;
+}
+
+/* Flatten just a building's footprint and clear only the headroom it owns.
+   The site test limits relief, so the capped three-block footing always joins
+   the natural ground without producing costly cliff-sized foundation walls. */
+static void prepareStructureColumn(int x, int z, int floor_y, int clear_top) {
+  int surface_y = structureTopSolidY(x, z);
+  int y;
+
+  if (surface_y < 0) {
+    return;
+  }
+  for (y = max(surface_y + 1, floor_y - 3); y <= floor_y; y++) {
+    blockSet(x, y, z, COBBLESTONE);
+  }
+  for (y = floor_y + 1; y <= clear_top && y < MAX_Y; y++) {
+    blockSet(x, y, z, AIR);
+  }
+}
+
+static u8 hamletHousePresent(const StructurePlan *plan, int house) {
+  /* Most plans trade one cottage for a little breathing room, making the
+     silhouettes less stamp-like while retaining three homes.  The four-home
+     plan is an uncommon, pleasantly bustling variation. */
+  return plan->variant == 7u || house != (plan->variant & 3u);
+}
+
+/* Returns TRUE when this x/z belongs to the cottage, including its overhang. */
+static u8 stampCottageColumn(const StructurePlan *plan, int house,
+    int rx, int rz, int x, int z) {
+  int house_x;
+  int house_z;
+  int dx;
+  int dz;
+  int adx;
+  int adz;
+  int floor_y = plan->ground_y;
+  int y;
+  int roof_y;
+  int door_dx;
+  int chimney_dx;
+  int roof_cross;
+  u8 is_wall;
+
+  hamletHouseCenter(plan, house, &house_x, &house_z);
+  dx = rx - house_x;
+  dz = rz - house_z;
+  adx = intAbsolute(dx);
+  adz = intAbsolute(dz);
+
+  if (adx > 4 || adz > 4) {
+    return FALSE;
+  }
+  if (adx == 4 && adz == 4) {
+    return TRUE;
+  }
+
+  if (adx <= 3 && adz <= 3) {
+    prepareStructureColumn(x, z, floor_y, floor_y + 7);
+    blockSet(x, floor_y, z,
+      adx == 3 || adz == 3 ? COBBLESTONE : PLANKS);
+
+    is_wall = adx == 3 || adz == 3;
+    door_dx = house_x < 0 ? 3 : -3;
+    if (is_wall) {
+      for (y = 1; y <= 3; y++) {
+        u8 doorway = dx == door_dx && dz == 0 && y <= 2;
+        u8 window = y == 2 &&
+          ((adz == 3 && dx == 0) || (adx == 3 && dz == 0));
+
+        if (!doorway && !window) {
+          blockSet(x, floor_y + y, z,
+            adx == 3 && adz == 3 ? WOOD : PLANKS);
+        }
+      }
+    }
+  }
+
+  /* A filled, stepped gable is cheap for the greedy mesher and reads much
+     better at N64 distance than a flat box roof. */
+  roof_cross = ((house + plan->variant) & 1) ? adx : adz;
+  roof_y = floor_y + 4 + (4 - roof_cross) / 2;
+  for (y = floor_y + 4; y <= roof_y; y++) {
+    blockSet(x, y, z, BRICKS);
+  }
+
+  /* Alternating chimneys keep the rooflines lively without another model or
+     texture.  They intentionally overwrite the roof at their intersection. */
+  chimney_dx = ((house + plan->variant) & 1) ? -2 : 2;
+  if (dx == chimney_dx && dz == 2) {
+    for (y = floor_y + 1; y <= floor_y + 7 && y < MAX_Y; y++) {
+      blockSet(x, y, z, COBBLESTONE);
+    }
+  }
+  return TRUE;
+}
+
+static u8 stampWellColumn(const StructurePlan *plan, int rx, int rz,
+    int x, int z) {
+  int arx = intAbsolute(rx);
+  int arz = intAbsolute(rz);
+  int floor_y = plan->ground_y;
+
+  if (arx > 2 || arz > 2) {
+    return FALSE;
+  }
+  prepareStructureColumn(x, z, floor_y, floor_y + 5);
+  blockSet(x, floor_y, z,
+    arx == 2 || arz == 2 ? COBBLESTONE : WATER);
+  if (arx == 2 || arz == 2) {
+    blockSet(x, floor_y + 1, z, agedStoneAt(x, floor_y + 1, z));
+  }
+  if (arx == 2 && arz == 2) {
+    blockSet(x, floor_y + 2, z, WOOD);
+    blockSet(x, floor_y + 3, z, WOOD);
+  }
+  blockSet(x, floor_y + 4, z, PLANKS);
+  if (rx == 0) {
+    blockSet(x, floor_y + 5, z, WOOD);
+  }
+  return TRUE;
+}
+
+static u8 hamletPathAt(const StructurePlan *plan, int rx, int rz) {
+  int house;
+
+  if ((intAbsolute(rx) <= 1 && intAbsolute(rz) <= HAMLET_RADIUS) ||
+      (intAbsolute(rz) <= 1 && intAbsolute(rx) <= HAMLET_RADIUS) ||
+      (intAbsolute(rx) <= 4 && intAbsolute(rz) <= 4)) {
+    return TRUE;
+  }
+  for (house = 0; house < 4; house++) {
+    int hx;
+    int hz;
+
+    if (!hamletHousePresent(plan, house)) {
+      continue;
+    }
+    hamletHouseCenter(plan, house, &hx, &hz);
+    if (rz != hz) {
+      continue;
+    }
+    if ((hx < 0 && rx >= hx + 4 && rx <= -2) ||
+        (hx > 0 && rx <= hx - 4 && rx >= 2)) {
+      return TRUE;
+    }
+  }
+  return FALSE;
+}
+
+static void stampPathColumn(int x, int z) {
+  int y = structureTopSolidY(x, z);
+
+  if (y < 0 || y + 1 >= MAX_Y || blockGet(x, y + 1, z) == WATER) {
+    return;
+  }
+  blockSet(x, y, z, agedStoneAt(x, y, z));
+}
+
+static void stampHamletColumn(const StructurePlan *plan, int cx, int cz) {
+  int base_x = cx * CHUNK_SIZE;
+  int base_z = cz * CHUNK_SIZE;
+  int bx, bz;
+
+  for (bx = 0; bx < CHUNK_SIZE; bx++) {
+    for (bz = 0; bz < CHUNK_SIZE; bz++) {
+      int x = base_x + bx;
+      int z = base_z + bz;
+      int rx = x - plan->anchor_x;
+      int rz = z - plan->anchor_z;
+      int house;
+      u8 handled;
+
+      if (intAbsolute(rx) > HAMLET_RADIUS ||
+          intAbsolute(rz) > HAMLET_RADIUS) {
+        continue;
+      }
+      handled = stampWellColumn(plan, rx, rz, x, z);
+      for (house = 0; !handled && house < 4; house++) {
+        if (hamletHousePresent(plan, house)) {
+          handled = stampCottageColumn(plan, house, rx, rz, x, z);
+        }
+      }
+      if (!handled && hamletPathAt(plan, rx, rz)) {
+        stampPathColumn(x, z);
+      }
+    }
+  }
+}
+
+static void stampRuinColumn(const StructurePlan *plan, int cx, int cz) {
+  int base_x = cx * CHUNK_SIZE;
+  int base_z = cz * CHUNK_SIZE;
+  int bx, bz;
+
+  for (bx = 0; bx < CHUNK_SIZE; bx++) {
+    for (bz = 0; bz < CHUNK_SIZE; bz++) {
+      int x = base_x + bx;
+      int z = base_z + bz;
+      int rx = x - plan->anchor_x;
+      int rz = z - plan->anchor_z;
+      int arx = intAbsolute(rx);
+      int arz = intAbsolute(rz);
+      u32 rubble_hash;
+
+      if (arx > RUIN_RADIUS || arz > RUIN_RADIUS) {
+        continue;
+      }
+      if (arx <= 4 && arz <= 4) {
+        int y;
+
+        prepareStructureColumn(x, z, plan->ground_y, plan->ground_y + 8);
+        blockSet(x, plan->ground_y, z,
+          (arx <= 1 && arz <= 1) ? BRICKS : agedStoneAt(x,
+            plan->ground_y, z));
+        if (arx == 4 || arz == 4) {
+          int wall_height = 3 + (int) (coordinateHash(x, 0, z,
+            HASH_SALT_STRUCTURE_BLOCK) % 5u);
+          u8 doorway = rz == 4 && arx <= 1;
+
+          if (arx == 4 && arz == 4) {
+            wall_height = min(wall_height + 1, 8);
+          }
+          for (y = 1; y <= wall_height; y++) {
+            if (!(doorway && y <= 3)) {
+              blockSet(x, plan->ground_y + y, z,
+                agedStoneAt(x, plan->ground_y + y, z));
+            }
+          }
+        }
+        continue;
+      }
+
+      /* A short approach and a sparse collapse field make the landmark read
+         as a ruin instead of an isolated procedural box. */
+      if (arx <= 1 && rz >= 4 && rz <= RUIN_RADIUS) {
+        stampPathColumn(x, z);
+        continue;
+      }
+      rubble_hash = coordinateHash(x, 0, z, HASH_SALT_STRUCTURE_BLOCK);
+      if (rubble_hash % 13u == 0u) {
+        int y = structureTopSolidY(x, z);
+
+        if (y >= 0 && y + 1 < MAX_Y && blockGet(x, y + 1, z) != WATER) {
+          blockSet(x, y, z, agedStoneAt(x, y, z));
+          if ((rubble_hash & 32u) != 0u && y + 2 < MAX_Y) {
+            blockSet(x, y + 1, z, MOSSY_COBBLESTONE);
+          }
+        }
+      }
+    }
+  }
+}
+
+static void stampStructureColumn(int cx, int cz) {
+  int cell_x = floorDiv(cx * CHUNK_SIZE, STRUCTURE_CELL_SIZE);
+  int cell_z = floorDiv(cz * CHUNK_SIZE, STRUCTURE_CELL_SIZE);
+  const StructurePlan *plan = structurePlanForCell(cell_x, cell_z);
+
+  if (plan->kind == STRUCTURE_HAMLET) {
+    stampHamletColumn(plan, cx, cz);
+  } else if (plan->kind == STRUCTURE_RUIN) {
+    stampRuinColumn(plan, cx, cz);
+  }
+}
+
+/* Pure exclusion, expanded by the tree's full two-block canopy reach.  A tree
+   can never be admitted merely because its destination chunk has not stamped
+   the town yet, nor can leaves intrude from a root just outside its road. */
+static u8 structureExcludesTreeAt(int x, int z) {
+  int cell_x = floorDiv(x, STRUCTURE_CELL_SIZE);
+  int cell_z = floorDiv(z, STRUCTURE_CELL_SIZE);
+  const StructurePlan *plan = structurePlanForCell(cell_x, cell_z);
+  int radius;
+
+  if (plan->kind == STRUCTURE_NONE) {
+    return FALSE;
+  }
+  radius = (plan->kind == STRUCTURE_HAMLET ? HAMLET_RADIUS : RUIN_RADIUS) +
+    TREE_CANOPY_RADIUS;
+  return intAbsolute(x - plan->anchor_x) <= radius &&
+    intAbsolute(z - plan->anchor_z) <= radius;
+}
+
+/* Keep the original small waystones as a second scale of discovery between
+   towns.  Their plan is coordinate-pure too; each destination x/z asks only
+   whether it is a pillar, east stone or south stone and writes that one local
+   stack.  That preserves the old three-part silhouette without cross-column
+   stores. */
 #define WAYSTONE_COLUMN_ODDS 500
 
-static void tryPlaceWaystone(int x, int z) {
-  int y, east_y, south_y;
-  int height, part;
+static u8 waystoneSurfaceY(int x, int z, int *surface_y) {
+  int natural_height = terrainHeight(x, z);
+  int water_level;
+  int height = shapedSurfaceHeight(x, z, natural_height, &water_level);
 
-  if (coordinateHash(x, 0, z, HASH_SALT_WAYSTONE) % WAYSTONE_COLUMN_ODDS != 0) {
-    return;
+  if (water_level >= 0 || height <= SEA_LEVEL) {
+    return FALSE;
   }
+  *surface_y = height - 1;
+  return TRUE;
+}
 
-  /* exposedGrassY rejects out-of-range columns, which is what keeps a waystone
-     and its two outriggers from running off the edge of a fixed world. */
-  y = exposedGrassY(x, z);
-  east_y = exposedGrassY(x + 2, z);
-  south_y = exposedGrassY(x, z + 2);
-  if (y < SEA_LEVEL + 1 || east_y < 0 || south_y < 0 ||
-      absolute((float) (east_y - y)) > 1.f ||
-      absolute((float) (south_y - y)) > 1.f) {
-    return;
+static u8 waystoneCandidateAt(int x, int z, int *root_y, int *east_y,
+    int *south_y) {
+  if (coordinateHash(x, 0, z, HASH_SALT_WAYSTONE) %
+      WAYSTONE_COLUMN_ODDS != 0u || structureExcludesTreeAt(x, z)) {
+    return FALSE;
   }
+  if (!waystoneSurfaceY(x, z, root_y) ||
+      !waystoneSurfaceY(x + 2, z, east_y) ||
+      !waystoneSurfaceY(x, z + 2, south_y) ||
+      *root_y < SEA_LEVEL + 1 ||
+      intAbsolute(*east_y - *root_y) > 1 ||
+      intAbsolute(*south_y - *root_y) > 1) {
+    return FALSE;
+  }
+  return TRUE;
+}
 
-  height = 2 + (int) (coordinateHash(x, 0, z, HASH_SALT_WAYSTONE_HEIGHT) % 4u);
-  for (part = 1; part <= height && y + part < MAX_Y; part++) {
-    blockSet(x, y + part, z,
-      part == height || (part & 1) ? MOSSY_COBBLESTONE : COBBLESTONE);
+static void stampWaystonesColumn(int cx, int cz) {
+  int base_x = cx * CHUNK_SIZE;
+  int base_z = cz * CHUNK_SIZE;
+  int bx, bz;
+
+  for (bx = 0; bx < CHUNK_SIZE; bx++) {
+    for (bz = 0; bz < CHUNK_SIZE; bz++) {
+      int x = base_x + bx;
+      int z = base_z + bz;
+      int root_y, east_y, south_y;
+
+      if (waystoneCandidateAt(x, z, &root_y, &east_y, &south_y)) {
+        int height = 2 + (int) (coordinateHash(x, 0, z,
+          HASH_SALT_WAYSTONE_HEIGHT) % 4u);
+        int part;
+
+        for (part = 1; part <= height && root_y + part < MAX_Y; part++) {
+          blockSet(x, root_y + part, z,
+            part == height || (part & 1) ? MOSSY_COBBLESTONE : COBBLESTONE);
+        }
+      }
+      if (waystoneCandidateAt(x - 2, z, &root_y, &east_y, &south_y) &&
+          east_y + 1 < MAX_Y) {
+        blockSet(x, east_y + 1, z, MOSSY_COBBLESTONE);
+      }
+      if (waystoneCandidateAt(x, z - 2, &root_y, &east_y, &south_y) &&
+          south_y + 1 < MAX_Y) {
+        blockSet(x, south_y + 1, z, MOSSY_COBBLESTONE);
+      }
+    }
   }
-  blockSet(x + 2, east_y + 1, z, MOSSY_COBBLESTONE);
-  blockSet(x, south_y + 1, z + 2, MOSSY_COBBLESTONE);
 }
 
 /* TRUE when a tree roots at this column.  The perlin field sets the local
@@ -512,7 +1006,8 @@ static void tryPlaceWaystone(int x, int z) {
 static u8 treeSeededAt(int x, int z) {
   float density = perlin2d(x, z, 0.02f, 2) * 8.f - 2.f;
 
-  return (float) (coordinateHash(x, 0, z, HASH_SALT_TREE) % 1000u) < density;
+  return (float) (coordinateHash(x, 0, z, HASH_SALT_TREE) % 1000u) < density &&
+    !structureExcludesTreeAt(x, z);
 }
 
 /*
@@ -526,7 +1021,7 @@ static u8 treeSeededAt(int x, int z) {
  */
 #define WORLD_GEN_IDLE 0
 #define WORLD_GEN_TERRAIN 1
-#define WORLD_GEN_WAYSTONES 2
+#define WORLD_GEN_STRUCTURES 2
 #define WORLD_GEN_TREES 3
 
 static u8 world_gen_stage = WORLD_GEN_IDLE;
@@ -744,23 +1239,18 @@ u8 worldAdvanceColumnDecoration(int cx, int cz) {
   u32 slot = WINDOW_SLOT(cx, cz);
 
   if (column_state[slot] == COLUMN_TERRAIN) {
-    /* Reads the ground two blocks east and south, which can be a neighbour. */
-    if (!neighboursReached(cx, cz, COLUMN_TERRAIN)) {
-      return FALSE;
-    }
-    for (bx = 0; bx < CHUNK_SIZE; bx++) {
-      for (bz = 0; bz < CHUNK_SIZE; bz++) {
-        tryPlaceWaystone(base_x + bx, base_z + bz);
-      }
-    }
-    column_state[slot] = COLUMN_WAYSTONED;
+    /* Structure plans are coordinate-pure, and the stamper writes only this
+       target column.  It therefore needs no neighbour gate of its own. */
+    stampStructureColumn(cx, cz);
+    stampWaystonesColumn(cx, cz);
+    column_state[slot] = COLUMN_STRUCTURED;
     return FALSE;
   }
 
-  if (column_state[slot] == COLUMN_WAYSTONED) {
+  if (column_state[slot] == COLUMN_STRUCTURED) {
     /* Writes canopy up to two blocks out, and must not root in ground a
-       neighbour's waystone is about to take. */
-    if (!neighboursReached(cx, cz, COLUMN_WAYSTONED)) {
+       neighbour's structure is about to take. */
+    if (!neighboursReached(cx, cz, COLUMN_STRUCTURED)) {
       return FALSE;
     }
     for (bx = 0; bx < CHUNK_SIZE; bx++) {
@@ -770,6 +1260,11 @@ u8 worldAdvanceColumnDecoration(int cx, int cz) {
         }
       }
     }
+    /* Regenerated terrain is only the base layer.  Saved player edits and
+       persistent detail proxies are overlays, so they win over both the
+       deterministic town and any tree that would otherwise grow through it. */
+    worldApplyEditsToColumn(cx, cz);
+    detailsApplyColumn(cx, cz);
     column_state[slot] = COLUMN_DECORATED;
   }
   return column_state[slot] == COLUMN_DECORATED;
@@ -893,6 +1388,7 @@ static void releaseColumnsOutsideRing(int pcx, int pcz) {
       continue;
     }
     treesEvictColumn(cx, cz);
+    detailsEvictGeneratedColumn(cx, cz);
     graphicsInvalidateColumnSlot(slot);
     window_keys[slot] = COLUMN_KEY_EMPTY;
     column_state[slot] = COLUMN_EMPTY;
@@ -963,7 +1459,8 @@ void stepWorldStreaming(int pcx, int pcz, u32 terrain_budget,
 
   stage_did_one = FALSE;
   while (decorate_budget > 0 && (!stage_did_one || !streamWorkExpired()) &&
-      nearestColumnNeeding(pcx, pcz, STREAM_WAYSTONE_RADIUS, COLUMN_WAYSTONED,
+      nearestColumnNeeding(pcx, pcz, STREAM_STRUCTURE_RADIUS,
+        COLUMN_STRUCTURED,
         &cx, &cz)) {
     worldAdvanceColumnDecoration(cx, cz);
     decorate_budget--;
@@ -1031,6 +1528,7 @@ void beginWorldGeneration() {
   seed = world_seed;
   setDayCycleWorldTicks(DAY_CYCLE_START_TICK);
   initTrees();
+  resetStructurePlanCache();
   /* A new world starts at spawn, near coordinate zero.  Without this, a menu
      visited after a long walk would build the scenic preview against an
      origin hundreds of blocks away and overflow its matrices. */
@@ -1061,7 +1559,7 @@ u8 worldGenerationProgress() {
   if (world_gen_stage == WORLD_GEN_TERRAIN) {
     return (u8) ((world_gen_x * 90) / CHUNKS_X);
   }
-  if (world_gen_stage == WORLD_GEN_WAYSTONES) {
+  if (world_gen_stage == WORLD_GEN_STRUCTURES) {
     return (u8) (90 + (world_gen_x * 5) / CHUNKS_X);
   }
   return (u8) (95 + (world_gen_x * 5) / CHUNKS_X);
@@ -1070,8 +1568,8 @@ u8 worldGenerationProgress() {
 /*
  * Walks chunk columns rather than block columns now, in three whole-extent
  * passes.  The passes are what satisfy the neighbour gates everywhere at once:
- * by the time the waystone pass reaches a column every column has terrain, and
- * by the time the tree pass reaches it every column has its waystones.  A
+ * by the time the structure pass reaches a column every column has terrain,
+ * and by the time the tree pass reaches it every column has its structures. A
  * streaming world reaches the same states one column at a time instead, and
  * gets the same world out -- which is what the host harness checks.
  */

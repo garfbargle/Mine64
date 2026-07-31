@@ -22,11 +22,12 @@
 #define CAMERA_FIRST_PERSON 0
 #define CAMERA_THIRD_PERSON 1
 #define PLAYER_MAX_HEALTH 20
+#define PLAYER_MAX_HUNGER 20
 #define PLAYER_ATTACK_DURATION 12.f
 #define PLAYER_VAULT_DURATION 18.f
 #define PLAYER_OBJECTIVE_COUNT 8
-#define CRAFT_RECIPE_COUNT 12
-#define POCKET_RECIPE_COUNT 3
+#define CRAFT_RECIPE_COUNT 17
+#define POCKET_RECIPE_COUNT 4
 
 enum InventoryArea {
   INVENTORY_AREA_CRAFTING,
@@ -70,7 +71,13 @@ typedef struct {
   float attack_time;
   float hurt_time;
   float objective_time;
+  /* Hunger is deliberately cheap state: one visible byte plus two transient
+     accumulators.  The accumulator lets tiny per-frame movement costs remain
+     smooth without ticking or scanning an inventory every frame. */
+  float hunger_progress;
+  float survival_time;
   u8 health;
+  u8 hunger;
   u8 objective_stage;
   u8 camera_mode;
   int held_block;

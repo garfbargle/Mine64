@@ -100,24 +100,51 @@ static void expectDifferent(const char *name, const u8 *a, const u8 *b) {
   failures++;
 }
 
-/* Columns holding either block, counted once each.  A waystone pillar contains
-   both kinds of cobblestone, so testing them separately and adding would count
-   most pillars twice. */
-static int countColumnsContaining(const u8 *world, u8 block, u8 or_block) {
-  int x, z, y, columns = 0;
+/* Structure macrocells are intentionally aligned to 64 blocks.  Planks occur
+   in cottages but not ruins; bricks occur in both and nowhere in untouched
+   terrain, so the generated blocks themselves let the black-box harness count
+   each kind without exposing generator internals to the game API. */
+#define TEST_STRUCTURE_CELL_SIZE 64
+#define TEST_STRUCTURE_CELLS_X \
+  ((MAX_X + TEST_STRUCTURE_CELL_SIZE - 1) / TEST_STRUCTURE_CELL_SIZE)
+#define TEST_STRUCTURE_CELLS_Z \
+  ((MAX_Z + TEST_STRUCTURE_CELL_SIZE - 1) / TEST_STRUCTURE_CELL_SIZE)
 
-  for (x = 0; x < MAX_X; x++) {
-    for (z = 0; z < MAX_Z; z++) {
-      for (y = 0; y < MAX_Y; y++) {
-        u8 found = world[((unsigned long) x * MAX_Z + z) * MAX_Y + y];
-        if (found == block || found == or_block) {
-          columns++;
-          break;
+static void countStructureCells(const u8 *world, int *hamlets, int *ruins) {
+  int cell_x, cell_z;
+
+  *hamlets = 0;
+  *ruins = 0;
+  for (cell_x = 0; cell_x < TEST_STRUCTURE_CELLS_X; cell_x++) {
+    for (cell_z = 0; cell_z < TEST_STRUCTURE_CELLS_Z; cell_z++) {
+      int start_x = cell_x * TEST_STRUCTURE_CELL_SIZE;
+      int start_z = cell_z * TEST_STRUCTURE_CELL_SIZE;
+      int end_x = min(start_x + TEST_STRUCTURE_CELL_SIZE, MAX_X);
+      int end_z = min(start_z + TEST_STRUCTURE_CELL_SIZE, MAX_Z);
+      int x, z, y;
+      u8 has_planks = FALSE;
+      u8 has_bricks = FALSE;
+
+      for (x = start_x; x < end_x; x++) {
+        for (z = start_z; z < end_z; z++) {
+          for (y = 0; y < MAX_Y; y++) {
+            u8 block = world[((unsigned long) x * MAX_Z + z) * MAX_Y + y];
+
+            if (block == PLANKS) {
+              has_planks = TRUE;
+            } else if (block == BRICKS) {
+              has_bricks = TRUE;
+            }
+          }
         }
+      }
+      if (has_planks) {
+        (*hamlets)++;
+      } else if (has_bricks) {
+        (*ruins)++;
       }
     }
   }
-  return columns;
 }
 
 /*
@@ -184,7 +211,66 @@ static void generateColumnByColumn(u64 time) {
   printf("  note: %d columns never finished decorating\n", pending);
 }
 
-#define WAYSTONE_TRIALS 12
+/* Structures are allowed to span many chunks conceptually, but advancing one
+   target must write only that target's bytes.  This is stronger than the final
+   shuffled-world comparison: a carefully gated cross-column writer could be
+   deterministic and still make eviction regenerate clipped buildings. */
+static void checkStructureColumnOwnership(void) {
+  static int order[CHUNKS_X * CHUNKS_Z];
+  u8 *before = malloc(SNAPSHOT_BYTES);
+  int count = CHUNKS_X * CHUNKS_Z;
+  int i;
+  int violations = 0;
+
+  if (before == 0) {
+    printf("  FAIL  out of memory checking structure column ownership\n");
+    failures++;
+    return;
+  }
+  gentestSetTime(0x5E771EULL);
+  beginWorldGeneration();
+  for (i = 0; i < count; i++) {
+    order[i] = i;
+    worldGenerateColumnTerrain(i / CHUNKS_Z, i % CHUNKS_Z);
+  }
+  shuffleOrder(order, count);
+  for (i = 0; i < count; i++) {
+    int cx = order[i] / CHUNKS_Z;
+    int cz = order[i] % CHUNKS_Z;
+    int x, z, y;
+
+    snapshot(before);
+    worldAdvanceColumnDecoration(cx, cz);
+    for (x = 0; x < MAX_X; x++) {
+      for (z = 0; z < MAX_Z; z++) {
+        unsigned long base;
+
+        if ((x >> CHUNK_SHIFT) == cx && (z >> CHUNK_SHIFT) == cz) {
+          continue;
+        }
+        base = ((unsigned long) x * MAX_Z + z) * MAX_Y;
+        for (y = 0; y < MAX_Y; y++) {
+          if (blockGet(x, y, z) != before[base + y]) {
+            violations++;
+            x = MAX_X;
+            z = MAX_Z;
+            break;
+          }
+        }
+      }
+    }
+  }
+  if (violations == 0) {
+    printf("  PASS  each structure stage writes only its target column\n");
+  } else {
+    printf("  FAIL  %d structure stages wrote outside their target column\n",
+      violations);
+    failures++;
+  }
+  free(before);
+}
+
+#define STRUCTURE_TRIALS 12
 
 /*
  * The window slot is now the only name a column has: rendering indexes every
@@ -399,7 +485,8 @@ int main(void) {
   u8 *base = malloc(SNAPSHOT_BYTES);
   u8 *other = malloc(SNAPSHOT_BYTES);
   int trial;
-  int total_waystones;
+  int total_hamlets;
+  int total_ruins;
 
   if (base == 0 || other == 0) {
     printf("out of memory\n");
@@ -409,6 +496,7 @@ int main(void) {
   printf("Generation determinism (%dx%dx%d world)\n", MAX_X, MAX_Y, MAX_Z);
 
   checkSlotMapping();
+  checkStructureColumnOwnership();
 
   generateWorld(0x1234ABCDULL, 64, 0);
   snapshot(base);
@@ -456,34 +544,35 @@ int main(void) {
   snapshot(other);
   expectDifferent("a different seed is a different world", base, other);
 
-  /*
-   * Density is the one thing converting waystones to a per-column hash could
-   * quietly change, and it is invisible until someone walks a whole world.  A
-   * waystone is always three columns -- the pillar and its two outriggers --
-   * and no other generator places cobblestone of either kind.
-   *
-   * Expect more spread than the old code gave: drawing exactly ten landmarks
-   * produced exactly ten every time.  A density per unit area is a Poisson
-   * process, which is both the honest model for a world with no fixed size and
-   * the reason the counts below vary.
-   */
-  printf("\nFeature density across seeds (old code: 10 waystones per world)\n");
-  total_waystones = 0;
-  for (trial = 0; trial < WAYSTONE_TRIALS; trial++) {
-    int stone_columns, waystones, trunks;
+  /* The macrocell roll and terrain suitability filter should produce both
+     inhabited and ruined landmarks across seeds without blanketing the map.
+     Counting cells also catches a blueprint accidentally crossing its cell or
+     losing the distinctive cottage/ruin material vocabulary. */
+  printf("\nStructure density across seeds (four visible macrocells)\n");
+  total_hamlets = 0;
+  total_ruins = 0;
+  for (trial = 0; trial < STRUCTURE_TRIALS; trial++) {
+    int hamlets, ruins;
 
     generateWorld(0xC0FFEE00ULL + trial * 7919ULL, MAX_X * MAX_Z, 0);
     snapshot(other);
-    stone_columns = countColumnsContaining(other, COBBLESTONE,
-      MOSSY_COBBLESTONE);
-    waystones = stone_columns / 3;
-    trunks = countColumnsContaining(other, WOOD, WOOD);
-    total_waystones += waystones;
-    printf("  seed %2d: %2d waystones, %4d trees\n", trial, waystones, trunks);
+    countStructureCells(other, &hamlets, &ruins);
+    total_hamlets += hamlets;
+    total_ruins += ruins;
+    printf("  seed %2d: %d hamlet%s, %d ruin%s\n", trial,
+      hamlets, hamlets == 1 ? "" : "s", ruins, ruins == 1 ? "" : "s");
   }
-  printf("  mean: %d.%d waystones per world\n",
-    total_waystones / WAYSTONE_TRIALS,
-    (total_waystones * 10 / WAYSTONE_TRIALS) % 10);
+  if (total_hamlets > 0 && total_ruins > 0 &&
+      total_hamlets + total_ruins <
+        STRUCTURE_TRIALS * TEST_STRUCTURE_CELLS_X *
+          TEST_STRUCTURE_CELLS_Z) {
+    printf("  PASS  settlements are sparse and both content sets appear "
+      "(%d hamlets, %d ruins)\n", total_hamlets, total_ruins);
+  } else {
+    printf("  FAIL  bad structure spread: %d hamlets, %d ruins\n",
+      total_hamlets, total_ruins);
+    failures++;
+  }
 
   free(base);
   free(other);

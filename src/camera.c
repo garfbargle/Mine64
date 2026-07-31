@@ -6,6 +6,7 @@
 #include "graphics.h"
 #include "geometry.h"
 #include "menu.h"
+#include "details.h"
 
 #define FOV_Y 60
 #define FOV_Y_COOP 40
@@ -131,8 +132,7 @@ static u8 cameraPointSolid(Vector3 position) {
   if (y < 0) {
     return TRUE;
   }
-  return y < MAX_Y &&
-    BLOCK_IS_SOLID(blockGet(x, y, z));
+  return worldCellSolid(x, y, z);
 }
 
 static u8 cameraSpaceClear(Vector3 position) {

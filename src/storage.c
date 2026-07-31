@@ -172,16 +172,21 @@ static UINT buffer_bytes_read = 0;
 
 /* The reserved bytes of player zero record the chunk dimensions. */
 static void saveWorldDimensions(Header *header) {
-  header->player[0].reserved[0] = CHUNKS_X;
+  /* Low five bits hold dimensions; the high bits are gameplay state.  The
+     original dimensions fit in five bits, so this remains byte-compatible
+     with every v10 header that wrote zeroes above them. */
+  header->player[0].reserved[0] =
+    (header->player[0].reserved[0] & 0xE0) | (CHUNKS_X & 0x1F);
   header->player[0].reserved[1] =
     (header->player[0].reserved[1] & 0xF0) | (CHUNKS_Y & 0x0F);
-  header->player[0].reserved[2] = CHUNKS_Z;
+  header->player[0].reserved[2] =
+    (header->player[0].reserved[2] & 0xE0) | (CHUNKS_Z & 0x1F);
 }
 
 static u8 savedWorldDimensionsMatch(SavedPlayer *saved_players) {
-  return saved_players[0].reserved[0] == CHUNKS_X &&
+  return (saved_players[0].reserved[0] & 0x1F) == CHUNKS_X &&
     (saved_players[0].reserved[1] & 0x0F) == CHUNKS_Y &&
-    saved_players[0].reserved[2] == CHUNKS_Z;
+    (saved_players[0].reserved[2] & 0x1F) == CHUNKS_Z;
 }
 
 static u32 checksumByte(u32 checksum, u8 value) {
@@ -379,6 +384,7 @@ static void restoreInventoryItem(Player *player, u8 item, u32 count) {
 
 static void savePlayerState(SavedPlayer *saved, Player *player) {
   u8 slot;
+  u8 hunger_code;
 
   saved->position = player->position;
   saved->pitch = player->pitch;
@@ -390,6 +396,11 @@ static void savePlayerState(SavedPlayer *saved, Player *player) {
   /* Save v10 uses the spare high nibble beside the chunk-height marker for
      objective progress without growing the fixed 512-byte header. */
   saved->reserved[1] = (player->objective_stage & 0x0F) << 4;
+  /* Encode hunger + 1 across the two unused high three-bit fields.  A zero
+     code therefore means an older v10 save and restores a full food bar. */
+  hunger_code = min(PLAYER_MAX_HUNGER, player->hunger) + 1;
+  saved->reserved[0] |= (hunger_code & 0x07) << 5;
+  saved->reserved[2] |= ((hunger_code >> 3) & 0x07) << 5;
   for (slot = 0; slot < INVENTORY_SIZE; slot++) {
     saved->inventory[slot] = player->inventory[slot];
   }
@@ -401,6 +412,7 @@ static void savePlayerState(SavedPlayer *saved, Player *player) {
 
 static void restoreSavedInventory(Player *player, SavedPlayer *saved) {
   u8 slot;
+  u8 hunger_code;
 
   for (slot = 0; slot < INVENTORY_SIZE; slot++) {
     ItemStack stack = saved->inventory[slot];
@@ -445,6 +457,12 @@ static void restoreSavedInventory(Player *player, SavedPlayer *saved) {
     player->objective_stage = 0;
   }
   player->objective_time = 180.f;
+  hunger_code = (saved->reserved[0] >> 5) |
+    ((saved->reserved[2] >> 5) << 3);
+  player->hunger = hunger_code == 0 ? PLAYER_MAX_HUNGER :
+    min(PLAYER_MAX_HUNGER, hunger_code - 1);
+  player->hunger_progress = 0;
+  player->survival_time = 240.f;
 }
 
 static void restorePlayerState(Player *player, Vector3 position, float pitch,
@@ -464,6 +482,9 @@ static void restorePlayerState(Player *player, Vector3 position, float pitch,
   player->objective_stage = 0;
   player->objective_time = 180.f;
   player->health = PLAYER_MAX_HEALTH;
+  player->hunger = PLAYER_MAX_HUNGER;
+  player->hunger_progress = 0;
+  player->survival_time = 240.f;
   player->camera_mode = CAMERA_FIRST_PERSON;
   player->held_block = held_block;
   player->y_velocity = 0;
@@ -796,6 +817,9 @@ void loadGame() {
   players[0].attack_time = 0;
   players[0].hurt_time = 0;
   players[0].health = PLAYER_MAX_HEALTH;
+  players[0].hunger = PLAYER_MAX_HUNGER;
+  players[0].hunger_progress = 0;
+  players[0].survival_time = 240.f;
   players[0].camera_mode = CAMERA_FIRST_PERSON;
   players[0].held_block = legacy_header->held_block;
   players[0].y_velocity = 0;
@@ -810,6 +834,9 @@ void loadGame() {
     players[player_num].attack_time = 0;
     players[player_num].hurt_time = 0;
     players[player_num].health = PLAYER_MAX_HEALTH;
+    players[player_num].hunger = PLAYER_MAX_HUNGER;
+    players[player_num].hunger_progress = 0;
+    players[player_num].survival_time = 240.f;
     players[player_num].target_present = FALSE;
     players[player_num].breaking = FALSE;
     players[player_num].break_progress = 0;

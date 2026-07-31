@@ -12,6 +12,8 @@
 #include "storage.h"
 #include "audio.h"
 #include "world.h"
+#include "details.h"
+#include "edits.h"
 
 #define START_X (MAX_X / 2)
 #define START_Z (MAX_Z / 2)
@@ -32,6 +34,17 @@
 #define INVENTORY_STICK_THRESHOLD 38
 #define INVENTORY_REPEAT_DELAY 12
 #define INVENTORY_REPEAT_RATE 4
+
+/* Costs are expressed in hunger points per 60 Hz simulation frame.  A quiet
+   player can spend several in-game days exploring; sustained sprinting and
+   fighting bring food into the loop without turning the game into a meter
+   babysitter. */
+#define HUNGER_IDLE_COST       (1.f / (60.f * 180.f))
+#define HUNGER_WALK_COST       (1.f / (60.f * 120.f))
+#define HUNGER_SPRINT_COST     (1.f / (60.f * 50.f))
+#define HUNGER_JUMP_COST       .055f
+#define HUNGER_ATTACK_COST     .035f
+#define SURVIVAL_TICK_FRAMES   240.f
 
 #define NAV_LEFT  0x01
 #define NAV_RIGHT 0x02
@@ -73,6 +86,7 @@ const CraftRecipe craft_recipes[CRAFT_RECIPE_COUNT] = {
   {PLANKS, 4, {WOOD, AIR}, {1, 0}},
   {STICK, 4, {PLANKS, AIR}, {2, 0}},
   {CRAFTING_TABLE, 1, {PLANKS, AIR}, {4, 0}},
+  {TORCH, 4, {COAL, STICK}, {1, 1}},
   {WOOD_SWORD, 1, {PLANKS, STICK}, {2, 1}},
   {WOOD_PICKAXE, 1, {PLANKS, STICK}, {3, 2}},
   {WOOD_AXE, 1, {PLANKS, STICK}, {3, 2}},
@@ -81,7 +95,12 @@ const CraftRecipe craft_recipes[CRAFT_RECIPE_COUNT] = {
   {STONE_AXE, 1, {COBBLESTONE, STICK}, {3, 2}},
   {IRON_SWORD, 1, {IRON_CHUNK, STICK}, {2, 1}},
   {IRON_PICKAXE, 1, {IRON_CHUNK, STICK}, {3, 2}},
-  {IRON_AXE, 1, {IRON_CHUNK, STICK}, {3, 2}}
+  {IRON_AXE, 1, {IRON_CHUNK, STICK}, {3, 2}},
+  {WOOD_STAIRS, 4, {PLANKS, AIR}, {6, 0}},
+  {STONE_STAIRS, 4, {COBBLESTONE, AIR}, {6, 0}},
+  {WOOD_DOOR, 1, {PLANKS, STICK}, {6, 1}},
+  /* Coal stands in for firing until the furnace interface lands. */
+  {GLASS_WINDOW, 2, {SAND, COAL}, {4, 1}}
 };
 
 static void resetInventoryNavigation(void) {
@@ -467,6 +486,9 @@ static void spawnPlayer(Player *player, int x, int z) {
   player->objective_stage = 0;
   player->objective_time = 420.f;
   player->health = PLAYER_MAX_HEALTH;
+  player->hunger = PLAYER_MAX_HUNGER;
+  player->hunger_progress = 0;
+  player->survival_time = SURVIVAL_TICK_FRAMES;
   player->camera_mode = CAMERA_FIRST_PERSON;
   player->held_block = COBBLESTONE;
   resetPlayerInventory(player);
@@ -479,7 +501,7 @@ static void spawnPlayer(Player *player, int x, int z) {
   player->position.z = (z + 0.5) * BLOCK_SIZE;
 
   for (y = MAX_Y - 1; y >= 0; y--) {
-    if (BLOCK_IS_SOLID(blockGet(x, y, z))) {
+    if (worldCellSolid(x, y, z)) {
       player->position.y = (y + 1 + EYE_HEIGHT) * BLOCK_SIZE;
       return;
     }
@@ -496,7 +518,7 @@ static void respawnPlayer(Player *player, int x, int z) {
   player->position.x = (x + 0.5f) * BLOCK_SIZE;
   player->position.z = (z + 0.5f) * BLOCK_SIZE;
   for (y = MAX_Y - 1; y >= 0; y--) {
-    if (BLOCK_IS_SOLID(blockGet(x, y, z))) {
+    if (worldCellSolid(x, y, z)) {
       player->position.y = (y + 1 + EYE_HEIGHT) * BLOCK_SIZE;
       break;
     }
@@ -513,6 +535,10 @@ static void respawnPlayer(Player *player, int x, int z) {
   player->hurt_time = 0;
   player->objective_time = 180.f;
   player->health = PLAYER_MAX_HEALTH;
+  /* Death should reset a bad spiral without erasing the reason to forage. */
+  player->hunger = 14;
+  player->hunger_progress = 0;
+  player->survival_time = SURVIVAL_TICK_FRAMES;
   player->breaking = FALSE;
   player->break_progress = 0;
 }
@@ -678,8 +704,7 @@ static u8 boxObstructed(Vector3 pos, int override_axis, int override_block) {
            BLOCK_NOT_RESIDENT, which BLOCK_IS_SOLID treats as solid, so the
            edge of the streamed world already stops the player.  Below bedrock
            stays solid; above the world stays open. */
-        if (y < 0 ||
-            (y < MAX_Y && BLOCK_IS_SOLID(blockGet(x, y, z)))) {
+        if (worldCellSolid(x, y, z)) {
           return TRUE;
         }
       }
@@ -692,13 +717,24 @@ static u8 tryVault(Player *player, Vector3 velocity, float delta,
     u8 vault_button) {
   Vector3 candidate = player->position;
   Vector3 raised;
+  int stair_x;
+  int stair_y;
+  int stair_z;
+  u8 stair_step;
 
-  if (!vault_button || player->vault_time > 0 ||
-      (velocity.x == 0 && velocity.z == 0)) {
+  if (player->vault_time > 0 || (velocity.x == 0 && velocity.z == 0)) {
     return FALSE;
   }
   candidate.x += velocity.x * delta * 1.35f;
   candidate.z += velocity.z * delta * 1.35f;
+  stair_x = floor(candidate.x / BLOCK_SIZE);
+  stair_y = floor((player->position.y - EYE_HEIGHT * BLOCK_SIZE + 2.f) /
+    BLOCK_SIZE);
+  stair_z = floor(candidate.z / BLOCK_SIZE);
+  stair_step = detailIsStairAt(stair_x, stair_y, stair_z);
+  if (!vault_button && !stair_step) {
+    return FALSE;
+  }
   if (!boxObstructed(div(candidate, BLOCK_SIZE), -1, 0)) {
     return FALSE;
   }
@@ -870,6 +906,42 @@ static void placeBlock(u8 player_num, int x, int y, int z) {
     return;
   }
 
+  if (itemIsDetail(player->held_block)) {
+    u8 orientation;
+
+    if (held_stack->item != player->held_block || held_stack->count == 0) {
+      return;
+    }
+    /* A two-cell door checks both cells against every local avatar.  Other
+       details occupy only their root cell; torches are non-solid but still
+       should not be hidden inside a player's body on placement. */
+    for (i = 0; i < active_player_count; i++) {
+      boxBlockRange(div(players[i].position, BLOCK_SIZE),
+        &min_block, &max_block);
+      for (bx = min_block.x; bx <= max_block.x; bx++) {
+        for (by = min_block.y; by <= max_block.y; by++) {
+          for (bz = min_block.z; bz <= max_block.z; bz++) {
+            if (bx == x && bz == z &&
+                (by == y || (player->held_block == WOOD_DOOR &&
+                 by == y + 1))) {
+              return;
+            }
+          }
+        }
+      }
+    }
+    orientation = ((u8) ((player->yaw + 45.f) / 90.f)) & 3;
+    if (detailPlace(player->held_block, x, y, z, orientation, 0)) {
+      held_stack->count--;
+      if (held_stack->count == 0) {
+        held_stack->item = AIR;
+      }
+      makeDisplayListsAt(x, z);
+      playSound(SOUND_PLACE);
+    }
+    return;
+  }
+
   if (player->held_block < FIRST_PLACEABLE_BLOCK ||
       player->held_block > BLOCK_TYPE_COUNT) {
     return;
@@ -894,7 +966,9 @@ static void placeBlock(u8 player_num, int x, int y, int z) {
     }
   }
 
-  blockSet(x, y, z, player->held_block);
+  if (!worldEditSet(x, y, z, player->held_block)) {
+    return;
+  }
   if (blockUsesInventory(player->held_block)) {
     held_stack->count--;
   }
@@ -941,9 +1015,29 @@ static u8 breakBlock(int x, int y, int z, u8 tool) {
   u8 block = blockGet(x, y, z);
   u8 item;
 
+  if (detailAt(x, y, z) != NULL) {
+    if (!detailRemove(x, y, z, &item)) {
+      return FALSE;
+    }
+    if (!spawnDroppedItem(item, 1, x, y, z)) {
+      /* Re-place on the exceedingly rare full-pickup-pool path rather than
+         deleting a crafted detail.  Orientation/state loss is preferable to
+         resource loss and this branch never runs in ordinary play. */
+      detailPlace(item, x, y, z, 0, 0);
+      return FALSE;
+    }
+    makeDisplayListsAt(x, z);
+    playSound(SOUND_BREAK);
+    return TRUE;
+  }
+
   if (block == WOOD && beginTreeFelling(x, y, z)) {
     playSound(SOUND_BREAK);
     return TRUE;
+  }
+
+  if (!worldEditCanSet(x, y, z)) {
+    return FALSE;
   }
 
   /* Every terrain block that has a valid harvest yields the same small cube
@@ -953,7 +1047,9 @@ static u8 breakBlock(int x, int y, int z, u8 tool) {
       !spawnDroppedItem(item, 1, x, y, z)) {
     return FALSE;
   }
-  blockSet(x, y, z, AIR);
+  if (!worldEditSet(x, y, z, AIR)) {
+    return FALSE;
+  }
   treeBlockDestroyed(x, y, z);
   makeDisplayListsAt(x, z);
   playSound(SOUND_BREAK);
@@ -1086,23 +1182,71 @@ static float blockBreakTime(u8 block, u8 tool) {
 static u8 consumeHeldFood(Player *player) {
   ItemStack *held = &player->inventory[INVENTORY_HOTBAR_START +
     player->selected_hotbar_slot];
-  u8 healing;
+  u8 nourishment;
 
-  if (held->count == 0 || player->health >= PLAYER_MAX_HEALTH) {
+  if (held->count == 0 ||
+      (player->hunger >= PLAYER_MAX_HUNGER &&
+       player->health >= PLAYER_MAX_HEALTH)) {
     return FALSE;
   }
-  healing = held->item == APPLE ? 4 :
-    ((held->item == RAW_MUTTON || held->item == RAW_PORK) ? 3 : 0);
-  if (healing == 0) {
+  nourishment = held->item == APPLE ? 4 :
+    (held->item == RAW_PORK ? 4 : (held->item == RAW_MUTTON ? 3 : 0));
+  if (nourishment == 0) {
     return FALSE;
   }
-  player->health = min(PLAYER_MAX_HEALTH, player->health + healing);
+  player->hunger = min(PLAYER_MAX_HUNGER, player->hunger + nourishment);
+  /* Apples retain a small emergency identity while meat supplies the longer
+     well-fed regeneration loop. */
+  if (held->item == APPLE && player->health < PLAYER_MAX_HEALTH) {
+    player->health++;
+  }
   held->count--;
   if (held->count == 0) {
     held->item = AIR;
   }
   playSound(SOUND_PICKUP);
   return TRUE;
+}
+
+static void updateSurvival(Player *player, float delta, u8 moving,
+    u8 sprinting, u8 jumped, u8 attacked) {
+  float cost = HUNGER_IDLE_COST;
+
+  if (moving) {
+    cost += HUNGER_WALK_COST;
+  }
+  if (sprinting) {
+    cost += HUNGER_SPRINT_COST;
+  }
+  if (jumped) {
+    cost += HUNGER_JUMP_COST;
+  }
+  if (attacked) {
+    cost += HUNGER_ATTACK_COST;
+  }
+  player->hunger_progress += cost * delta;
+  while (player->hunger_progress >= 1.f && player->hunger > 0) {
+    player->hunger_progress -= 1.f;
+    player->hunger--;
+  }
+  if (player->hunger == 0) {
+    player->hunger_progress = 0;
+  }
+
+  player->survival_time -= delta;
+  if (player->survival_time > 0) {
+    return;
+  }
+  player->survival_time = SURVIVAL_TICK_FRAMES;
+  if (player->hunger >= 16 && player->health < PLAYER_MAX_HEALTH) {
+    player->health++;
+    player->hunger_progress += .32f;
+  } else if (player->hunger == 0 && player->health > 1) {
+    /* Hunger creates urgency, but it cannot erase a long expedition by
+       itself; enemies and falls remain the lethal threats. */
+    player->health--;
+    player->hurt_time = max(player->hurt_time, PLAYER_ATTACK_DURATION / 2);
+  }
 }
 
 static u8 inventoryHas(Player *player, u8 item) {
@@ -1199,7 +1343,13 @@ static void updateBreaking(u8 player_num, float delta) {
   }
 
   block = blockGet(player->target_x, player->target_y, player->target_z);
-  break_time = blockBreakTime(block, heldItem(player));
+  if (detailAt(player->target_x, player->target_y,
+      player->target_z) != NULL) {
+    break_time = itemIsAxe(heldItem(player)) ? 10.f :
+      (itemIsPickaxe(heldItem(player)) ? 12.f : 20.f);
+  } else {
+    break_time = blockBreakTime(block, heldItem(player));
+  }
   if (break_time <= 0) {
     resetBreaking(player);
     return;
@@ -1235,7 +1385,8 @@ static void openInventory(u8 player_num) {
   returnCraftingItems(player);
   player->crafting_table_open = player->target_present &&
     blockGet(player->target_x, player->target_y,
-      player->target_z) == CRAFTING_TABLE;
+      player->target_z) == CRAFTING_TABLE &&
+    detailAt(player->target_x, player->target_y, player->target_z) == NULL;
   player->inventory_area = INVENTORY_AREA_ITEMS;
   if (player->crafting_cursor >= playerRecipeCount(player)) {
     player->crafting_cursor = playerRecipeCount(player) - 1;
@@ -1255,7 +1406,7 @@ static u8 onGround(Player *player) {
   y = min_block.y;
   for (x = min_block.x; x <= max_block.x; x++) {
     for (z = min_block.z; z <= max_block.z; z++) {
-      if (y < 0 || (y < MAX_Y && BLOCK_IS_SOLID(blockGet(x, y, z)))) {
+      if (worldCellSolid(x, y, z)) {
         return TRUE;
       }
     }
@@ -1294,6 +1445,9 @@ static u8 updatePlayer(u8 player_num, float delta) {
   u8 swimming = playerInWater(player);
   u8 grounded;
   u8 vaulted = FALSE;
+  u8 sprinting = FALSE;
+  u8 jumped = FALSE;
+  u8 attacked = FALSE;
   u8 resolve_steps = 0;
 
   diag_player_step = DIAG_STEP_INPUT;
@@ -1396,9 +1550,10 @@ static u8 updatePlayer(u8 player_num, float delta) {
       velocity.x *= 0.55f;
       velocity.z *= 0.55f;
     }
-    if (cont->button & L_TRIG) {
+    if ((cont->button & L_TRIG) && player->hunger > 0) {
       velocity.x *= SPRINT_MULTIPLIER;
       velocity.z *= SPRINT_MULTIPLIER;
+      sprinting = velocity.x != 0 || velocity.z != 0;
     }
   }
 
@@ -1439,15 +1594,16 @@ static u8 updatePlayer(u8 player_num, float delta) {
 
   diag_player_step = DIAG_STEP_VAULT;
   grounded = onGround(player);
-  if (!swimming && grounded && (cont->button & L_TRIG) &&
-      (cont->button & R_TRIG)) {
-    vaulted = tryVault(player, velocity, delta, TRUE);
+  if (!swimming && grounded) {
+    vaulted = tryVault(player, velocity, delta,
+      (cont->button & L_TRIG) && (cont->button & R_TRIG));
   }
 
   if (swimming) {
     player->fall_distance = 0;
     if (cont->button & R_TRIG) {
       player->y_velocity = JUMP_SPEED * 0.45f;
+      jumped = (cont->trigger & R_TRIG) != 0;
     } else if (player->y_velocity > -BLOCK_SIZE / 10.f) {
       player->y_velocity -= GRAVITY * delta * 0.18f;
     }
@@ -1455,6 +1611,7 @@ static u8 updatePlayer(u8 player_num, float delta) {
     /* tryVault already supplied a small upward carry. */
   } else if (grounded) {
     player->y_velocity = (cont->button & R_TRIG) ? JUMP_SPEED : 0;
+    jumped = (cont->trigger & R_TRIG) != 0;
   } else if (player->y_velocity > -TERMINAL_SPEED) {
     player->y_velocity -= GRAVITY * delta;
   }
@@ -1508,6 +1665,11 @@ static u8 updatePlayer(u8 player_num, float delta) {
   updateTargetBlock(player_num);
   diag_player_step = DIAG_STEP_ACTIONS;
   if (cont->trigger & A_BUTTON) {
+    if (player->target_present && detailToggle(player->target_x,
+        player->target_y, player->target_z)) {
+      playSound(SOUND_PLACE);
+      return FALSE;
+    }
     if (player->target_present &&
         blockGet(player->target_x, player->target_y,
           player->target_z) == CRAFTING_TABLE) {
@@ -1524,6 +1686,7 @@ static u8 updatePlayer(u8 player_num, float delta) {
     }
   }
   if (cont->trigger & B_BUTTON) {
+    attacked = TRUE;
     if (punchMob(player_num) || swingSword(player_num)) {
       resetBreaking(player);
     } else {
@@ -1537,6 +1700,8 @@ static u8 updatePlayer(u8 player_num, float delta) {
     diag_player_step = DIAG_STEP_POST;
     updateBreaking(player_num, delta);
   }
+  updateSurvival(player, delta, velocity.x != 0 || velocity.z != 0,
+    sprinting, jumped, attacked);
   return FALSE;
 }
 

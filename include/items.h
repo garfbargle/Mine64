@@ -27,7 +27,12 @@
 #define IRON_SWORD     31
 #define IRON_PICKAXE   32
 #define IRON_AXE       33
-#define ITEM_TYPE_COUNT IRON_AXE
+#define TORCH          34
+#define WOOD_STAIRS    35
+#define STONE_STAIRS   36
+#define WOOD_DOOR      37
+#define GLASS_WINDOW   38
+#define ITEM_TYPE_COUNT GLASS_WINDOW
 #define ITEM_IS_VALID(item) \
   ((item) <= BLOCK_TYPE_COUNT || \
    ((item) >= STICK && (item) <= ITEM_TYPE_COUNT))
@@ -54,6 +59,7 @@ u8 itemIsTool(u8 item);
 u8 itemIsSword(u8 item);
 u8 itemIsPickaxe(u8 item);
 u8 itemIsAxe(u8 item);
+u8 itemIsDetail(u8 item);
 u8 rollLeafDrop(u8 *item);
 void initDroppedItems();
 u8 spawnDroppedItem(u8 item, u8 count, int x, u8 y, int z);

@@ -1,6 +1,7 @@
 #include <nusys.h>
 #include "blocks.h"
 #include "geometry.h"
+#include "details.h"
 
 #define KEEP 0
 #define NOT_VISIBLE 1
@@ -99,13 +100,16 @@ void appendQuad(QuadList *list, u8 bs, u8 bt, u8 width, u8 height, u8 block) {
  */
 u8 blockAt(int r, int s, int t, u8 axes) {
   if (axes == ZXY) {
+    if (detailIsCustomAt(s, t, r)) return AIR;
     return blockGet(s, t, r);
   } else if (axes == XZY) {
+    if (detailIsCustomAt(r, t, s)) return AIR;
     return blockGet(r, t, s);
   } else if (axes == YXZ) {
     if (r >= MAX_Y) {
       return 0;
     }
+    if (detailIsCustomAt(s, r, t)) return AIR;
     return blockGet(s, r, t);
   }
   return AIR;

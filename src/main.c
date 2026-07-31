@@ -10,6 +10,8 @@
 #include "mobs.h"
 #include "storage.h"
 #include "day_cycle.h"
+#include "details.h"
+#include "edits.h"
 
 /*
  * Replacing the world rewrites every column display list in the mesh arena the
@@ -140,6 +142,8 @@ static void beginWorldJob() {
   world_job_kind = WORLD_JOB_PREVIEW;
   world_job_world = menuSelectedWorld();
   game_file_num = world_job_world + 1;
+  initDetails();
+  initWorldEdits();
   if (files_present[world_job_world]) {
     /* Reading a save is a single bounded cart transfer, not a long compute,
        so it stays in one piece. */
@@ -341,7 +345,10 @@ void callbackGfx(int pendingGfx) {
     current_screen = GAME;
   }
 
-  if (current_screen == GAME || current_screen == INVENTORY) {
+  /* The pack is a true pause on a single-stick console.  Letting the clock
+     advance while AI and the player are frozen could turn a daylight menu
+     visit into an unavoidable night ambush on close. */
+  if (current_screen == GAME) {
     updateDayCycle();
   } else {
     pauseDayCycle();

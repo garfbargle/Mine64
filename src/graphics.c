@@ -12,6 +12,7 @@
 #include "cube.h"
 #include "textures.h"
 #include "day_cycle.h"
+#include "details.h"
 
 #define CROSSHAIR_SIZE 10
 #define HOTBAR_SLOT_COUNT INVENTORY_COLUMNS
@@ -457,7 +458,48 @@ static Mtx first_person_sword_rotate[NUM_DISPLAY_LISTS][MAX_PLAYERS];
 static Mtx mob_translate[NUM_DISPLAY_LISTS][MAX_MOBS][MOB_PART_COUNT];
 static Mtx mob_rotate[NUM_DISPLAY_LISTS][MAX_MOBS][MOB_PART_COUNT];
 
+/* Detail records may be numerous in a base, but only a small nearest set is
+   submitted per viewport.  The matrices are double-buffered like every other
+   RSP reference and indexed by render slot rather than persistent record. */
+#define MAX_VISIBLE_DETAILS 24
+#define DETAIL_RENDER_DISTANCE (BLOCK_SIZE * 28.f)
+static Mtx detail_translate[NUM_DISPLAY_LISTS][MAX_VISIBLE_DETAILS];
+static Mtx detail_rotate[NUM_DISPLAY_LISTS][MAX_VISIBLE_DETAILS];
+
 #define STEVE_VERTEX(x, y, z, r, g, b) {x, y, z, 0, 0, 0, r, g, b, 255}
+
+#define DETAIL_BOX(name, x0, y0, z0, x1, y1, z1, r1, g1, b1, r2, g2, b2) \
+static Vtx name[] = { \
+  STEVE_VERTEX(x0, y1, z1, r1, g1, b1), STEVE_VERTEX(x1, y1, z1, r1, g1, b1), \
+  STEVE_VERTEX(x1, y0, z1, r1, g1, b1), STEVE_VERTEX(x0, y0, z1, r1, g1, b1), \
+  STEVE_VERTEX(x1, y1, z0, r2, g2, b2), STEVE_VERTEX(x0, y1, z0, r2, g2, b2), \
+  STEVE_VERTEX(x0, y0, z0, r2, g2, b2), STEVE_VERTEX(x1, y0, z0, r2, g2, b2) \
+}
+
+DETAIL_BOX(wood_stair_lower_verts, -32, 0, -32, 32, 31, 32,
+  174, 117, 61, 112, 70, 34);
+DETAIL_BOX(wood_stair_upper_verts, -32, 31, 0, 32, 63, 32,
+  187, 130, 69, 122, 78, 39);
+DETAIL_BOX(stone_stair_lower_verts, -32, 0, -32, 32, 31, 32,
+  155, 158, 153, 92, 97, 94);
+DETAIL_BOX(stone_stair_upper_verts, -32, 31, 0, 32, 63, 32,
+  177, 181, 176, 108, 113, 110);
+DETAIL_BOX(door_verts, -28, 0, -4, 28, 126, 4,
+  151, 96, 45, 91, 54, 27);
+DETAIL_BOX(window_left_verts, -31, 0, -4, -22, 64, 4,
+  195, 203, 190, 104, 119, 113);
+DETAIL_BOX(window_right_verts, 22, 0, -4, 31, 64, 4,
+  195, 203, 190, 104, 119, 113);
+DETAIL_BOX(window_top_verts, -22, 54, -4, 22, 64, 4,
+  180, 201, 196, 92, 120, 121);
+DETAIL_BOX(window_bottom_verts, -22, 0, -4, 22, 10, 4,
+  180, 201, 196, 92, 120, 121);
+DETAIL_BOX(window_cross_verts, -3, 10, -3, 3, 54, 3,
+  124, 179, 181, 64, 110, 121);
+DETAIL_BOX(torch_stick_verts, -4, 0, -4, 4, 39, 4,
+  146, 86, 36, 88, 48, 20);
+DETAIL_BOX(torch_flame_verts, -8, 38, -8, 8, 55, 8,
+  255, 213, 72, 232, 91, 26);
 
 /* Head, torso, arms, and legs.  Limbs start at y = 0 so their rotation has a
    convincing shoulder/hip pivot instead of spinning around their middles. */
@@ -773,8 +815,16 @@ static void setAmbientColor(Ambient *ambient, SkyColor color) {
 static void setWorldLight(u8 player_num) {
   Lights1 *lights = &world_lights[dl_no][player_num];
   Vector3 direction = dayCycleLightDirection();
+  SkyColor ambient = dayCycleAmbientLight();
+  u8 torch = detailLightAt(players[player_num].position);
 
-  setAmbientColor(&lights->a, dayCycleAmbientLight());
+  /* One nearest-light sample per viewport sells a warm pool around the
+     player without a per-voxel light volume or terrain remesh.  It is most
+     visible at night and naturally becomes subtle in daylight. */
+  ambient.r = min(255, ambient.r + (torch * 3) / 4);
+  ambient.g = min(255, ambient.g + (torch * 2) / 5);
+  ambient.b = min(255, ambient.b + torch / 8);
+  setAmbientColor(&lights->a, ambient);
   setLightColor(&lights->l[0], dayCycleDirectLight());
   lights->l[0].l.dir[0] = direction.x * 127;
   lights->l[0].l.dir[1] = direction.y * 127;
@@ -2153,6 +2203,106 @@ static u8 pointVisibleToPlayer(u8 viewer_num, Vector3 point,
     visible_columns[viewer_num][WINDOW_SLOT(cx, cz)];
 }
 
+static void drawDetailBox(Vtx *vertices) {
+  gSPVertex(dlp++, vertices, 8, 0);
+  gSPDisplayList(dlp++, steve_box_display_list);
+}
+
+static void drawDetailsForPlayer(u8 viewer_num) {
+  u16 selected[MAX_VISIBLE_DETAILS];
+  float selected_distance[MAX_VISIBLE_DETAILS];
+  u8 limit = usesFourPlayerLayout() ? 6 :
+    (active_player_count > 1 ? 12 : MAX_VISIBLE_DETAILS);
+  u8 count = 0;
+  u16 index;
+  u8 render_slot;
+
+  /* Maintain a tiny nearest set in one pass.  Detail count is globally
+     bounded, while the selected list keeps matrix and command cost bounded
+     independently for solo, split-screen, and four-player views. */
+  for (index = 0; index < MAX_DETAILS; index++) {
+    DetailCell *detail = &details[index];
+    Vector3 position;
+    Vector3 offset;
+    float distance;
+    u8 farthest;
+    u8 slot;
+
+    if (!detail->active) {
+      continue;
+    }
+    position = (Vector3) {(detail->x + .5f) * BLOCK_SIZE,
+      detail->y * BLOCK_SIZE, (detail->z + .5f) * BLOCK_SIZE};
+    if (!pointVisibleToPlayer(viewer_num, position,
+        DETAIL_RENDER_DISTANCE)) {
+      continue;
+    }
+    offset = add(position, mul(players[viewer_num].position, -1.f));
+    distance = dot(offset, offset);
+    if (count < limit) {
+      selected[count] = index;
+      selected_distance[count] = distance;
+      count++;
+      continue;
+    }
+    farthest = 0;
+    for (slot = 1; slot < count; slot++) {
+      if (selected_distance[slot] > selected_distance[farthest]) {
+        farthest = slot;
+      }
+    }
+    if (distance < selected_distance[farthest]) {
+      selected[farthest] = index;
+      selected_distance[farthest] = distance;
+    }
+  }
+
+  gSPTexture(dlp++, 0, 0, 0, G_TX_RENDERTILE, G_OFF);
+  gDPSetCombineMode(dlp++, G_CC_SHADE, G_CC_SHADE);
+  gSPClearGeometryMode(dlp++, G_CULL_BACK);
+  for (render_slot = 0; render_slot < count; render_slot++) {
+    DetailCell *detail = &details[selected[render_slot]];
+    float yaw = detail->orientation * 90.f;
+
+    if (detail->kind == DETAIL_WOOD_DOOR &&
+        (detail->state & DETAIL_STATE_OPEN)) {
+      yaw += 90.f;
+    }
+    guTranslate(&detail_translate[dl_no][render_slot],
+      (detail->x + .5f) * BLOCK_SIZE - render_origin_units_x,
+      detail->y * BLOCK_SIZE,
+      (detail->z + .5f) * BLOCK_SIZE - render_origin_units_z);
+    guRotateRPY(&detail_rotate[dl_no][render_slot], 0, yaw, 0);
+    gSPMatrix(dlp++, OS_K0_TO_PHYSICAL(
+      &detail_translate[dl_no][render_slot]),
+      G_MTX_MODELVIEW | G_MTX_LOAD | G_MTX_NOPUSH);
+    gSPMatrix(dlp++, OS_K0_TO_PHYSICAL(
+      &detail_rotate[dl_no][render_slot]),
+      G_MTX_MODELVIEW | G_MTX_MUL | G_MTX_NOPUSH);
+
+    if (detail->kind == DETAIL_TORCH) {
+      drawDetailBox(torch_stick_verts);
+      drawDetailBox(torch_flame_verts);
+    } else if (detail->kind == DETAIL_WOOD_STAIRS) {
+      drawDetailBox(wood_stair_lower_verts);
+      drawDetailBox(wood_stair_upper_verts);
+    } else if (detail->kind == DETAIL_STONE_STAIRS) {
+      drawDetailBox(stone_stair_lower_verts);
+      drawDetailBox(stone_stair_upper_verts);
+    } else if (detail->kind == DETAIL_WOOD_DOOR) {
+      drawDetailBox(door_verts);
+    } else if (detail->kind == DETAIL_WINDOW) {
+      drawDetailBox(window_left_verts);
+      drawDetailBox(window_right_verts);
+      drawDetailBox(window_top_verts);
+      drawDetailBox(window_bottom_verts);
+      drawDetailBox(window_cross_verts);
+    }
+  }
+  gSPSetGeometryMode(dlp++, G_CULL_BACK);
+  loaded_texture = NULL;
+}
+
 static void setMobPartTransform(u8 mob_num, u8 part,
     Vector3 local_offset) {
   Mob *mob = &mobs[mob_num];
@@ -2314,6 +2464,10 @@ static void drawLooseItemGeometry(u8 item) {
     body = mutton_verts;
   } else if (item == SLIME_GEL) {
     body = slime_gel_verts;
+  } else if (item == TORCH) {
+    gSPVertex(dlp++, torch_stick_verts, 8, 0);
+    gSPDisplayList(dlp++, steve_box_display_list);
+    body = torch_flame_verts;
   }
   if (body != NULL) {
     gSPVertex(dlp++, body, 8, 0);
@@ -2566,6 +2720,7 @@ void drawWorld() {
         gSPClearGeometryMode(dlp++, G_FOG);
       }
       gSPClearGeometryMode(dlp++, G_LIGHTING);
+      drawDetailsForPlayer(player_num);
       drawFallingTrees(player_num);
       drawDroppedItems(player_num);
       drawMobsForPlayer(player_num);
@@ -2714,6 +2869,7 @@ static void drawHealth(u8 player_num) {
   u32 total_width = (PLAYER_MAX_HEALTH / 2) * (size + 2) - 2;
   u32 x = playerViewportX(player_num) +
     (playerViewportWidth() - total_width) / 2;
+  u32 start_x = x;
   u32 y = playerViewportY(player_num) + playerViewportHeight() -
     (compact ? 14 + 4 + 8 : HOTBAR_SLOT_SIZE + HOTBAR_MARGIN + 10);
   u8 heart;
@@ -2739,6 +2895,28 @@ static void drawHealth(u8 player_num) {
       gDPFillRectangle(dlp++, x, y + 1, fill_right, y + size - 2);
       gDPFillRectangle(dlp++, x + 1, y + size - 1,
         value == 2 ? x + size - 2 : fill_right, y + size);
+    }
+    x += size + 2;
+  }
+
+  /* Food pips share the same fill-mode pass as hearts, so survival adds no
+     extra RDP state transition.  Their warm diamond silhouette remains
+     distinct from health even on a soft composite CRT image. */
+  x = start_x;
+  y -= size + 3;
+  for (heart = 0; heart < PLAYER_MAX_HUNGER / 2; heart++) {
+    u8 value = players[player_num].hunger > heart * 2 ?
+      min(2, players[player_num].hunger - heart * 2) : 0;
+
+    setHudFillColor(61, 39, 24);
+    gDPFillRectangle(dlp++, x + 1, y, x + size - 2, y + size - 1);
+    gDPFillRectangle(dlp++, x, y + 1, x + size - 1, y + size - 2);
+    if (value > 0) {
+      u32 fill_right = value == 2 ? x + size - 1 : x + size / 2;
+      setHudFillColor(226, 154, 55);
+      gDPFillRectangle(dlp++, x + 1, y, value == 2 ? x + size - 2 : fill_right,
+        y + size - 1);
+      gDPFillRectangle(dlp++, x, y + 1, fill_right, y + size - 2);
     }
     x += size + 2;
   }
@@ -2872,6 +3050,16 @@ static void drawItemIcon(u8 item, u32 x, u32 y, u32 size) {
   if (item == STICK) {
     setHudFillColor(142, 83, 38);
     gDPFillRectangle(dlp++, x + size / 2 - 1, y + 2, x + size / 2 + 1, y + size - 3);
+  } else if (item == TORCH) {
+    setHudFillColor(142, 83, 38);
+    gDPFillRectangle(dlp++, x + size / 2 - 1, y + 5,
+      x + size / 2 + 1, y + size - 2);
+    setHudFillColor(255, 204, 54);
+    gDPFillRectangle(dlp++, x + size / 2 - 3, y + 1,
+      x + size / 2 + 3, y + 6);
+    setHudFillColor(238, 82, 31);
+    gDPFillRectangle(dlp++, x + size / 2 - 1, y + 2,
+      x + size / 2 + 2, y + 4);
   } else if (itemIsSword(item)) {
     if (item == IRON_SWORD) {
       setHudFillColor(225, 225, 218);

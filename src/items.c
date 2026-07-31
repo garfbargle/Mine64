@@ -5,6 +5,7 @@
 #include "player.h"
 #include "world.h"
 #include "audio.h"
+#include "details.h"
 
 #define ITEM_RADIUS 14.f
 #define ITEM_GRAVITY 0.45f
@@ -31,7 +32,8 @@ const char *itemName(u8 item) {
     "Wood Sword", "Wood Pickaxe", "Sapling", "Wool", "Coal",
     "Iron Chunk", "Stone Sword", "Stone Pickaxe", "Wood Axe",
     "Stone Axe", "Apple", "Raw Mutton", "Raw Pork", "Slime Gel",
-    "Iron Sword", "Iron Pickaxe", "Iron Axe"
+    "Iron Sword", "Iron Pickaxe", "Iron Axe", "Torch", "Wood Stairs",
+    "Stone Stairs", "Wood Door", "Lattice Window"
   };
 
   if (item <= CRAFTING_TABLE) {
@@ -55,6 +57,10 @@ u8 itemIsAxe(u8 item) {
 
 u8 itemIsTool(u8 item) {
   return itemIsSword(item) || itemIsPickaxe(item) || itemIsAxe(item);
+}
+
+u8 itemIsDetail(u8 item) {
+  return item >= TORCH && item <= GLASS_WINDOW;
 }
 
 u8 rollLeafDrop(u8 *item) {
@@ -131,7 +137,7 @@ static u8 solidBlockAt(float x, float y, float z) {
   if (by >= MAX_Y) {
     return FALSE;
   }
-  return BLOCK_IS_SOLID(blockGet(bx, by, bz));
+  return worldCellSolid(bx, by, bz);
 }
 
 static void updateDropPhysics(DroppedItem *drop, float delta) {

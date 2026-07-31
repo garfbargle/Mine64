@@ -30,6 +30,18 @@ void treesEvictColumn(int cx, int cz) {
   (void) cx; (void) cz;
 }
 
+void detailsEvictGeneratedColumn(int cx, int cz) {
+  (void) cx; (void) cz;
+}
+
+void worldApplyEditsToColumn(int cx, int cz) {
+  (void) cx; (void) cz;
+}
+
+void detailsApplyColumn(int cx, int cz) {
+  (void) cx; (void) cz;
+}
+
 u8 createTree(u8 x, u8 z, u8 base_y, u8 height) {
   (void) x; (void) z; (void) base_y; (void) height;
   return 0;

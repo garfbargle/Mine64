@@ -15,26 +15,108 @@
 TreeRecord trees[MAX_TREES];
 
 /*
- * This small table makes trunk lookup constant time.  It is derived data and
- * is never written to save files, so it is free to be keyed however suits the
- * world -- which matters, because keying it by absolute block position was
- * only ever safe while the world had a fixed size.  `x * MAX_Z + z` runs off
- * the end of the table the moment x passes MAX_X: at x = 255 the index is
- * 28815 against 12544 entries, a silent 16 KiB out-of-bounds write into
- * whatever BSS follows.  On hardware that surfaces as corruption or a lockup
- * a long way from the cause.
+ * Root lookup is derived state and is never written to save files.  The old
+ * direct table covered the whole 256 x 256 coordinate wrap even though at
+ * most MAX_TREES entries can be live, spending 64 KiB to index 160 records.
+ * Keep the same constant-time shape with a fixed sparse hash instead: 512
+ * slots put its worst-case load at 31.25%, cost 1,536 bytes, and need no heap.
  *
- * The residency window spans 128 blocks on each axis and a tree only matters
- * while it is inside that window, so wrapping into a 128x128 table is bounded
- * for any coordinate and still collision-free for every tree that can exist
- * at one time.
+ * Tree records store the low byte of each world coordinate.  Absolute lookup
+ * coordinates are folded to that same 16-bit key.  This remains unambiguous:
+ * the residency window also spans 256 blocks, and rebinding a window slot
+ * retires its trees before a column one whole wrap away can take the slot.
+ * Consequently two live roots can never differ by 256 on either axis.
+ *
+ * Linear probing keeps lookup compact and cache-friendly.  Removal repairs
+ * the following probe cluster immediately instead of leaving tombstones, so
+ * a long streaming walk cannot slowly turn every miss into a full-table scan.
  */
 #define TREE_ROOT_SPAN (WINDOW_COLUMNS * CHUNK_SIZE)
-#define TREE_ROOT_INDEX(x, z) \
-  ((((u32) (x)) & (TREE_ROOT_SPAN - 1)) * TREE_ROOT_SPAN + \
-   (((u32) (z)) & (TREE_ROOT_SPAN - 1)))
+#define TREE_ROOT_HASH_SLOTS 512
+#define TREE_ROOT_HASH_MASK (TREE_ROOT_HASH_SLOTS - 1)
+#define TREE_ROOT_KEY(x, z) \
+  ((u16) (((u16) (u8) (x) << 8) | (u16) (u8) (z)))
 
-static u8 tree_at_root[TREE_ROOT_SPAN * TREE_ROOT_SPAN];
+typedef char TreeRootHashMustBePowerOfTwo[
+  (TREE_ROOT_HASH_SLOTS & TREE_ROOT_HASH_MASK) == 0 ? 1 : -1
+];
+typedef char TreeRootHashMustExceedPool[
+  TREE_ROOT_HASH_SLOTS > MAX_TREES ? 1 : -1
+];
+typedef char TreeRootWindowMustFitStoredCoordinates[
+  TREE_ROOT_SPAN <= 256 ? 1 : -1
+];
+
+/* A zero value marks an empty slot; live values are tree index + 1.  Separate
+   arrays avoid the padding a { u16, u8 } entry would acquire on MIPS. */
+static u16 tree_root_keys[TREE_ROOT_HASH_SLOTS];
+static u8 tree_root_values[TREE_ROOT_HASH_SLOTS];
+
+static u16 treeRootHash(u16 key) {
+  u16 hash = key;
+
+  /* A cheap reversible mix spreads both coordinate bytes across all nine
+     slot bits without putting a multiply in canopy generation's hot path. */
+  hash ^= hash >> 7;
+  hash ^= hash << 9;
+  hash ^= hash >> 8;
+  return hash & TREE_ROOT_HASH_MASK;
+}
+
+static u8 treeRootInsert(u16 key, u8 value) {
+  u16 slot = treeRootHash(key);
+  u16 probes;
+
+  for (probes = 0; probes < TREE_ROOT_HASH_SLOTS; probes++) {
+    if (tree_root_values[slot] == 0 || tree_root_keys[slot] == key) {
+      tree_root_keys[slot] = key;
+      tree_root_values[slot] = value;
+      return TRUE;
+    }
+    slot = (slot + 1) & TREE_ROOT_HASH_MASK;
+  }
+  return FALSE;
+}
+
+static void treeRootRemove(u16 key, u8 value) {
+  u16 slot = treeRootHash(key);
+  u16 probes;
+
+  for (probes = 0; probes < TREE_ROOT_HASH_SLOTS; probes++) {
+    u16 scan;
+    u16 rehashes;
+
+    if (tree_root_values[slot] == 0) {
+      return;
+    }
+    if (tree_root_keys[slot] != key) {
+      slot = (slot + 1) & TREE_ROOT_HASH_MASK;
+      continue;
+    }
+
+    /* A duplicate-root record can only arise from corrupt state.  Do not let
+       retiring that stale record erase a newer record's mapping. */
+    if (tree_root_values[slot] != value) {
+      return;
+    }
+    tree_root_values[slot] = 0;
+
+    /* Closing and reinserting the rest of this cluster preserves the rule
+       that lookup may stop at its first empty slot. */
+    scan = (slot + 1) & TREE_ROOT_HASH_MASK;
+    for (rehashes = 0;
+        rehashes < TREE_ROOT_HASH_SLOTS && tree_root_values[scan] != 0;
+        rehashes++) {
+      u16 rehash_key = tree_root_keys[scan];
+      u8 rehash_value = tree_root_values[scan];
+
+      tree_root_values[scan] = 0;
+      treeRootInsert(rehash_key, rehash_value);
+      scan = (scan + 1) & TREE_ROOT_HASH_MASK;
+    }
+    return;
+  }
+}
 
 static u8 leafBitSet(TreeRecord *tree, u8 bit) {
   return (tree->leaf_mask[bit >> 3] & (1 << (bit & 7))) != 0;
@@ -50,18 +132,32 @@ static void setLeafBit(TreeRecord *tree, u8 bit, u8 value) {
 }
 
 static u8 treeIndexAtRoot(int x, int z) {
-  u8 index = tree_at_root[TREE_ROOT_INDEX(x, z)];
-  return index == 0 ? TREE_NONE : index - 1;
+  u16 key = TREE_ROOT_KEY(x, z);
+  u16 slot = treeRootHash(key);
+  u16 probes;
+
+  for (probes = 0; probes < TREE_ROOT_HASH_SLOTS; probes++) {
+    u8 value = tree_root_values[slot];
+
+    if (value == 0) {
+      return TREE_NONE;
+    }
+    if (tree_root_keys[slot] == key) {
+      return value <= MAX_TREES ? value - 1 : TREE_NONE;
+    }
+    slot = (slot + 1) & TREE_ROOT_HASH_MASK;
+  }
+  return TREE_NONE;
 }
 
 /*
  * Recover a live tree's absolute root coordinates from its wrapped u8 record.
  *
- * The 256-block u8 wrap is a whole multiple of the 128-block window span, so
- * a wrapped coordinate still selects the tree's own window slot -- and the
- * slot's key stores the full absolute chunk coordinate.  Eviction retires
- * every tree in a column before its slot rebinds, so a live record's slot is
- * its column and the recovery is exact, with no viewer anchor needed.
+ * The 256-block u8 wrap matches the 256-block window span, so a wrapped
+ * coordinate still selects the tree's own window slot, whose key stores the
+ * full absolute chunk coordinate.  Eviction retires every tree in a column
+ * before its slot rebinds, so a live record's slot is its column and the
+ * recovery is exact, with no viewer anchor needed.
  *
  * This matters because blockGet/blockSet check residency against absolute
  * coordinates: past the first 256 blocks the wrapped u8 no longer names a
@@ -82,21 +178,21 @@ static u8 treeAbsoluteRoot(const TreeRecord *tree, int *abs_x, int *abs_z) {
 
 static void retireTree(u8 index) {
   TreeRecord *tree = &trees[index];
-  tree_at_root[TREE_ROOT_INDEX(tree->x, tree->z)] = 0;
+  treeRootRemove(TREE_ROOT_KEY(tree->x, tree->z), index + 1);
   tree->base_y = TREE_INACTIVE_Y;
   tree->state = TREE_STATE_STANDING;
 }
 
 void initTrees() {
   u8 i;
-  u32 root;
+  u16 slot;
 
   for (i = 0; i < MAX_TREES; i++) {
     trees[i].base_y = TREE_INACTIVE_Y;
     trees[i].state = TREE_STATE_STANDING;
   }
-  for (root = 0; root < TREE_ROOT_SPAN * TREE_ROOT_SPAN; root++) {
-    tree_at_root[root] = 0;
+  for (slot = 0; slot < TREE_ROOT_HASH_SLOTS; slot++) {
+    tree_root_values[slot] = 0;
   }
 }
 
@@ -204,7 +300,10 @@ u8 createTree(u8 x, u8 z, u8 base_y, u8 height) {
       tree->trunk_mask |= 1 << part;
     }
   }
-  tree_at_root[TREE_ROOT_INDEX(x, z)] = i + 1;
+  if (!treeRootInsert(TREE_ROOT_KEY(x, z), i + 1)) {
+    tree->base_y = TREE_INACTIVE_Y;
+    return TREE_NONE;
+  }
   return i;
 }
 
@@ -256,8 +355,8 @@ static u8 leafOwnedByExistingTree(u8 x, u8 y, u8 z) {
   int root_x, root_z;
 
   for (dx = 0; dx < 5; dx++) {
-    /* Any coordinate is a safe lookup now that the root table wraps into the
-       window, so a tree past the old world extent is still found. */
+    /* Any coordinate is a safe lookup because the sparse index folds roots
+       into the window's coordinate wrap, so far trees are still found. */
     root_x = x - 2 + dx;
     for (dz = 0; dz < 5; dz++) {
       u8 index;
@@ -477,8 +576,8 @@ void treeBlockDestroyed(u8 x, u8 y, u8 z) {
 
   /* Only tree roots within two horizontal blocks can own this leaf. */
   for (dx = 0; dx < 5; dx++) {
-    /* Any coordinate is a safe lookup now that the root table wraps into the
-       window, so a tree past the old world extent is still found. */
+    /* Any coordinate is a safe lookup because the sparse index folds roots
+       into the window's coordinate wrap, so far trees are still found. */
     root_x = x - 2 + dx;
     for (dz = 0; dz < 5; dz++) {
       root_z = z - 2 + dz;
@@ -572,15 +671,14 @@ void updateTrees(float delta) {
 
 u8 rebuildTreeLookup() {
   u8 i;
-  u32 table_index;
+  u16 slot;
 
-  for (table_index = 0; table_index < TREE_ROOT_SPAN * TREE_ROOT_SPAN;
-      table_index++) {
-    tree_at_root[table_index] = 0;
+  for (slot = 0; slot < TREE_ROOT_HASH_SLOTS; slot++) {
+    tree_root_values[slot] = 0;
   }
   for (i = 0; i < MAX_TREES; i++) {
     TreeRecord *tree = &trees[i];
-    u32 root;
+    u16 root;
     if (tree->base_y == TREE_INACTIVE_Y) {
       continue;
     }
@@ -592,11 +690,11 @@ u8 rebuildTreeLookup() {
         (tree->leaf_mask[TREE_LEAF_MASK_BYTES - 1] & 0xF0)) {
       return FALSE;
     }
-    root = TREE_ROOT_INDEX(tree->x, tree->z);
-    if (tree_at_root[root] != 0) {
+    root = TREE_ROOT_KEY(tree->x, tree->z);
+    if (treeIndexAtRoot(tree->x, tree->z) != TREE_NONE ||
+        !treeRootInsert(root, i + 1)) {
       return FALSE;
     }
-    tree_at_root[root] = i + 1;
   }
   return TRUE;
 }

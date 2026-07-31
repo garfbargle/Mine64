@@ -176,7 +176,7 @@ u8 stepWorldGeneration(u32 columns);
  */
 #define COLUMN_EMPTY 0
 #define COLUMN_TERRAIN 1
-#define COLUMN_WAYSTONED 2
+#define COLUMN_STRUCTURED 2
 #define COLUMN_DECORATED 3
 
 u8 worldColumnState(int cx, int cz);
@@ -193,7 +193,7 @@ u8 worldFixedExtentResident();
  * the columns that should be loaded and lets the ones that should not fall out
  * of the window.
  */
-/* Chebyshev chunk radii.  Terrain one wider than waystones, waystones one
+/* Chebyshev chunk radii.  Terrain one wider than structures, structures one
    wider than trees: the neighbour gates decorate a column only when
    everything it can write into is already claimed.  A 32-column window
    could hold radius 15, but the mesh ring is what the RSP and the arena
@@ -202,7 +202,7 @@ u8 worldFixedExtentResident();
    ground that keeps movement smooth.  The window slack also cushions the
    wrap. */
 #define STREAM_TERRAIN_RADIUS 12
-#define STREAM_WAYSTONE_RADIUS 11
+#define STREAM_STRUCTURE_RADIUS 11
 #define STREAM_TREE_RADIUS 10
 /* Within this ring the deferred underground carve (caves, ores) has run.
    Must stay ahead of both the full-detail LOD promote radius and the

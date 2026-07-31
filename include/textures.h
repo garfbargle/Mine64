@@ -153,11 +153,22 @@ TextureSpec *textures[] = {
 };
 
 Texture *preview_textures[ITEM_TYPE_COUNT + 1] = {
-  NULL, &dirt_texture, &stone_texture, &grass_side_texture,
-  &cobblestone_texture, &sand_texture, &wood_side_texture,
-  &leaves_texture, &planks_texture, &bricks_texture, &planks_texture,
-  NULL, NULL, NULL, NULL, NULL,
-  NULL, NULL, NULL, &leaves_texture, &wool_texture
+  [DIRT] = &dirt_texture,
+  [STONE] = &stone_texture,
+  [GRASS] = &grass_side_texture,
+  [COBBLESTONE] = &cobblestone_texture,
+  [SAND] = &sand_texture,
+  [WOOD] = &wood_side_texture,
+  [LEAVES] = &leaves_texture,
+  [PLANKS] = &planks_texture,
+  [BRICKS] = &bricks_texture,
+  [CRAFTING_TABLE] = &planks_texture,
+  [SAPLING] = &leaves_texture,
+  [WOOL] = &wool_texture,
+  [WOOD_STAIRS] = &planks_texture,
+  [STONE_STAIRS] = &cobblestone_texture,
+  [WOOD_DOOR] = &planks_texture,
+  [GLASS_WINDOW] = &sand_texture
 };
 
 #define NUM_TEXTURES (sizeof(textures) / sizeof(textures[0]))
