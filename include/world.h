@@ -233,6 +233,32 @@ static __inline__ __attribute__((unused)) u8 streamWorkExpired() {
   return stream_work_deadline != 0 && osGetTime() >= stream_work_deadline;
 }
 
+/*
+ * The streaming pipeline's stages, in order.  MESH is the compilation queue
+ * in graphics.c; the rest live in stepWorldStreaming.
+ *
+ * Exactly one stage per callback may take a step after the deadline has
+ * expired -- the stage whose turn worldStreamStageGuaranteed reports.  Every
+ * stage used to hold that exemption every frame, which kept any one stage
+ * from starving but let the exemptions stack: the worst walking frame paid
+ * one large unit of every stage at once, on top of the budgeted work
+ * (measured as B 850 against a 250 deadline).  Rotating the exemption keeps
+ * the liveness -- each stage still advances at least once every
+ * STREAM_STAGE_COUNT frames however oversubscribed the deadline is -- while
+ * bounding the overrun to one unit per frame.
+ */
+#define STREAM_STAGE_TERRAIN 0
+#define STREAM_STAGE_DEEPEN 1
+#define STREAM_STAGE_STRUCTURES 2
+#define STREAM_STAGE_TREES 3
+#define STREAM_STAGE_MESH 4
+#define STREAM_STAGE_COUNT 5
+
+/* TRUE when the stage holds this callback's deadline exemption.  Advanced at
+   the top of stepWorldStreaming; the mesh queue runs later in the same
+   callback (inside draw()), so it reads the same frame's turn. */
+u8 worldStreamStageGuaranteed(u8 stage);
+
 void stepWorldStreaming(int pcx, int pcz, u32 terrain_budget,
   u32 decorate_budget);
 /* Prefetch bias in chunks: ranking (never ring membership) leans toward the

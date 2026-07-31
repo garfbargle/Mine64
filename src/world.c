@@ -1532,6 +1532,12 @@ static void remeshDecoratedNeighbour(int cx, int cz) {
   }
 }
 
+static u8 stream_guarantee_stage;
+
+u8 worldStreamStageGuaranteed(u8 stage) {
+  return stream_guarantee_stage == stage;
+}
+
 void stepWorldStreaming(int pcx, int pcz, u32 terrain_budget,
     u32 decorate_budget) {
   int cx = pcx, cz = pcz;
@@ -1541,17 +1547,28 @@ void stepWorldStreaming(int pcx, int pcz, u32 terrain_budget,
   releaseColumnsOutsideRing(pcx, pcz);
 
   /*
-   * Every stage gets one step per callback before the deadline can refuse
-   * it.  A walking player generates pending terrain continuously, and a
-   * terrain column alone can exhaust the whole time budget -- run that way,
-   * the deadline starved decoration for as long as the player kept moving,
-   * and meshing waits on decoration: blocks existed (mobs walked on them)
-   * while the mesh sat seconds behind.  One guaranteed step per stage keeps
-   * the whole pipeline advancing at some rate no matter how the budget is
-   * being spent.
+   * Whose turn it is to run past the deadline (see the stage table in
+   * world.h).  Advanced here, before any stage consults it, so this frame's
+   * world stages and its mesh queue -- which draw() processes after this
+   * returns -- agree on the turn.
+   *
+   * The exemption itself exists because a walking player generates pending
+   * terrain continuously, and a terrain column alone can exhaust the whole
+   * time budget -- run purely on the deadline, terrain starved decoration
+   * for as long as the player kept moving, and meshing waits on decoration:
+   * blocks existed (mobs walked on them) while the mesh sat seconds behind.
+   * When the deadline has room, none of this matters: every stage runs to
+   * its column budget exactly as before.
    */
+  stream_guarantee_stage++;
+  if (stream_guarantee_stage >= STREAM_STAGE_COUNT) {
+    stream_guarantee_stage = 0;
+  }
+
   stage_did_one = FALSE;
-  while (terrain_budget > 0 && (!stage_did_one || !streamWorkExpired()) &&
+  while (terrain_budget > 0 &&
+      ((worldStreamStageGuaranteed(STREAM_STAGE_TERRAIN) && !stage_did_one) ||
+        !streamWorkExpired()) &&
       nearestColumnNeeding(pcx, pcz, STREAM_TERRAIN_RADIUS, COLUMN_TERRAIN,
         &cx, &cz)) {
     worldGenerateColumnTerrain(cx, cz);
@@ -1574,14 +1591,17 @@ void stepWorldStreaming(int pcx, int pcz, u32 terrain_budget,
    * carve into one callback.
    */
   stage_did_one = FALSE;
-  while ((!stage_did_one || !streamWorkExpired()) &&
+  while (((worldStreamStageGuaranteed(STREAM_STAGE_DEEPEN) && !stage_did_one) ||
+        !streamWorkExpired()) &&
       nearestShallowColumn(pcx, pcz, &cx, &cz)) {
     worldDeepenColumn(cx, cz);
     stage_did_one = TRUE;
   }
 
   stage_did_one = FALSE;
-  while (decorate_budget > 0 && (!stage_did_one || !streamWorkExpired()) &&
+  while (decorate_budget > 0 &&
+      ((worldStreamStageGuaranteed(STREAM_STAGE_STRUCTURES) &&
+        !stage_did_one) || !streamWorkExpired()) &&
       nearestColumnNeeding(pcx, pcz, STREAM_STRUCTURE_RADIUS,
         COLUMN_STRUCTURED,
         &cx, &cz)) {
@@ -1619,7 +1639,9 @@ void stepWorldStreaming(int pcx, int pcz, u32 terrain_budget,
   }
 
   stage_did_one = FALSE;
-  while (decorate_budget > 0 && (!stage_did_one || !streamWorkExpired()) &&
+  while (decorate_budget > 0 &&
+      ((worldStreamStageGuaranteed(STREAM_STAGE_TREES) && !stage_did_one) ||
+        !streamWorkExpired()) &&
       nearestColumnNeeding(pcx, pcz, STREAM_TREE_RADIUS, COLUMN_DECORATED,
         &cx, &cz)) {
     stage_did_one = TRUE;
