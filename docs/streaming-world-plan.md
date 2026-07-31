@@ -602,7 +602,7 @@ throughput**. This does not pay for itself alone — the current fixed world
 cannot absorb the memory. It only works together with task 5's LOD, which is
 why they land as a pair.
 
-## Task 5 — Two-ring residency with LOD — in-window LOD and the single arena done; the wide window remains
+## Task 5 — Two-ring residency with LOD — **done**
 
 **Deferred underground generation — done.**  The sprint "bonk" was terrain
 generation losing the race: at radius 12 a chunk crossing bills ~25 fresh
@@ -677,35 +677,82 @@ the patcher), menu↔game and preview↔preview transitions (generation
 staging), the A row on the single arena, C now showing allocated block
 count, and whether the edge wait is gone.
 
-The LOD split and per-column format landed with task 4 above.  What remains
-is the actual view-distance increase, and the RAM math forces an order:
+The order the RAM math forced, for the record: single arena first (reclaim
+the megabyte), then the window widening that spends it, then retuning the
+budgets, culling extent and visible caps on hardware.  All three are above.
+The original sketch aimed at radius 13 and ~104 blocks; hardware said radius
+12 was choppy, and the shipped ring is 10.
 
-1. **Single mesh arena with a free-list allocator and incremental
-   relocation-defrag** replaces the double-arena compaction scheme.  With
-   `pendingGfx == 0` guaranteed each callback, one column per frame can be
-   relocated to close a hole and its start pointer swapped atomically — no
-   second arena needed.  Reclaims ~1 MiB.
-2. **Widen the window 16 → 32** (the slot math needs a power of two; 20 or
-   24 would put a modulo in blockGet's hot path).  Costs ~768 KiB of block
-   storage plus enlarged per-slot tables — affordable only after step 1.
-   Streaming radii become terrain 15 / waystones 14 / decorated+mesh 13:
-   view distance ~104 blocks, 2.4× today, with the far ring all shell.
-3. Budgets, culling extents (`CULL_SPAN`), `tree_at_root` span, and the
-   visible-column caps then need retuning on hardware.
+## What landed after task 5
 
-- Block ring: generous disc, cheap, covers physics and turning.
-- Mesh disc: sized to view distance; far columns use the **surface-shell path
-  that already exists** (`building_surface_mesh` in `graphics.c`), cutting
-  ~170 quads/column to ~20.
-- Mesh arena becomes an LRU cache with eviction rather than a whole-world
-  snapshot. The main design fork is **fixed-size column slots** (O(1)
-  eviction, no fragmentation, wastes space on sparse columns) versus keeping
-  the bump arena and leaning on the existing incremental compaction. Decide
-  this before writing code.
+The streaming arc is finished, and the work since has been gameplay built on
+top of it plus two performance/correctness faults that the new surface area
+exposed.  Recorded here because each one is a trap the streaming design
+makes easy to fall into again.
 
-Rough target: near ring at full detail plus a far ring at surface LOD lands
-near **1.1 MiB for ~300 visible columns**, against 2.2 MiB for 196 today —
-roughly 2.4× the view distance at half the memory, and unbounded world size.
+**Structures, details, and the edit journal.**  Three subsystems that all
+exist because a streamed world cannot store what it has not generated:
+
+- *Structures* (`world.c`) — hamlets and ruins on a coarse 64×64 macrocell
+  grid, hashed from the cell coordinate exactly like trees and ores, with a
+  small plan cache.  A cell has at most one structure and its plan is a pure
+  function of the cell, so no structure map is stored and no oversized
+  resident margin is needed.  They advance the column state machine's middle
+  stage, which is why `COLUMN_WAYSTONED` is now `COLUMN_STRUCTURED`.
+- *Details* (`details.c`) — torches, stairs, doors and windows.  The packed
+  world has exactly sixteen block IDs and no room for orientation or open/
+  closed state, so these keep sparse records and occupy their cell with
+  `CRAFTING_TABLE` as a proxy.  An old ID-10 cell with no record is still an
+  ordinary crafting table, which is what keeps existing saves readable.
+- *Edits* (`edits.c`) — a 2048-entry journal of player deviations, re-applied
+  when a column regenerates.  Terrain stays procedural; only deviations are
+  retained, so an unbounded world does not imply unbounded RDRAM.
+
+Both pools are re-applied in `worldAdvanceColumnDecoration` before a column
+reaches `COLUMN_DECORATED`, which is also the gate meshing waits on — that
+ordering is load-bearing, and the pool-scan fix below depends on it.
+
+**The pool scans that nearly killed the frame rate.**  `blockAt` gained a
+detail lookup, and `detailIsCustomAt` walked all 384 records with no early
+out — in every world, including the overwhelming majority that contain no
+details at all.  `blockAt` runs 24,448 times per column the mesher compiles:
+9.4 million pool iterations to build **one** column, roughly 0.4 s of pure
+loop on the VR4300, paid at world build, at streaming, and again on every
+place or break.  That is the "loading takes 10× longer" report.
+
+Two facts make the common answer free, and both are worth remembering the
+next time a pool is added: every live detail keeps its proxy ID in the
+terrain, so one inlined nibble read settles any cell that cannot carry a
+record; and records are handed out from the low end, so a high-water mark
+(`detail_scan_limit`, `world_edit_scan_limit`) bounds the walk instead of the
+ceiling.  Measured over 64 columns of an empty-detail world, 600,834,048
+iterations became 0.  The same treatment was applied to
+`worldApplyEditsToColumn`, `detailsEvictGeneratedColumn` (which runs on every
+window claim *and* release) and `drawDetailsForPlayer`.
+
+**Saving had been impossible since the world outgrew 64×64.**  `ffconf.h`
+sets `FF_USE_LFN` to 0, so FatFs has no long-name support: `create_name()`
+rejects any basename past eight characters or extension past three with
+`FR_INVALID_NAME`, before touching the card.  `world_112_1.m64` overran both
+limits, as `world_large_*` and `world_128_*` had before it — so `f_open`
+failed on every save, and `f_stat` failing the same way made every slot read
+as empty on the title screen.  Paths are now `mine64/w112_1.m64` and
+friends.  `initStorage` also records *which* of its four failure modes it
+hit (`storage_status`) and the title screen names it, because "no cart save
+device" cannot distinguish a missing flashcart from an exFAT card — and on
+hardware that distinction is the whole diagnosis.
+
+**Also landed:** zombies and spiders with telegraphed strikes and a sunrise
+retreat, budgeted five passive / three hostile inside the same fixed
+eight-mob pool; hunger; a first-person idle sway; and a collision fix — cells
+were computed with truncation toward zero, so negative-coordinate movement
+could produce a negative collision time and grow the remaining sweep horizon
+past one frame.  Floored grid coordinates, and collision progress can no
+longer go backward.
+
+**Loose end:** `useMobWeaponSpecial` and `mobWeaponSpecialCooldown` are
+implemented and their effect timers are simulated, but nothing calls them —
+the sword tier specials are unreachable until an input is bound.
 
 ## Task 6 — Per-chunk diff saves
 
@@ -723,16 +770,30 @@ purpose: the version gate in `loadGame()` is one dense boolean covering V1–V10
 and adding an interim V11 that task 6 immediately replaces is throwaway work
 against the one file where a mistake destroys player worlds. Do it once, here.
 
+**The detail and edit pools must land here too, and this is now urgent.**
+Placing a torch, a staircase, a door or a window is a shipped feature, and
+none of it survives a reload: `storage.c` references neither pool, so a
+detail cell comes back as the plain crafting table that proxies it in the
+terrain.  The edit journal is likewise in-memory only, which is tolerable
+while saves still write the whole fixed footprint (edits inside it are
+carried as blocks) and stops being tolerable the moment diff saves replace
+that.  Both pools are flat arrays of fixed-size POD records with an `active`
+flag — a version bump that appends them is mechanical; the ordering
+constraint is simply that they load *before* the first column decorates.
+
 ## Constraints to respect
 
-- **Audio build headroom is ~43 KiB** and shrinking (`tools/check_ram.py` warns
-  under 64 KiB and fails on overrun). NuSystem pins framebuffers and the audio
-  heap at fixed absolute addresses; the link must stay below them. Task 4/5
-  reclaiming mesh memory is what fixes this — until then, do not ship audio.
-- The 16×16 window currently wastes ~60 KiB on slots outside the 14×14 world.
-  That disappears once streaming uses the full window.
+- **The audio build does not currently fit** — it overruns NuSystem's audio
+  heap by ~20 KiB, so it needs roughly 384 KiB more than the non-audio build
+  has to spare (`tools/check_ram.py` fails the build on overrun). NuSystem
+  pins framebuffers and the audio heap at fixed absolute addresses; the link
+  must stay below them. A pooled (indirected) block window or post-diff-save
+  trimming is what buys it back. Until then, do not ship audio.
 - Never busy-wait on the graphics thread; gate on `pendingGfx` instead.
 - Always `gDPPipeSync` before reconfiguring the RDP.
+- **Do not add an unbounded pool walk to anything `blockAt` or `blockGet` can
+  reach.** See the pool-scan fault above: the mesher's inner loop turns a
+  384-iteration scan into hundreds of millions per world build.
 
 ## Known loose end
 
