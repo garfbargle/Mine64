@@ -14,9 +14,27 @@
 
 TreeRecord trees[MAX_TREES];
 
-/* This small table makes trunk lookup constant time.  It is derived data and
-   is never written to save files. */
-static u8 tree_at_root[MAX_X * MAX_Z];
+/*
+ * This small table makes trunk lookup constant time.  It is derived data and
+ * is never written to save files, so it is free to be keyed however suits the
+ * world -- which matters, because keying it by absolute block position was
+ * only ever safe while the world had a fixed size.  `x * MAX_Z + z` runs off
+ * the end of the table the moment x passes MAX_X: at x = 255 the index is
+ * 28815 against 12544 entries, a silent 16 KiB out-of-bounds write into
+ * whatever BSS follows.  On hardware that surfaces as corruption or a lockup
+ * a long way from the cause.
+ *
+ * The residency window spans 128 blocks on each axis and a tree only matters
+ * while it is inside that window, so wrapping into a 128x128 table is bounded
+ * for any coordinate and still collision-free for every tree that can exist
+ * at one time.
+ */
+#define TREE_ROOT_SPAN (WINDOW_COLUMNS * CHUNK_SIZE)
+#define TREE_ROOT_INDEX(x, z) \
+  ((((u32) (x)) & (TREE_ROOT_SPAN - 1)) * TREE_ROOT_SPAN + \
+   (((u32) (z)) & (TREE_ROOT_SPAN - 1)))
+
+static u8 tree_at_root[TREE_ROOT_SPAN * TREE_ROOT_SPAN];
 
 static u8 leafBitSet(TreeRecord *tree, u8 bit) {
   return (tree->leaf_mask[bit >> 3] & (1 << (bit & 7))) != 0;
@@ -31,14 +49,14 @@ static void setLeafBit(TreeRecord *tree, u8 bit, u8 value) {
   }
 }
 
-static u8 treeIndexAtRoot(u8 x, u8 z) {
-  u8 index = tree_at_root[x * MAX_Z + z];
+static u8 treeIndexAtRoot(int x, int z) {
+  u8 index = tree_at_root[TREE_ROOT_INDEX(x, z)];
   return index == 0 ? TREE_NONE : index - 1;
 }
 
 static void retireTree(u8 index) {
   TreeRecord *tree = &trees[index];
-  tree_at_root[tree->x * MAX_Z + tree->z] = 0;
+  tree_at_root[TREE_ROOT_INDEX(tree->x, tree->z)] = 0;
   tree->base_y = TREE_INACTIVE_Y;
   tree->state = TREE_STATE_STANDING;
 }
@@ -51,7 +69,7 @@ void initTrees() {
     trees[i].base_y = TREE_INACTIVE_Y;
     trees[i].state = TREE_STATE_STANDING;
   }
-  for (root = 0; root < MAX_X * MAX_Z; root++) {
+  for (root = 0; root < TREE_ROOT_SPAN * TREE_ROOT_SPAN; root++) {
     tree_at_root[root] = 0;
   }
 }
@@ -89,7 +107,7 @@ u8 createTree(u8 x, u8 z, u8 base_y, u8 height) {
       tree->trunk_mask |= 1 << part;
     }
   }
-  tree_at_root[x * MAX_Z + z] = i + 1;
+  tree_at_root[TREE_ROOT_INDEX(x, z)] = i + 1;
   return i;
 }
 
@@ -449,7 +467,8 @@ u8 rebuildTreeLookup() {
   u8 i;
   u32 table_index;
 
-  for (table_index = 0; table_index < MAX_X * MAX_Z; table_index++) {
+  for (table_index = 0; table_index < TREE_ROOT_SPAN * TREE_ROOT_SPAN;
+      table_index++) {
     tree_at_root[table_index] = 0;
   }
   for (i = 0; i < MAX_TREES; i++) {
@@ -466,7 +485,7 @@ u8 rebuildTreeLookup() {
         (tree->leaf_mask[TREE_LEAF_MASK_BYTES - 1] & 0xF0)) {
       return FALSE;
     }
-    root = tree->x * MAX_Z + tree->z;
+    root = TREE_ROOT_INDEX(tree->x, tree->z);
     if (tree_at_root[root] != 0) {
       return FALSE;
     }
