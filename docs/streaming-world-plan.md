@@ -129,7 +129,128 @@ world to chunk-column-major, so a *newly generated* world can differ from what
 earlier code produced for the same seed, in the rare case of two features
 within two blocks of each other. Saves carry blocks, so nothing existing moves.
 
-Remaining: the residency loop itself, then origin rebasing.
+**Increment 3 — coordinate safety — done.** `tree_at_root` was indexed
+`x * MAX_Z + z` into 12544 entries with a `u8` x: at x=255 that is index 28815,
+a silent 16 KiB out-of-bounds write. Rekeyed to a window-relative 128×128
+table. `player->target_x/z` and `spawnDroppedItem` widened to `int`; the
+targeting raycast no longer has the world edge in its loop condition and
+refuses to target unstreamed terrain. Bounds checks in player/camera/mob/item
+code replaced by residency — `BLOCK_IS_SOLID(BLOCK_NOT_RESIDENT)` is TRUE, so
+unloaded terrain already walls the player off. Tree leaf offsets now computed
+in wrapping `u8`, which is correct across a 256-block wrap where widening to
+`int` first is not, and keeps `TreeRecordV5` at its asserted 20 bytes.
+`treesEvictColumn` hooked to slot rebinding so the 96-record pool is not
+exhausted by walking.
+
+**Increment 4 — the residency loop — done.** `stepWorldStreaming` keeps two
+discs around the player: terrain at radius 7, decoration and meshing at 6. The
+terrain disc is wider on purpose — that is the `neighboursReached` invariant.
+Radius 7 spans 15 columns, the most a 16-slot window holds without two live
+columns aliasing one slot. Nearest-first, so ground under the player fills
+before the fringe.
+
+Everything that walked a fixed extent had to follow: frustum culling is now
+centred on the player (`CULL_SPAN`, `point_sides` indexed relative to the span
+base, not absolute chunk), `drawTextured` walks slots, and compaction walks
+slots rebuilding only resident `COLUMN_DECORATED` columns. `makeDisplayListsAt`
+takes `int` and marks the west/north seam with a mask rather than a modulo,
+since a negative coordinate's remainder is negative.
+
+Two traps closed on the way: `windowClaimColumn` calls
+`graphicsInvalidateColumnSlot` on rebind, or the outgoing column's mesh keeps
+drawing at the outgoing column's position; and `worldMarkFixedExtentBuilt`
+declares a loaded world complete, or streaming reads the save's columns as
+`COLUMN_EMPTY` and regenerates fresh terrain over it.
+
+**Saving is guarded while streaming.** `saveGame` still writes the whole
+`0..MAX_X` extent, and columns the player has walked away from are not
+resident, so `blockGet` would return `BLOCK_NOT_RESIDENT` and pack 0xF garbage
+over the save. Both the D-pad handler and `saveGame` itself now refuse via
+`worldFixedExtentResident()`, and the player sees "Too far from spawn to
+save" rather than a corrupted world. Because `releaseColumnsOutsideRing`
+evicts eagerly, the whole extent is only resident with the player within a
+chunk or so of world centre — saving away from spawn stays impossible until
+task 6 lands diff saves. `rebuildTreeLookup` also still rejects any record
+with `tree->x >= MAX_X`. Task 6.
+
+**Increment 5 — everything else that chained the world to the fixed extent —
+done, not yet hardware-verified.** Streaming could claim columns anywhere,
+but almost every consumer of those columns still assumed `0..111` (or
+`0..255`, or non-negative):
+
+- *The greedy mesher computed world coordinates in `u8`* — `r = cr *
+  CHUNK_SIZE + br` wrapped at 256 and went wrong immediately for negative
+  chunks — and clamped every x/z plane at `max_r = MAX_X - 1`, so columns
+  past the old edge compiled empty or not at all. `blockAt` and the plane
+  walk are `int` now and the edge clamp is gone; a plane against unloaded
+  terrain stays empty because `BLOCK_NOT_RESIDENT` occludes the resident
+  side's face and is barred (in `creationStep`) from growing a face of its
+  own, so fixed-world output is unchanged.
+- *`boxObstructed` treated `x >= MAX_X` as solid* — a literal invisible wall
+  at the old world edge that made all of the above unreachable. Residency is
+  the wall now (`BLOCK_IS_SOLID(BLOCK_NOT_RESIDENT)` is TRUE); only `y < 0`
+  keeps a hard floor.
+- *`noise2d`/`noise3d` truncated instead of flooring*, so fractional negative
+  inputs extrapolated the smoothstep outside 0..1 — terrain west/north of the
+  sample offsets came out as banded garbage. The 3D cave fields already
+  sampled negative coordinates through this bug inside the fixed world, so
+  flooring changes cave layout for a given seed; saves carry blocks, nothing
+  existing moves. `oreInCell` similarly floor-divides its cells now.
+- *Decoration clamped to the fixed extent*: `spawnTree`'s canopy loops
+  clamped to `0..MAX`, `exposedGrassY` rejected coordinates outside it (so no
+  waystones outside), `tryPlantTree` refused. All residency-driven now —
+  outside the fixed world, trees were generating as bare trunks with no
+  leaves and no waystones at all.
+- *Block edits truncated coordinates*: `placeBlock`/`breakBlock` took `u8`
+  x/z, and `breaking_x/z` in `Player` were `u8`, so past block 255 (or west
+  of 0) mining reset every frame and edits went to the wrong column (in
+  practice, silently nowhere, because the wrapped key never matched).
+  `placeBlock` checks residency explicitly so a refused placement no longer
+  consumes the item.
+- *The target wireframe indexed `b_models` with `%`*, whose negative
+  remainder walks out of the array west/north of origin; shift-and-mask now.
+
+**Increment 6 — origin rebasing — done, not yet hardware-verified.**
+As decided above, coordinates stay absolute; `render_origin_x/z` (blocks,
+chunk-aligned, with premultiplied float mirrors) is subtracted only where a
+world position becomes an `Mtx`: `cam_translate`, `steve_translate`,
+`mob_translate`, `dropped_item_translate`, `falling_tree_translate`, and
+`c_models`. `graphicsSetRenderOrigin` rewrites every resident slot's chunk
+matrices in one pass; `callbackGfx` re-centres on the player when they wander
+`REBASE_DISTANCE` (256) blocks from the origin, inside the no-task-in-flight
+branch and before `draw()` — which is sufficient, because `draw()` rebuilds
+the camera and entity matrices every frame, so no frame can mix origins.
+`beginWorldGeneration` and `loadGame` reset the origin to zero. Falling
+trees needed one extra step: tree records store wrapping `u8` coordinates,
+so `unwrapTreeCoord` recovers the absolute position relative to the viewer
+(always valid — a live tree is inside the window, within 128 blocks).
+
+`tools/gentest` gained a far-lands section that drives `stepWorldStreaming`
+itself: it walks the ring from spawn to chunk (−52, 63) — negative x beyond
+every noise offset, z past the fixed extent — and asserts the walked-to ring
+fully decorates, that the same terrain arrives with no walk history, that
+eviction and return regenerate it byte-identically, and that far trees carry
+canopies (the exact thing the old clamps broke).
+
+**Hardware checklist for the next session** (nothing above has been on the
+console yet; the streaming diagnostics HUD `R/D/Q/A/C/T` is still drawn in
+single player):
+
+1. Walk east past block 112 — terrain must appear ahead, mesh and all, and
+   the old edge must not stop you.
+2. Walk west past block 0 — negative chunks are the highest-risk path
+   (mesher, wireframe indexing, noise all changed there).
+3. Keep walking one axis past ~768 blocks so at least one rebase fires —
+   watch for a one-frame world jump (would mean a mixed-origin frame) and
+   for any Mtx overflow garbling as ±512 approaches without a rebase.
+4. Mine, place, and fell a tree far out (coordinates past 256 and negative).
+5. D-pad save far out must show "Too far from spawn to save" and keep
+   working (not "Save failed"); walk home, save, reload, verify the world.
+6. Watch `T` (unstreamed columns in the ring) while sprinting: it should
+   burst on chunk crossings and drain; a stuck non-zero `T` with the player
+   against invisible walls means streaming is not keeping up.
+
+Remaining: the LOD/throughput work in tasks 4 and 5, and task 6.
 
 ### Original notes
 

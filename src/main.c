@@ -43,6 +43,25 @@
 #define WORLD_GEN_COLUMNS_PER_STEP 1
 #define WORLD_MESH_COLUMNS_PER_STEP 3
 
+/*
+ * Streaming budgets, also per graphics callback.  Terrain is the expensive
+ * half -- a whole 8x32x8 column of noise -- so it gets one column a frame, the
+ * same rate world creation runs at.  Decoration is cheap by comparison, and
+ * some of its attempts are spent on columns still waiting for a neighbour, so
+ * it gets more.
+ */
+#define STREAM_TERRAIN_PER_STEP 3
+#define STREAM_DECORATE_PER_STEP 4
+
+/*
+ * How far (in blocks, per axis) the player may wander from the render origin
+ * before it is re-centred on them.  Far enough that rebasing is rare, near
+ * enough that origin-relative translations -- terrain out to the mesh ring,
+ * entities near the players -- stay well inside the s15.16 Mtx integer range:
+ * 256 + a ~64-block ring is ~20500 units of a possible 32767.
+ */
+#define REBASE_DISTANCE 256
+
 static u8 world_job_stage = WORLD_JOB_IDLE;
 static u8 world_job_kind;
 /* Which slot the running preview is for.  The cursor can move again while a
@@ -177,6 +196,39 @@ void callbackGfx(int pendingGfx) {
       beginWorldJob();
     } else if (worldPreviewBuildRequested() && previewSelectionSettled()) {
       beginWorldJob();
+    } else if (current_screen == GAME || current_screen == INVENTORY) {
+      int player_block_x = floor(players[0].position.x / BLOCK_SIZE);
+      int player_block_z = floor(players[0].position.z / BLOCK_SIZE);
+
+      /*
+       * Re-centre the render origin before it drifts out of the s15.16 Mtx
+       * range (~+-512 blocks).  This rewrites every resident column's chunk
+       * matrices, so like everything below it may only run with no task in
+       * flight and before this callback's draw().  The camera and entity
+       * matrices need no special handling: draw() rebuilds all of them every
+       * frame, so the frame drawn below is consistently in the new origin.
+       */
+      if (player_block_x - render_origin_x > REBASE_DISTANCE ||
+          render_origin_x - player_block_x > REBASE_DISTANCE ||
+          player_block_z - render_origin_z > REBASE_DISTANCE ||
+          render_origin_z - player_block_z > REBASE_DISTANCE) {
+        graphicsSetRenderOrigin(player_block_x & ~CHUNK_MASK,
+          player_block_z & ~CHUNK_MASK);
+      }
+
+      /*
+       * Keep the world loaded around the player.  This rebinds window slots
+       * and rewrites the display list pointers the terrain draw walks, so it
+       * belongs here, inside the no-task-in-flight branch and ahead of the
+       * draw below -- never beside it.
+       *
+       * The menu's orbiting preview deliberately does not stream: it shows one
+       * fixed world from outside, and pulling columns around under it would
+       * only fight the camera.
+       */
+      stepWorldStreaming(player_block_x >> CHUNK_SHIFT,
+        player_block_z >> CHUNK_SHIFT,
+        STREAM_TERRAIN_PER_STEP, STREAM_DECORATE_PER_STEP);
     }
     /* A mesh arena can only be recycled when no submitted task can still
        reference its display lists. */

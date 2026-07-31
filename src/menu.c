@@ -8,6 +8,7 @@
 enum Screen current_screen = MENU;
 u32 save_message_cooldown = 0;
 u8 save_failed_message = 0;
+u8 save_far_message = 0;
 /* Set when a mesh rebuild ran out of arena space, so the world on screen is
    missing columns.  Latched rather than timed: it stays true until a later
    build fits, because the terrain stays wrong for exactly that long. */
@@ -81,6 +82,12 @@ static char *saved_text[] = {
 
 static char *save_failed_text[] = {
   "Save failed"
+};
+
+/* Saving still writes the whole original extent (see saveGame), so it only
+   works while all of it is loaded -- near the world's spawn area. */
+static char *save_far_text[] = {
+  "Too far from spawn to save"
 };
 
 static char *stick_turns_on_text[] = {
@@ -429,6 +436,9 @@ void drawMenu() {
       if (save_failed_message > 0) {
         text = save_failed_text;
         n_lines = sizeof(save_failed_text) / sizeof(char *);
+      } else if (save_far_message > 0) {
+        text = save_far_text;
+        n_lines = sizeof(save_far_text) / sizeof(char *);
       } else if (save_message_cooldown > 0) {
         text = saved_text;
         n_lines = sizeof(saved_text) / sizeof(char *);
@@ -451,8 +461,8 @@ void drawMenu() {
   }
 
   if (current_screen == GAME && save_message_cooldown == 0 &&
-      save_failed_message == 0 && player_joined_message == 0 &&
-      stick_turns_message == 0) {
+      save_failed_message == 0 && save_far_message == 0 &&
+      player_joined_message == 0 && stick_turns_message == 0) {
     return;
   }
 
@@ -461,6 +471,9 @@ void drawMenu() {
   }
   if (save_failed_message > 0) {
     save_failed_message--;
+  }
+  if (save_far_message > 0) {
+    save_far_message--;
   }
   if (player_joined_message > 0) {
     player_joined_message--;

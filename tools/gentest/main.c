@@ -57,10 +57,11 @@ static void snapshot(u8 *out) {
   }
 }
 
-static unsigned long countDifferences(const u8 *a, const u8 *b) {
+static unsigned long countDifferencesIn(const u8 *a, const u8 *b,
+    unsigned long bytes) {
   unsigned long i, differences = 0;
 
-  for (i = 0; i < SNAPSHOT_BYTES; i++) {
+  for (i = 0; i < bytes; i++) {
     if (a[i] != b[i]) {
       differences++;
     }
@@ -68,16 +69,24 @@ static unsigned long countDifferences(const u8 *a, const u8 *b) {
   return differences;
 }
 
-static void expectIdentical(const char *name, const u8 *a, const u8 *b) {
-  unsigned long differences = countDifferences(a, b);
+static unsigned long countDifferences(const u8 *a, const u8 *b) {
+  return countDifferencesIn(a, b, SNAPSHOT_BYTES);
+}
+
+static void expectIdenticalIn(const char *name, const u8 *a, const u8 *b,
+    unsigned long bytes) {
+  unsigned long differences = countDifferencesIn(a, b, bytes);
 
   if (differences == 0) {
     printf("  PASS  %s\n", name);
     return;
   }
-  printf("  FAIL  %s: %lu of %lu blocks differ\n", name, differences,
-    SNAPSHOT_BYTES);
+  printf("  FAIL  %s: %lu of %lu blocks differ\n", name, differences, bytes);
   failures++;
+}
+
+static void expectIdentical(const char *name, const u8 *a, const u8 *b) {
+  expectIdenticalIn(name, a, b, SNAPSHOT_BYTES);
 }
 
 static void expectDifferent(const char *name, const u8 *a, const u8 *b) {
@@ -225,6 +234,167 @@ static void checkSlotMapping(void) {
   windowReset();
 }
 
+/*
+ * Far lands: everything the fixed world never exercised at once.  Chunk
+ * (-52, 63) is around block (-416, 504) -- negative x beyond every noise
+ * sample offset, z well past the fixed extent -- so this walks the actual
+ * streaming loop out there and asserts the three properties an unbounded
+ * world rests on:
+ *
+ *   1. what terrain you find cannot depend on the walk that found it,
+ *   2. terrain evicted behind you regenerates byte-identical when you return,
+ *   3. decoration really happens out there -- trees root *and* keep their
+ *      canopies, which is exactly what the old 0..MAX clamps broke.
+ *
+ * Snapshots cover Chebyshev radius 4 around the centre: those columns'
+ * entire decoration neighbourhoods (radius 5) are inside the settled tree
+ * ring, so both builds must agree on every byte.
+ */
+#define FAR_CX (-52)
+#define FAR_CZ 63
+#define FAR_SEED 0xFA9C0FFEEULL
+#define FAR_RADIUS 4
+#define FAR_SPAN ((FAR_RADIUS * 2 + 1) * CHUNK_SIZE)
+#define FAR_SNAPSHOT_BYTES ((unsigned long) FAR_SPAN * FAR_SPAN * MAX_Y)
+
+/* The per-frame budgets the game itself streams with (main.c). */
+#define FAR_TERRAIN_BUDGET 3
+#define FAR_DECORATE_BUDGET 4
+
+static void settleStreaming(int pcx, int pcz) {
+  int i;
+
+  /* The terrain ring is 225 columns and each stage needs its own passes, so
+     give the loop far more frames than any settle can need. */
+  for (i = 0; i < 500; i++) {
+    stepWorldStreaming(pcx, pcz, FAR_TERRAIN_BUDGET, FAR_DECORATE_BUDGET);
+  }
+}
+
+/* One chunk of movement per "frame burst", the way a sprinting player crosses
+   boundaries with the streamer trickling along behind. */
+static void walkStreamingTo(int *cur_cx, int *cur_cz, int to_cx, int to_cz) {
+  while (*cur_cx != to_cx || *cur_cz != to_cz) {
+    int i;
+
+    if (*cur_cx != to_cx) {
+      *cur_cx += to_cx > *cur_cx ? 1 : -1;
+    }
+    if (*cur_cz != to_cz) {
+      *cur_cz += to_cz > *cur_cz ? 1 : -1;
+    }
+    for (i = 0; i < 8; i++) {
+      stepWorldStreaming(*cur_cx, *cur_cz, FAR_TERRAIN_BUDGET,
+        FAR_DECORATE_BUDGET);
+    }
+  }
+}
+
+static void snapshotFar(u8 *out) {
+  int x, z, y;
+  unsigned long i = 0;
+  int base_x = (FAR_CX - FAR_RADIUS) * CHUNK_SIZE;
+  int base_z = (FAR_CZ - FAR_RADIUS) * CHUNK_SIZE;
+
+  for (x = 0; x < FAR_SPAN; x++) {
+    for (z = 0; z < FAR_SPAN; z++) {
+      for (y = 0; y < MAX_Y; y++) {
+        out[i++] = blockGet(base_x + x, y, base_z + z);
+      }
+    }
+  }
+}
+
+static void expectFarRingDecorated(const char *name) {
+  int dx, dz, undecorated = 0;
+
+  for (dx = -STREAM_TREE_RADIUS; dx <= STREAM_TREE_RADIUS; dx++) {
+    for (dz = -STREAM_TREE_RADIUS; dz <= STREAM_TREE_RADIUS; dz++) {
+      if (worldColumnState(FAR_CX + dx, FAR_CZ + dz) != COLUMN_DECORATED) {
+        undecorated++;
+      }
+    }
+  }
+  if (undecorated == 0) {
+    printf("  PASS  %s\n", name);
+  } else {
+    printf("  FAIL  %s: %d columns not decorated\n", name, undecorated);
+    failures++;
+  }
+}
+
+static void checkFarLands(void) {
+  u8 *walked = malloc(FAR_SNAPSHOT_BYTES);
+  u8 *direct = malloc(FAR_SNAPSHOT_BYTES);
+  int cur_cx, cur_cz;
+  unsigned long i, trunks = 0, leaves = 0, not_resident = 0;
+
+  if (walked == 0 || direct == 0) {
+    printf("out of memory\n");
+    failures++;
+    return;
+  }
+
+  printf("\nFar lands (streaming to chunk %d,%d)\n", FAR_CX, FAR_CZ);
+
+  /* A fresh world at spawn, then the long walk out. */
+  gentestSetTime(FAR_SEED);
+  generateWorld(FAR_SEED, 64, 0);
+  cur_cx = CHUNKS_X / 2;
+  cur_cz = CHUNKS_Z / 2;
+  walkStreamingTo(&cur_cx, &cur_cz, FAR_CX, FAR_CZ);
+  settleStreaming(FAR_CX, FAR_CZ);
+  expectFarRingDecorated("the walked-to ring fully decorates");
+  snapshotFar(walked);
+
+  /* Same seed, no walk history: the ring lands straight on the far point. */
+  generateWorld(FAR_SEED, 64, 0);
+  settleStreaming(FAR_CX, FAR_CZ);
+  snapshotFar(direct);
+  expectIdenticalIn("far terrain does not depend on the walk that found it",
+    walked, direct, FAR_SNAPSHOT_BYTES);
+
+  /* Walk far enough away that every column of the patch is evicted, then
+     come back.  Clean columns carry no bytes; they must come back anyway. */
+  walkStreamingTo(&cur_cx, &cur_cz, FAR_CX + 3 * STREAM_TERRAIN_RADIUS,
+    FAR_CZ);
+  settleStreaming(cur_cx, cur_cz);
+  walkStreamingTo(&cur_cx, &cur_cz, FAR_CX, FAR_CZ);
+  settleStreaming(FAR_CX, FAR_CZ);
+  snapshotFar(direct);
+  expectIdenticalIn("evicted terrain regenerates identically on return",
+    walked, direct, FAR_SNAPSHOT_BYTES);
+
+  /* The decoration the fixed-extent clamps used to strip out here. */
+  for (i = 0; i < FAR_SNAPSHOT_BYTES; i++) {
+    if (walked[i] == WOOD) {
+      trunks++;
+    } else if (walked[i] == LEAVES) {
+      leaves++;
+    } else if (walked[i] == BLOCK_NOT_RESIDENT) {
+      not_resident++;
+    }
+  }
+  if (trunks > 0 && leaves > trunks) {
+    printf("  PASS  far trees decorate with canopies "
+      "(%lu trunk, %lu leaf blocks)\n", trunks, leaves);
+  } else {
+    printf("  FAIL  far decoration missing: %lu trunk, %lu leaf blocks\n",
+      trunks, leaves);
+    failures++;
+  }
+  if (not_resident == 0) {
+    printf("  PASS  the settled snapshot region is fully resident\n");
+  } else {
+    printf("  FAIL  %lu blocks in the snapshot were not resident\n",
+      not_resident);
+    failures++;
+  }
+
+  free(walked);
+  free(direct);
+}
+
 int main(void) {
   u8 *base = malloc(SNAPSHOT_BYTES);
   u8 *other = malloc(SNAPSHOT_BYTES);
@@ -317,6 +487,8 @@ int main(void) {
 
   free(base);
   free(other);
+
+  checkFarLands();
 
   printf("\n%s\n", failures == 0 ? "all checks passed" : "CHECKS FAILED");
   return failures == 0 ? 0 : 1;

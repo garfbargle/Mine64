@@ -417,9 +417,9 @@ static void dropInventorySelection(Player *player, u8 drop_stack) {
   ItemStack *source = player->carried_item.count > 0 ?
     &player->carried_item : &player->inventory[player->inventory_cursor];
   u8 count;
-  u8 x;
+  int x;
   u8 y;
-  u8 z;
+  int z;
 
   if (source->count == 0) {
     return;
@@ -668,7 +668,11 @@ static u8 boxObstructed(Vector3 pos, int override_axis, int override_block) {
   for (x = min_block.x; x <= max_block.x; x++) {
     for (y = min_block.y; y <= max_block.y; y++) {
       for (z = min_block.z; z <= max_block.z; z++) {
-        if (x < 0 || y < 0 || z < 0 || x >= MAX_X || z >= MAX_Z ||
+        /* No horizontal wall at the old fixed extent: unloaded terrain reads
+           BLOCK_NOT_RESIDENT, which BLOCK_IS_SOLID treats as solid, so the
+           edge of the streamed world already stops the player.  Below bedrock
+           stays solid; above the world stays open. */
+        if (y < 0 ||
             (y < MAX_Y && BLOCK_IS_SOLID(blockGet(x, y, z)))) {
           return TRUE;
         }
@@ -788,14 +792,18 @@ static u8 blockUsesInventory(u8 block) {
   return block >= FIRST_PLACEABLE_BLOCK && block <= BLOCK_TYPE_COUNT;
 }
 
-static void placeBlock(u8 player_num, u8 x, u8 y, u8 z) {
+static void placeBlock(u8 player_num, int x, int y, int z) {
   int bx, by, bz, i;
   Vector3i min_block, max_block;
   Player *player = &players[player_num];
   ItemStack *held_stack = &player->inventory[
     INVENTORY_HOTBAR_START + player->selected_hotbar_slot];
 
-  if (x >= MAX_X || y >= MAX_Y || z >= MAX_Z) {
+  /* Residency is the horizontal bound now.  It has to be checked, not left to
+     blockSet's silent no-op, or placing into an unstreamed column at the edge
+     of the world would still consume the item from the hotbar. */
+  if (y < 0 || y >= MAX_Y ||
+      !windowColumnResident(x >> CHUNK_SHIFT, z >> CHUNK_SHIFT)) {
     return;
   }
 
@@ -807,9 +815,10 @@ static void placeBlock(u8 player_num, u8 x, u8 y, u8 z) {
        * A planted tree writes its trunk and five-by-five canopy in one step.
        * Mark every touched horizontal coordinate so canopies spanning chunk
        * boundaries become visible as soon as their columns are rebuilt.
+       * makeDisplayListsAt is residency-guarded, so no clamping is needed.
        */
-      for (bx = max((int) x - 2, 0); bx < min((int) x + 3, MAX_X); bx++) {
-        for (bz = max((int) z - 2, 0); bz < min((int) z + 3, MAX_Z); bz++) {
+      for (bx = x - 2; bx < x + 3; bx++) {
+        for (bz = z - 2; bz < z + 3; bz++) {
           makeDisplayListsAt(bx, bz);
         }
       }
@@ -885,7 +894,7 @@ static u8 dropForBlock(u8 block, u8 tool, u8 *item) {
   return TRUE;
 }
 
-static u8 breakBlock(u8 x, u8 y, u8 z, u8 tool) {
+static u8 breakBlock(int x, int y, int z, u8 tool) {
   u8 block = blockGet(x, y, z);
   u8 item;
 
@@ -1610,7 +1619,13 @@ void updatePlayers() {
     for (i = 0; i < active_player_count; i++) {
       if (cont_data[i].trigger &
           (U_JPAD | D_JPAD | L_JPAD | R_JPAD)) {
-        if (saveGame()) {
+        if (!worldFixedExtentResident()) {
+          /* The save format still writes the whole original extent, and part
+             of it has been evicted by streaming.  Refusing is temporary state
+             -- walking back reloads the extent -- so unlike a write failure
+             it must not permanently disable saving. */
+          save_far_message = 120;
+        } else if (saveGame()) {
           save_message_cooldown = 60;
         } else {
           saving_available = FALSE;

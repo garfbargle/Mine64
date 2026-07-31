@@ -42,3 +42,24 @@ void treeAddLeaf(u8 tree_index, u8 x, u8 y, u8 z) {
 void setDayCycleWorldTicks(u32 ticks) {
   (void) ticks;
 }
+
+/* Display lists do not exist here, so residency bookkeeping has nothing to
+   invalidate -- the blocks this harness compares are unaffected. */
+void graphicsInvalidateColumnSlot(unsigned int slot) {
+  (void) slot;
+}
+
+void graphicsMarkColumnDirty(int cx, int cz) {
+  (void) cx; (void) cz;
+}
+
+/* Nothing is ever compiled here, so no column is ever waiting on geometry. */
+unsigned char graphicsColumnNeedsMesh(int cx, int cz) {
+  (void) cx; (void) cz;
+  return 0;
+}
+
+/* The render origin only affects matrices, which this harness has none of. */
+void graphicsSetRenderOrigin(int block_x, int block_z) {
+  (void) block_x; (void) block_z;
+}

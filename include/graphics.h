@@ -35,7 +35,30 @@ u8 stepWorldMeshBuild(u16 columns);
 u8 worldMeshBuildActive();
 u8 worldMeshBuildProgress();
 u8 worldMeshBuildComplete();
-void makeDisplayListsAt(u8 x, u8 z);
+void makeDisplayListsAt(int x, int z);
+/*
+ * The render origin.  Block coordinates stay absolute everywhere; the origin
+ * is subtracted only at the moment a world position becomes an Mtx, because
+ * the N64 matrix format is s15.16 -- with BLOCK_SIZE 64 a translation loses
+ * sub-block precision past about +-512 blocks of the origin.  Everything that
+ * writes a world-space guTranslate must subtract these.
+ */
+extern int render_origin_x;   /* block coordinates, chunk aligned */
+extern int render_origin_z;
+extern float render_origin_units_x;  /* the same, premultiplied by BLOCK_SIZE */
+extern float render_origin_units_z;
+/* Move the origin and rewrite every resident column's chunk matrices to it.
+   Only call with no graphics task in flight and before that callback's
+   draw(): a frame must never mix origins between its camera and its terrain,
+   and draw() rebuilds the camera and entity matrices itself each frame. */
+void graphicsSetRenderOrigin(int block_x, int block_z);
+/* Stop drawing a slot and drop any pending rebuild for it.  Called when the
+   residency window rebinds the slot to a different column. */
+void graphicsInvalidateColumnSlot(u32 slot);
+/* Queue a resident column for mesh compilation. */
+void graphicsMarkColumnDirty(int cx, int cz);
+/* TRUE for a resident column with no compiled geometry behind it. */
+u8 graphicsColumnNeedsMesh(int cx, int cz);
 void drawWorld();
 void drawWireframes();
 void drawHUD();

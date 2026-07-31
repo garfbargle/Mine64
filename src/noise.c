@@ -44,6 +44,22 @@ static int noise3(int x, int y, int z)
     return hashAt(tmp + x);
 }
 
+/*
+ * Cell lookup must floor, not truncate toward zero.  A cast rounds -0.3 to 0,
+ * which hands smooth_inter a fraction of -0.3 -- outside the 0..1 the curve is
+ * shaped for, so it *extrapolates*, and terrain sampled at fractional negative
+ * coordinates turns into bands of garbage.  The fixed world never noticed
+ * because its sample offsets kept 2D inputs positive; a streaming world walks
+ * straight past them.  (The 3D cave fields already sampled negative x/z
+ * through this bug, so flooring changes cave layout for a given seed.  Saves
+ * carry blocks, so nothing existing moves.)
+ */
+static int floorToInt(float value)
+{
+    int truncated = (int) value;
+    return value < (float) truncated ? truncated - 1 : truncated;
+}
+
 float lin_inter(float x, float y, float s)
 {
     return x + s * (y-x);
@@ -56,8 +72,8 @@ float smooth_inter(float x, float y, float s)
 
 float noise2d(float x, float y)
 {
-    int x_int = x;
-    int y_int = y;
+    int x_int = floorToInt(x);
+    int y_int = floorToInt(y);
     float x_frac = x - x_int;
     float y_frac = y - y_int;
     int s = noise2(x_int, y_int);
@@ -92,9 +108,9 @@ float perlin2d(float x, float y, float freq, int depth)
 
 static float noise3d(float x, float y, float z)
 {
-    int x_int = x;
-    int y_int = y;
-    int z_int = z;
+    int x_int = floorToInt(x);
+    int y_int = floorToInt(y);
+    int z_int = floorToInt(z);
     float x_frac = x - x_int;
     float y_frac = y - y_int;
     float z_frac = z - z_int;

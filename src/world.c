@@ -4,6 +4,7 @@
 #include "noise.h"
 #include "math.h"
 #include "trees.h"
+#include "graphics.h"
 
 u8 window_blocks[WINDOW_SLOTS][COLUMN_BLOCK_BYTES];
 u32 window_keys[WINDOW_SLOTS];
@@ -43,6 +44,37 @@ void windowClaimFixedExtent() {
   }
 }
 
+void worldMarkFixedExtentBuilt() {
+  int cx, cz;
+
+  /*
+   * A loaded world arrives as finished blocks with no generation history, so
+   * every resident column has to be declared complete.  Without this the
+   * states left by claiming the slots read as EMPTY, and streaming would
+   * cheerfully generate fresh terrain straight over the save.
+   */
+  for (cx = 0; cx < CHUNKS_X; cx++) {
+    for (cz = 0; cz < CHUNKS_Z; cz++) {
+      if (windowColumnResident(cx, cz)) {
+        column_state[WINDOW_SLOT(cx, cz)] = COLUMN_DECORATED;
+      }
+    }
+  }
+}
+
+u8 worldFixedExtentResident() {
+  int cx, cz;
+
+  for (cx = 0; cx < CHUNKS_X; cx++) {
+    for (cz = 0; cz < CHUNKS_Z; cz++) {
+      if (!windowColumnResident(cx, cz)) {
+        return FALSE;
+      }
+    }
+  }
+  return TRUE;
+}
+
 u8 *windowClaimColumn(int cx, int cz) {
   u32 slot = WINDOW_SLOT(cx, cz);
   u32 key = COLUMN_KEY(cx, cz);
@@ -56,6 +88,7 @@ u8 *windowClaimColumn(int cx, int cz) {
          records are a small fixed pool, so a walk that never released them
          would exhaust it and quietly stop growing trees. */
       treesEvictColumn(windowSlotChunkX(slot), windowSlotChunkZ(slot));
+      graphicsInvalidateColumnSlot(slot);
     }
     window_keys[slot] = key;
     column_state[slot] = COLUMN_EMPTY;
@@ -109,14 +142,22 @@ static u32 coordinateHash(int x, int y, int z, u32 salt) {
   return value ^ (value >> 16);
 }
 
+/* C's / and % truncate toward zero, so below zero a "cell" straddling the
+   origin would be twice as wide and its in-cell offsets negative.  Flooring
+   keeps the grid uniform on both sides; positive coordinates are untouched. */
+static int floorDiv(int value, int divisor) {
+  int quotient = value / divisor;
+  return value % divisor < 0 ? quotient - 1 : quotient;
+}
+
 /*
  * One hash per small cell yields compact, recognizable ore veins without
  * paying for another octave-noise sample for every underground block.
  */
 static u8 oreInCell(int x, int y, int z, int cell_size, u8 rarity) {
-  int cell_x = x / cell_size;
-  int cell_y = y / cell_size;
-  int cell_z = z / cell_size;
+  int cell_x = floorDiv(x, cell_size);
+  int cell_y = floorDiv(y, cell_size);
+  int cell_z = floorDiv(z, cell_size);
   u32 hash = coordinateHash(cell_x, cell_y, cell_z, HASH_SALT_ORE);
   int center_x;
   int center_y;
@@ -128,9 +169,9 @@ static u8 oreInCell(int x, int y, int z, int cell_size, u8 rarity) {
   center_x = (hash >> 8) % cell_size;
   center_y = (hash >> 13) % cell_size;
   center_z = (hash >> 18) % cell_size;
-  return absolute((float) (x % cell_size - center_x)) +
-    absolute((float) (y % cell_size - center_y)) +
-    absolute((float) (z % cell_size - center_z)) <= 1.f;
+  return absolute((float) (x - cell_x * cell_size - center_x)) +
+    absolute((float) (y - cell_y * cell_size - center_y)) +
+    absolute((float) (z - cell_z * cell_size - center_z)) <= 1.f;
 }
 
 static int terrainHeight(int x, int z) {
@@ -298,8 +339,12 @@ static void spawnTree(int tx, int ty, int tz) {
 
   generateLeafHeights(leaf_heightmap, tx, tz);
 
-  for (x = max(tx - 2, 0); x < min(tx + 3, MAX_X); x++) {
-    for (z = max(tz - 2, 0); z < min(tz + 3, MAX_Z); z++) {
+  /* No world-edge clamp: past the canopy's reach the only boundary that
+     matters is residency, and blockGet/blockSet already answer for that -- a
+     non-resident sample reads BLOCK_NOT_RESIDENT (never AIR), so no leaf is
+     placed there, exactly as the old 0..MAX clamp left the fixed world. */
+  for (x = tx - 2; x < tx + 3; x++) {
+    for (z = tz - 2; z < tz + 3; z++) {
       for (y = ty + height - 1; y < min(ty + height + leaf_heightmap[(x - tx + 2) * 5 + (z - tz + 2)] + 1, MAX_Y); y++) {
         if (!blockGet(x, y, z)) {
           blockSet(x, y, z, LEAVES);
@@ -328,7 +373,10 @@ void trySpawnTree(int tx, int tz) {
 u8 tryPlantTree(int x, int y, int z) {
   u8 scan_y;
 
-  if (x >= MAX_X || y == 0 || y >= MAX_Y || z >= MAX_Z ||
+  /* Residency is the only horizontal bound: a non-resident column reads
+     BLOCK_NOT_RESIDENT, which is neither AIR nor GRASS, so planting outside
+     the streamed world already fails here. */
+  if (y == 0 || y >= MAX_Y ||
       blockGet(x, y, z) != AIR ||
       blockGet(x, y - 1, z) != GRASS) {
     return FALSE;
@@ -345,9 +393,9 @@ u8 tryPlantTree(int x, int y, int z) {
 static int exposedGrassY(int x, int z) {
   int y;
 
-  if (x < 0 || z < 0 || x >= MAX_X || z >= MAX_Z) {
-    return -1;
-  }
+  /* A non-resident column reads BLOCK_NOT_RESIDENT -- neither GRASS nor AIR
+     -- so the scan below already answers -1 for ground outside the streamed
+     world, which is what keeps a waystone from running off the loaded edge. */
   for (y = MAX_Y - 2; y >= 0; y--) {
     if (blockGet(x, y, z) == GRASS && blockGet(x, y + 1, z) == AIR) {
       return y;
@@ -572,6 +620,201 @@ u8 worldAdvanceColumnDecoration(int cx, int cz) {
   return column_state[slot] == COLUMN_DECORATED;
 }
 
+/*
+ * Residency is two discs, not one, and not a frustum cone.  Walking exposes a
+ * single new row of columns, but turning around invalidates a whole cone at
+ * once, so anything shaped by facing stalls every time the player spins.
+ *
+ * The terrain disc is deliberately one column wider than the decorated disc,
+ * which is the invariant neighboursReached depends on: a column only decorates
+ * when everything it might write a canopy into is already claimed.
+ *
+ * Radius 7 spans 15 columns, which is the most a 16-slot window can hold
+ * without two live columns aliasing onto one slot.
+ */
+/*
+ * Square rings, not Euclidean discs.  Both are omnidirectional -- the thing
+ * that matters, since spinning must not invalidate residency -- but the margin
+ * each stage needs behaves very differently.  A column at Euclidean distance d
+ * has neighbours out at d + sqrt(2), and with three chained stages that margin
+ * is paid twice, collapsing a radius 7 terrain ring into a radius 3 decorated
+ * ring: 31 columns, a patch of ground barely wider than the player.
+ *
+ * Under Chebyshev distance a neighbour is simply one ring further out, so each
+ * stage costs exactly one column of radius and the decorated ring stays wide.
+ */
+static int chebyshev(int dx, int dz) {
+  int ax = dx < 0 ? -dx : dx;
+  int az = dz < 0 ? -dz : dz;
+
+  return ax > az ? ax : az;
+}
+
+/* Nearest-first, so the ground under the player fills before the fringe. */
+static u8 nearestColumnNeeding(int pcx, int pcz, int radius, u8 state,
+    int *out_cx, int *out_cz) {
+  int dx, dz;
+  int best_distance = 0;
+  u8 found = FALSE;
+
+  for (dx = -radius; dx <= radius; dx++) {
+    for (dz = -radius; dz <= radius; dz++) {
+      int distance = dx * dx + dz * dz;
+      int cx, cz;
+
+      /* Ring membership is Chebyshev; the Euclidean distance is kept only to
+         rank candidates, so the ground under the player still fills first. */
+      if (chebyshev(dx, dz) > radius) {
+        continue;
+      }
+      cx = pcx + dx;
+      cz = pcz + dz;
+      if (worldColumnState(cx, cz) >= state) {
+        continue;
+      }
+      if (!found || distance < best_distance) {
+        best_distance = distance;
+        *out_cx = cx;
+        *out_cz = cz;
+        found = TRUE;
+      }
+    }
+  }
+  return found;
+}
+
+/*
+ * Let go of everything outside the ring.
+ *
+ * Without this a column is only ever displaced when some other column needs
+ * its exact slot, so walking away from spawn leaves the whole starting extent
+ * resident and finished on top of everything newly streamed in.  Compaction
+ * rebuilds every resident finished column, so that set growing without bound
+ * means the mesh arena crosses its reserve, compacts, comes out just as full,
+ * and compacts again -- and while it is compacting no newly streamed column
+ * gets compiled at all.  Terrain exists and is walkable, and none of it is
+ * ever drawn.
+ *
+ * Released columns cost nothing to lose: generation is a pure function of the
+ * coordinate and the seed, so an unmodified column comes back identical.
+ *
+ * The radius has to match the terrain ring exactly rather than allow a margin
+ * of hysteresis -- a disc of radius 7 spans 15 columns, and anything wider
+ * would put two live columns on one slot.
+ */
+static void releaseColumnsOutsideRing(int pcx, int pcz) {
+  u32 slot;
+
+  for (slot = 0; slot < WINDOW_SLOTS; slot++) {
+    int cx, cz, dx, dz;
+
+    if (!windowSlotResident(slot)) {
+      continue;
+    }
+    cx = windowSlotChunkX(slot);
+    cz = windowSlotChunkZ(slot);
+    dx = cx - pcx;
+    dz = cz - pcz;
+    if (chebyshev(dx, dz) <= STREAM_TERRAIN_RADIUS) {
+      continue;
+    }
+    treesEvictColumn(cx, cz);
+    graphicsInvalidateColumnSlot(slot);
+    window_keys[slot] = COLUMN_KEY_EMPTY;
+    column_state[slot] = COLUMN_EMPTY;
+  }
+}
+
+/*
+ * A neighbour that has not been compiled yet will read this column correctly
+ * whenever it does get compiled, so only an already-finished one needs
+ * redoing.  Marking all four unconditionally re-meshes most columns several
+ * times over as the ring advances, and every rebuild orphans its predecessor
+ * in the arena, which is what drags compaction forward.
+ */
+static void remeshDecoratedNeighbour(int cx, int cz) {
+  if (worldColumnState(cx, cz) == COLUMN_DECORATED) {
+    graphicsMarkColumnDirty(cx, cz);
+  }
+}
+
+void stepWorldStreaming(int pcx, int pcz, u32 terrain_budget,
+    u32 decorate_budget) {
+  int cx = pcx, cz = pcz;
+
+  releaseColumnsOutsideRing(pcx, pcz);
+
+  while (terrain_budget > 0 &&
+      nearestColumnNeeding(pcx, pcz, STREAM_TERRAIN_RADIUS, COLUMN_TERRAIN,
+        &cx, &cz)) {
+    worldGenerateColumnTerrain(cx, cz);
+    terrain_budget--;
+  }
+
+  /*
+   * Stage-major, exactly like the three whole-world passes: every column in
+   * reach is waystoned before any column grows a tree.  Advancing one column
+   * as far as it can go instead would spend the whole budget retrying the
+   * nearest column, which cannot finish until neighbours that never get a turn
+   * catch up.
+   */
+  while (decorate_budget > 0 &&
+      nearestColumnNeeding(pcx, pcz, STREAM_WAYSTONE_RADIUS, COLUMN_WAYSTONED,
+        &cx, &cz)) {
+    worldAdvanceColumnDecoration(cx, cz);
+    decorate_budget--;
+  }
+
+  /*
+   * Anything finished inside the mesh ring must actually have geometry.
+   *
+   * A dirty mark is only set at the moment a column *becomes* decorated, so a
+   * column that lost its mesh afterwards is never asked for again: it is
+   * already decorated, no stage transition remains to re-queue it, and it
+   * stays invisible permanently.  That happens whenever a compaction runs
+   * short before reaching it, and whenever a column leaves the mesh ring and
+   * later comes back.  Standing at the edge of it, nothing appears however
+   * long you wait -- the queue is empty and the arena has room, because
+   * nothing knows the column is missing.
+   */
+  {
+    int dx, dz;
+
+    for (dx = -STREAM_TREE_RADIUS; dx <= STREAM_TREE_RADIUS; dx++) {
+      for (dz = -STREAM_TREE_RADIUS; dz <= STREAM_TREE_RADIUS; dz++) {
+        int rx = pcx + dx;
+        int rz = pcz + dz;
+
+        if (worldColumnState(rx, rz) == COLUMN_DECORATED &&
+            graphicsColumnNeedsMesh(rx, rz)) {
+          graphicsMarkColumnDirty(rx, rz);
+        }
+      }
+    }
+  }
+
+  while (decorate_budget > 0 &&
+      nearestColumnNeeding(pcx, pcz, STREAM_TREE_RADIUS, COLUMN_DECORATED,
+        &cx, &cz)) {
+    if (worldAdvanceColumnDecoration(cx, cz)) {
+      /* Finished columns are the only ones worth compiling; a half-decorated
+         one would have to be thrown away when its trees arrive. */
+      graphicsMarkColumnDirty(cx, cz);
+      /*
+       * The neighbours have to be recompiled too.  Meshing reads one block
+       * across each horizontal boundary to decide whether a face is hidden,
+       * and when those neighbours were built this column did not exist yet --
+       * they culled against BLOCK_NOT_RESIDENT and left a hole at the seam.
+       */
+      remeshDecoratedNeighbour(cx - 1, cz);
+      remeshDecoratedNeighbour(cx + 1, cz);
+      remeshDecoratedNeighbour(cx, cz - 1);
+      remeshDecoratedNeighbour(cx, cz + 1);
+    }
+    decorate_budget--;
+  }
+}
+
 void beginWorldGeneration() {
   u32 slot;
 
@@ -581,6 +824,10 @@ void beginWorldGeneration() {
   seed = world_seed;
   setDayCycleWorldTicks(DAY_CYCLE_START_TICK);
   initTrees();
+  /* A new world starts at spawn, near coordinate zero.  Without this, a menu
+     visited after a long walk would build the scenic preview against an
+     origin hundreds of blocks away and overflow its matrices. */
+  graphicsSetRenderOrigin(0, 0);
 
   windowClaimFixedExtent();
   for (slot = 0; slot < WINDOW_SLOTS; slot++) {

@@ -177,6 +177,25 @@ u8 stepWorldGeneration(u32 columns);
 #define COLUMN_DECORATED 3
 
 u8 worldColumnState(int cx, int cz);
+/* Declare the loaded extent fully built, so streaming does not regenerate over
+   a world that came from a save rather than from the generator. */
+void worldMarkFixedExtentBuilt();
+/* TRUE while every column of the fixed save extent is resident.  The save
+   format still writes the whole 0..MAX extent from live block data, so an
+   evicted column would be written as garbage; until per-chunk diff saves land
+   (task 6), saving is refused whenever this is FALSE. */
+u8 worldFixedExtentResident();
+/*
+ * Advance residency around a point, in chunk coordinates.  Claims and builds
+ * the columns that should be loaded and lets the ones that should not fall out
+ * of the window.
+ */
+#define STREAM_TERRAIN_RADIUS 7
+#define STREAM_WAYSTONE_RADIUS 6
+#define STREAM_TREE_RADIUS 5
+
+void stepWorldStreaming(int pcx, int pcz, u32 terrain_budget,
+  u32 decorate_budget);
 void worldGenerateColumnTerrain(int cx, int cz);
 /* FALSE while the column still needs a neighbour to catch up. */
 u8 worldAdvanceColumnDecoration(int cx, int cz);

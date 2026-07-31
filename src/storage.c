@@ -576,6 +576,18 @@ u8 saveGame() {
   if (!saving_available || game_file_num < 1 || game_file_num > 3) {
     return FALSE;
   }
+  /*
+   * The v10 format writes the whole fixed extent out of live block data.
+   * Once streaming has evicted any of it, blockGet answers BLOCK_NOT_RESIDENT
+   * there and this loop would pack 0xF garbage over the player's world --
+   * silent corruption discovered only on the next load.  Refuse instead.
+   * (The caller checks this first and shows its own message; this is the
+   * backstop for any other path.)  Task 6 replaces the format with per-chunk
+   * diffs and removes the restriction.
+   */
+  if (!worldFixedExtentResident()) {
+    return FALSE;
+  }
   slot = game_file_num - 1;
   had_previous_file = files_present[slot];
   result = f_open(&file, temporary_file_names[slot],
@@ -948,8 +960,12 @@ void loadGame() {
   }
 
   /* Every column of the saved extent needs a slot before blockSet will take
-     the incoming terrain. */
+     the incoming terrain, and each one counts as fully built once it has.
+     Saved worlds live entirely inside the fixed extent, so the render origin
+     returns to zero with them. */
   windowClaimFixedExtent();
+  worldMarkFixedExtentBuilt();
+  graphicsSetRenderOrigin(0, 0);
   for (block_x = 0; read_ok && block_x < MAX_X; block_x++) {
     for (block_y = 0; read_ok && block_y < MAX_Y; block_y++) {
       for (block_z = 0; read_ok && block_z < MAX_Z; block_z += 2) {

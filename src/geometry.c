@@ -91,7 +91,13 @@ void appendQuad(QuadList *list, u8 bs, u8 bt, u8 width, u8 height, u8 block) {
   list->n++;
 }
 
-u8 blockAt(u8 r, u8 s, u8 t, u8 axes) {
+/*
+ * World coordinates, not block-local ones: r, s and t are int because two of
+ * them are world x/z in some permutation, and a streaming world walks both
+ * negative and past 255 -- the u8 these used to be silently wrapped there,
+ * which meshed every column outside blocks 0..255 as empty.
+ */
+u8 blockAt(int r, int s, int t, u8 axes) {
   if (axes == ZXY) {
     return blockGet(s, t, r);
   } else if (axes == XZY) {
@@ -142,8 +148,9 @@ void droppingFinish(Scanline *scan, QuadList *quads, u8 bs) {
   }
 }
 
-void droppingPhase(Scanline *scan1, Scanline *scan2, QuadList *quads1, QuadList *quads2, u8 ct, u8 bs, u8 r, u8 s, u8 axes) {
-  u8 bt, t;
+void droppingPhase(Scanline *scan1, Scanline *scan2, QuadList *quads1, QuadList *quads2, int ct, u8 bs, int r, int s, u8 axes) {
+  u8 bt;
+  int t;
   u8 block, block_f;
 
   scan1->fi = 0;
@@ -185,7 +192,14 @@ void creationStep(Scanline *scan, u8 bs, u8 bt, u8 block, u8 cover_block, u8 spl
   if (scan->fi < scan->n_fronts && bt >= scan->fronts[scan->fi].lower) {
     endFront(scan, bt, bs);
   } else {
-    if (block && !blocksOcclude(block, cover_block)) {
+    /* A non-resident sample is not a block: it must never grow a face of its
+       own, or the edge of loaded terrain sprouts phantom walls whose 0xFF
+       type truncates to whatever block the 4-bit quad field makes of it.
+       (Its role as an occluder is handled in blocksOcclude's caller: faces
+       *against* unloaded terrain stay hidden until the neighbour arrives and
+       the column is remeshed.) */
+    if (block && block != BLOCK_NOT_RESIDENT &&
+        !blocksOcclude(block, cover_block)) {
       if (block != scan->block) {
         endFront(scan, bt, bs);
       }
@@ -207,8 +221,9 @@ void creationFinish(Scanline *scan, u8 bs) {
   }
 }
 
-void creationPhase(Scanline *scan1, Scanline *scan2, u8 ct, u8 bs, u8 r, u8 s, u8 axes, u8 split_grass) {
-  u8 bt, t;
+void creationPhase(Scanline *scan1, Scanline *scan2, int ct, u8 bs, int r, int s, u8 axes, u8 split_grass) {
+  u8 bt;
+  int t;
   u8 block, block_f;
 
   scan1->fi = 0;
@@ -350,8 +365,9 @@ static void splitTjunctions(QuadList *front, QuadList *back) {
   }
 }
 
-void makeChunkPlaneQuads(DualQuadList *axis_quads, u8 cr, u8 cs, u8 ct, u8 br, u8 max_r, u8 axes, u8 split_grass) {
-  u8 bs, r, s, i;
+void makeChunkPlaneQuads(DualQuadList *axis_quads, int cr, int cs, int ct, u8 br, u8 axes, u8 split_grass) {
+  u8 bs, i;
+  int r, s;
 
   Scanline scan1, scan2;
   QuadList quads1, quads2;
@@ -363,43 +379,45 @@ void makeChunkPlaneQuads(DualQuadList *axis_quads, u8 cr, u8 cs, u8 ct, u8 br, u
 
   both_quads = &(axis_quads)[br];
 
+  /*
+   * No world-edge clamp any more: the world has no x/z edge.  The fixed
+   * extent's boundary planes come out identical anyway -- the sample across
+   * the boundary reads BLOCK_NOT_RESIDENT, which occludes the resident side's
+   * face and is barred from growing one of its own, so the plane stays empty
+   * exactly as the old `r >= max_r` skip left it.
+   */
   r = cr * CHUNK_SIZE + br;
-  if (r >= max_r) {
-    both_quads->n_front = 0;
-    both_quads->n_back = 0;
-  } else {
-    scan1.n_fronts = 0;
-    scan2.n_fronts = 0;
-    
-    for (bs = 0; bs < CHUNK_SIZE; bs++) {
-      s = cs * CHUNK_SIZE + bs;
-      droppingPhase(&scan1, &scan2, &quads1, &quads2, ct, bs, r, s, axes);
-      creationPhase(&scan1, &scan2, ct, bs, r, s, axes, split_grass);
-    }
+  scan1.n_fronts = 0;
+  scan2.n_fronts = 0;
 
-    appendAll(&scan1, &quads1);
-    appendAll(&scan2, &quads2);
-    splitTjunctions(&quads1, &quads2);
-
-    both_quads->n_front = quads1.n;
-    both_quads->n_back = quads2.n;
-
-    for (i = 0; i < quads1.n; i++) {
-      both_quads->quads[i] = quads1.quads[i];
-    }
-
-    for (i = 0; i < quads2.n &&
-        both_quads->n_front + i < CHUNK_SIZE * CHUNK_SIZE; i++) {
-      both_quads->quads[both_quads->n_front + i] = quads2.quads[i];
-    }
-    both_quads->n_back = i;
+  for (bs = 0; bs < CHUNK_SIZE; bs++) {
+    s = cs * CHUNK_SIZE + bs;
+    droppingPhase(&scan1, &scan2, &quads1, &quads2, ct, bs, r, s, axes);
+    creationPhase(&scan1, &scan2, ct, bs, r, s, axes, split_grass);
   }
+
+  appendAll(&scan1, &quads1);
+  appendAll(&scan2, &quads2);
+  splitTjunctions(&quads1, &quads2);
+
+  both_quads->n_front = quads1.n;
+  both_quads->n_back = quads2.n;
+
+  for (i = 0; i < quads1.n; i++) {
+    both_quads->quads[i] = quads1.quads[i];
+  }
+
+  for (i = 0; i < quads2.n &&
+      both_quads->n_front + i < CHUNK_SIZE * CHUNK_SIZE; i++) {
+    both_quads->quads[both_quads->n_front + i] = quads2.quads[i];
+  }
+  both_quads->n_back = i;
 }
 
-void makeChunkAxisQuads(DualQuadList *axis_quads, u8 cr, u8 cs, u8 ct, u8 max_r, u8 axes, u8 split_grass) {
+void makeChunkAxisQuads(DualQuadList *axis_quads, int cr, int cs, int ct, u8 axes, u8 split_grass) {
   u8 br;
   for (br = 0; br < CHUNK_SIZE; br++) {
-    makeChunkPlaneQuads(axis_quads, cr, cs, ct, br, max_r, axes, split_grass);
+    makeChunkPlaneQuads(axis_quads, cr, cs, ct, br, axes, split_grass);
   }
 }
 
@@ -407,13 +425,13 @@ void initGeometry() {
   /* Columns are generated just-in-time by makeColumnGeometry(). */
 }
 
-void makeColumnGeometry(u8 cx, u8 cz) {
+void makeColumnGeometry(int cx, int cz) {
   u8 cy;
   ChunkQuads *cq;
   for (cy = 0; cy < CHUNKS_Y; cy++) {
     cq = &column_quads[cy];
-    makeChunkAxisQuads(cq->x_quads, cx, cz, cy, MAX_X - 1, XZY, TRUE);
-    makeChunkAxisQuads(cq->y_quads, cy, cx, cz, MAX_Y,     YXZ, FALSE);
-    makeChunkAxisQuads(cq->z_quads, cz, cx, cy, MAX_Z - 1, ZXY, TRUE);
+    makeChunkAxisQuads(cq->x_quads, cx, cz, cy, XZY, TRUE);
+    makeChunkAxisQuads(cq->y_quads, cy, cx, cz, YXZ, FALSE);
+    makeChunkAxisQuads(cq->z_quads, cz, cx, cy, ZXY, TRUE);
   }
 }

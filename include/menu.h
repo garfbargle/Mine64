@@ -18,6 +18,7 @@ enum Screen {
 extern enum Screen current_screen;
 extern u32 save_message_cooldown;
 extern u8 save_failed_message;
+extern u8 save_far_message;
 extern u8 world_incomplete_message;
 extern u8 player_joined_message;
 extern u8 player_joined_number;

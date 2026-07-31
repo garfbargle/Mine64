@@ -61,7 +61,14 @@ static Mtx cam_rotate2[NUM_DISPLAY_LISTS][MAX_PLAYERS];
 static Mtx cam_rotate[NUM_DISPLAY_LISTS][MAX_PLAYERS];
 static Mtx cam_translate[NUM_DISPLAY_LISTS][MAX_PLAYERS];
 static Line2D cull_lines[NUM_CULL_LINES];
-static u8 point_sides[CHUNKS_X + 1][CHUNKS_Z + 1];
+/*
+ * Culling follows the player rather than a fixed world.  The span is the
+ * residency ring's 15 columns, plus one for the far corners of the last
+ * column.  Indexed relative to the span's base, not by absolute chunk.
+ */
+#define CULL_RADIUS 7
+#define CULL_SPAN (2 * CULL_RADIUS + 1)
+static u8 point_sides[CULL_SPAN + 1][CULL_SPAN + 1];
 static Player loading_camera;
 static u32 loading_preview_frame;
 
@@ -186,7 +193,9 @@ static void makeVerticalCullLine(Line2D *line, float side, Player *player,
 
 static void updateVisibleColumnsFor(u8 player_num, Player *player,
     Vector3 camera_position, u8 view_mode) {
-  u8 cx, cz, i;
+  int cx, cz;
+  u8 i;
+  int base_cx, base_cz;
   u8 s1, s2, s3, s4;
   u16 slot;
   /* A full window is 256 columns, which does not fit the u8 this used to be. */
@@ -208,11 +217,26 @@ static void updateVisibleColumnsFor(u8 player_num, Player *player,
   makeVerticalCullLine(&cull_lines[2], -1, player, camera_position, fov_y);
   makeVerticalCullLine(&cull_lines[3], 1, player, camera_position, fov_y);
 
-  for (cx = 0; cx <= CHUNKS_X; cx++) {
-    for (cz = 0; cz <= CHUNKS_Z; cz++) {
+  /* The scenic orbit views one fixed world from outside it, so it keeps
+     covering that world; gameplay follows the player. */
+  if (view_mode == CAMERA_VIEW_LOADING) {
+    base_cx = CHUNKS_X / 2 - CULL_RADIUS;
+    base_cz = CHUNKS_Z / 2 - CULL_RADIUS;
+  } else {
+    base_cx = floor(player->position.x / (BLOCK_SIZE * CHUNK_SIZE)) -
+      CULL_RADIUS;
+    base_cz = floor(player->position.z / (BLOCK_SIZE * CHUNK_SIZE)) -
+      CULL_RADIUS;
+  }
+
+  for (cx = 0; cx <= CULL_SPAN; cx++) {
+    for (cz = 0; cz <= CULL_SPAN; cz++) {
+      int corner_x = (base_cx + cx) * CHUNK_SIZE;
+      int corner_z = (base_cz + cz) * CHUNK_SIZE;
       point_sides[cx][cz] = 0;
       for (i = 0; i < NUM_CULL_LINES; i++) {
-        if (cx * CHUNK_SIZE * cull_lines[i].a + cz * CHUNK_SIZE * cull_lines[i].b + cull_lines[i].c <= 0) {
+        if (corner_x * cull_lines[i].a + corner_z * cull_lines[i].b +
+            cull_lines[i].c <= 0) {
           point_sides[cx][cz] += 1 << i;
         }
       }
@@ -226,8 +250,10 @@ static void updateVisibleColumnsFor(u8 player_num, Player *player,
     visible_columns[player_num][slot] = FALSE;
   }
 
-  for (cx = 0; cx < CHUNKS_X; cx++) {
-    for (cz = 0; cz < CHUNKS_Z; cz++) {
+  for (cx = 0; cx < CULL_SPAN; cx++) {
+    for (cz = 0; cz < CULL_SPAN; cz++) {
+      int world_cx = base_cx + cx;
+      int world_cz = base_cz + cz;
       u8 visible;
 
       s1 = point_sides[cx][cz];
@@ -237,19 +263,19 @@ static void updateVisibleColumnsFor(u8 player_num, Player *player,
       visible = (s1 | s2 | s3 | s4) == ALL_ACCEPT;
 
       /* A radius limit prevents multiplayer cameras from turning co-op into
-         a worst-case multi-RSP transform. The world is fourteen chunks wide. */
-      dx = cx * CHUNK_SIZE + CHUNK_SIZE / 2 -
+         a worst-case multi-RSP transform. */
+      dx = world_cx * CHUNK_SIZE + CHUNK_SIZE / 2 -
         camera_position.x / BLOCK_SIZE;
-      dz = cz * CHUNK_SIZE + CHUNK_SIZE / 2 -
+      dz = world_cz * CHUNK_SIZE + CHUNK_SIZE / 2 -
         camera_position.z / BLOCK_SIZE;
       if (multiplayer && dx * dx + dz * dz > 1600) {
         visible = FALSE;
       }
       /* An unbound slot has no mesh behind it. */
-      if (!windowColumnResident(cx, cz)) {
+      if (!windowColumnResident(world_cx, world_cz)) {
         visible = FALSE;
       }
-      visible_columns[player_num][WINDOW_SLOT(cx, cz)] = visible;
+      visible_columns[player_num][WINDOW_SLOT(world_cx, world_cz)] = visible;
       if (visible) visible_count++;
     }
   }
@@ -294,8 +320,12 @@ static void updateCameraMatricesFor(u8 player_num, Player *player,
     show_avatar && player->camera_mode == CAMERA_THIRD_PERSON &&
     dot(camera_offset, camera_offset) >=
       THIRD_PERSON_AVATAR_MIN_DISTANCE * THIRD_PERSON_AVATAR_MIN_DISTANCE;
-  guTranslate(&cam_translate[dl_no][player_num], -camera_position.x,
-    -camera_position.y, -camera_position.z);
+  /* Origin-relative, like every world-space Mtx: the camera and the terrain
+     must subtract the same origin or the world jumps when it rebases. */
+  guTranslate(&cam_translate[dl_no][player_num],
+    -(camera_position.x - render_origin_units_x),
+    -camera_position.y,
+    -(camera_position.z - render_origin_units_z));
   guRotateRPY(&cam_rotate[dl_no][player_num], 0.0, -player->yaw, 0.0);
   guRotateRPY(&cam_rotate2[dl_no][player_num], -player->pitch, 0.0, 0.0);
 }

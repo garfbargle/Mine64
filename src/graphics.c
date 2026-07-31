@@ -45,7 +45,19 @@ Gfx frame_display_lists[NUM_DISPLAY_LISTS][FRAME_DISPLAY_LIST_SIZE];
  * gameplay-time RSP wait and full-world rebuild when append-only updates ran
  * low on space. */
 #define NUM_COLUMN_ARENAS 2
-#define MESH_REBUILD_BUDGET 1
+/*
+ * One column a frame was sized for the occasional block edit in a world that
+ * never moved.  Streaming queues a whole row of columns every time the player
+ * crosses a chunk boundary, and at one a frame that is most of a second of
+ * terrain trailing behind them.
+ *
+ * Compaction gets its own, larger budget because it blocks everything: while
+ * it runs no queued column is compiled at all, so the player sees new terrain
+ * simply stop arriving until it finishes.  Most of the slots it walks are not
+ * finished columns and cost nothing to skip.
+ */
+#define MESH_REBUILD_BUDGET 3
+#define MESH_COMPACTION_BUDGET 6
 #define MESH_COMPACTION_RESERVE (DISPLAY_LIST_SIZE / 10)
 /* Headroom the terrain passes leave for the HUD, menu text and trailing sync. */
 #define FRAME_COMMAND_TAIL_RESERVE 2048
@@ -85,10 +97,23 @@ static int building_column_x;
 static int building_column_z;
 static u8 compacting_columns;
 static u16 compaction_column_cursor;
+/* Set when a compaction pass could not fit every resident column. */
+static u8 compaction_ran_short;
+/* Whether a slot currently has compiled geometry.  A column can be finished
+   generating yet have no mesh -- it drifted out of the mesh ring and was
+   dropped by a compaction, or its slot was invalidated. */
+static u8 column_meshed[WINDOW_SLOTS];
 
 static Gfx empty_column_display_list[] = {
   gsSPEndDisplayList()
 };
+
+/* See graphics.h.  Zero until the player first wanders far from spawn; a
+   fixed world never rebases at all. */
+int render_origin_x;
+int render_origin_z;
+float render_origin_units_x;
+float render_origin_units_z;
 
 #define BLOCKS_PER_CHUNK (CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE)
 
@@ -750,6 +775,9 @@ static void resetColumnArenaBuild(u8 arena) {
       column_starts[arena][texture][slot] = empty_column_display_list;
     }
   }
+  for (slot = 0; slot < WINDOW_SLOTS; slot++) {
+    column_meshed[slot] = FALSE;
+  }
 }
 
 static void makeQuadDL(u32 slot, u8 cy, u8 bx, u8 by, u8 bz, u8 width,
@@ -892,12 +920,13 @@ static u8 makeColumnDisplayLists(int cx, int cz) {
 
   /* The slot may have held a different column until now, so its translations
      are rewritten here rather than prebaked once for a fixed world.  Doing it
-     alongside the mesh keeps the two from ever describing different places. */
+     alongside the mesh keeps the two from ever describing different places.
+     Origin-relative: the absolute coordinate no longer fits an s15.16 Mtx. */
   for (cy = 0; cy < CHUNKS_Y; cy++) {
     guTranslate(&c_models[slot][cy],
-      (float) cx * CHUNK_SIZE * BLOCK_SIZE,
+      (float) (cx * CHUNK_SIZE - render_origin_x) * BLOCK_SIZE,
       (float) cy * CHUNK_SIZE * BLOCK_SIZE,
-      (float) cz * CHUNK_SIZE * BLOCK_SIZE);
+      (float) (cz * CHUNK_SIZE - render_origin_z) * BLOCK_SIZE);
   }
 
   /* Do not publish any new pointer until every material in the replacement
@@ -939,6 +968,7 @@ static u8 makeColumnDisplayLists(int cx, int cz) {
   for (texture = 0; texture < NUM_TEXTURES; texture++) {
     column_starts[column_build_arena][texture][slot] = new_starts[texture];
   }
+  column_meshed[slot] = TRUE;
   return TRUE;
 }
 
@@ -1061,6 +1091,69 @@ u8 makeGameWorldDisplayLists() {
   return buildAllColumns(FALSE);
 }
 
+void graphicsSetRenderOrigin(int block_x, int block_z) {
+  u32 slot;
+  u8 cy;
+
+  render_origin_x = block_x;
+  render_origin_z = block_z;
+  render_origin_units_x = (float) block_x * BLOCK_SIZE;
+  render_origin_units_z = (float) block_z * BLOCK_SIZE;
+
+  /*
+   * Every resident column's chunk matrices were written against the old
+   * origin, and they persist across frames -- unlike the camera and entity
+   * matrices, which are rewritten every frame and pick the new origin up on
+   * their own.  Rewrite them all here, in one pass, so no frame is ever built
+   * from a mixture.  256 slots of guTranslate is a bounded, occasional cost:
+   * the origin moves at most once per 256 blocks walked.
+   */
+  for (slot = 0; slot < WINDOW_SLOTS; slot++) {
+    int cx, cz;
+
+    if (!windowSlotResident(slot)) {
+      continue;
+    }
+    cx = windowSlotChunkX(slot);
+    cz = windowSlotChunkZ(slot);
+    for (cy = 0; cy < CHUNKS_Y; cy++) {
+      guTranslate(&c_models[slot][cy],
+        (float) (cx * CHUNK_SIZE - render_origin_x) * BLOCK_SIZE,
+        (float) cy * CHUNK_SIZE * BLOCK_SIZE,
+        (float) (cz * CHUNK_SIZE - render_origin_z) * BLOCK_SIZE);
+    }
+  }
+}
+
+void graphicsInvalidateColumnSlot(u32 slot) {
+  u8 arena, texture;
+
+  /*
+   * Both arenas still hold a mesh describing the column that just left, and
+   * c_models[slot] still translates to where it used to be.  Point the slot at
+   * the shared empty list so nothing draws until the incoming column has been
+   * compiled -- otherwise the old geometry renders at the old place, which
+   * reads as terrain smeared across the world.
+   *
+   * Only the pointers change; the display lists themselves are untouched, so
+   * a task already submitted keeps reading valid commands.
+   */
+  for (arena = 0; arena < NUM_COLUMN_ARENAS; arena++) {
+    for (texture = 0; texture < NUM_TEXTURES; texture++) {
+      column_starts[arena][texture][slot] = empty_column_display_list;
+    }
+  }
+  /* Any pending rebuild referred to the departed column. */
+  dirty_columns[slot] = FALSE;
+  column_meshed[slot] = FALSE;
+}
+
+void graphicsMarkColumnDirty(int cx, int cz) {
+  if (windowColumnResident(cx, cz)) {
+    dirty_columns[WINDOW_SLOT(cx, cz)] = TRUE;
+  }
+}
+
 static void markColumnDirty(int cx, int cz) {
   /* Only a resident column has anything to rebuild; an edit that reaches past
      the window has no mesh to invalidate. */
@@ -1069,18 +1162,21 @@ static void markColumnDirty(int cx, int cz) {
   }
 }
 
-void makeDisplayListsAt(u8 x, u8 z) {
-  int cx = x / CHUNK_SIZE;
-  int cz = z / CHUNK_SIZE;
+void makeDisplayListsAt(int x, int z) {
+  int cx = x >> CHUNK_SHIFT;
+  int cz = z >> CHUNK_SHIFT;
 
   /* Block edits are cheap to mark now.  A later graphics callback bakes a
      bounded amount of geometry, so mining and tree felling cannot monopolize
      a gameplay frame. */
   markColumnDirty(cx, cz);
-  if (x % CHUNK_SIZE == 0 && cx > 0) {
+  /* Mask, not modulo: a negative coordinate's remainder is negative, so the
+     seam with the column to the west would be missed.  The cx > 0 guards go
+     with it -- there is no column zero to stop at any more. */
+  if ((x & CHUNK_MASK) == 0) {
     markColumnDirty(cx - 1, cz);
   }
-  if (z % CHUNK_SIZE == 0 && cz > 0) {
+  if ((z & CHUNK_MASK) == 0) {
     markColumnDirty(cx, cz - 1);
   }
 }
@@ -1114,23 +1210,65 @@ static void startColumnCompaction(void) {
   resetColumnArenaBuild(active_column_arena ^ 1);
 }
 
+/*
+ * Only columns inside the mesh ring are worth arena space.  Without this bound
+ * a compaction rebuilds every column that has ever finished generating, which
+ * near spawn is the whole starting world on top of everything streamed since
+ * -- more than the arena holds, so the pass runs short every time and terrain
+ * updates never get a turn.
+ */
+static u8 columnInMeshRing(u32 slot) {
+  int pcx = floor(players[0].position.x / (BLOCK_SIZE * CHUNK_SIZE));
+  int pcz = floor(players[0].position.z / (BLOCK_SIZE * CHUNK_SIZE));
+  int dx = windowSlotChunkX(slot) - pcx;
+  int dz = windowSlotChunkZ(slot) - pcz;
+
+  if (dx < 0) dx = -dx;
+  if (dz < 0) dz = -dz;
+  return (dx > dz ? dx : dz) <= STREAM_TREE_RADIUS;
+}
+
+u8 graphicsColumnNeedsMesh(int cx, int cz) {
+  return windowColumnResident(cx, cz) && !column_meshed[WINDOW_SLOT(cx, cz)];
+}
+
 static void processColumnDisplayListUpdates(int can_reclaim_mesh_arena) {
   u8 budget;
 
   if (compacting_columns) {
-    for (budget = 0; budget < MESH_REBUILD_BUDGET &&
-        compaction_column_cursor < CHUNKS_X * CHUNKS_Z; budget++) {
-      u8 cx = compaction_column_cursor / CHUNKS_Z;
-      u8 cz = compaction_column_cursor % CHUNKS_Z;
-      if (!makeColumnDisplayLists(cx, cz)) {
-        /* Never expose a partially rebuilt arena. Rendering continues from
-           the complete active arena while a later safe pass can retry. */
-        compacting_columns = FALSE;
-        return;
+    for (budget = 0; budget < MESH_COMPACTION_BUDGET &&
+        compaction_column_cursor < WINDOW_SLOTS; budget++) {
+      u32 slot = compaction_column_cursor;
+      /* Walks slots, and rebuilds only the columns that are actually there and
+         finished.  resetColumnArenaBuild already emptied the rest. */
+      if (windowSlotResident(slot) && columnInMeshRing(slot)) {
+        int cx = windowSlotChunkX(slot);
+        int cz = windowSlotChunkZ(slot);
+        if (worldColumnState(cx, cz) == COLUMN_DECORATED &&
+            !makeColumnDisplayLists(cx, cz)) {
+          /*
+           * Out of room part way through.  Publish what fits rather than
+           * discarding the pass: every slot in this arena is valid, either
+           * freshly built or pointing at the shared empty list, so the world
+           * renders with its last columns missing.
+           *
+           * Discarding instead was a trap.  The arena is still below its
+           * reserve next frame, so compaction restarts, fails at the same
+           * column, and discards again -- terrain stops updating for good,
+           * and no amount of waiting recovers it.  Missing far columns that
+           * fill in once the ring moves is a far better failure.
+           */
+          column_arena_ends[column_build_arena] = column_dlp;
+          active_column_arena = column_build_arena;
+          compacting_columns = FALSE;
+          compaction_ran_short = TRUE;
+          return;
+        }
       }
       compaction_column_cursor++;
     }
-    if (compaction_column_cursor == CHUNKS_X * CHUNKS_Z) {
+    if (compaction_column_cursor == WINDOW_SLOTS) {
+      compaction_ran_short = FALSE;
       column_arena_ends[column_build_arena] = column_dlp;
       active_column_arena = column_build_arena;
       compacting_columns = FALSE;
@@ -1172,28 +1310,30 @@ static void processColumnDisplayListUpdates(int can_reclaim_mesh_arena) {
 }
 
 void drawTextured(u8 texture, u8 player_num) {
-  int cx, cz;
+  u16 slot;
 
   /*
-   * Still walked in world order rather than slot order.  Slot order would draw
-   * the same set of columns, but in a different sequence, and terrain order is
-   * not purely cosmetic: water is alpha blended, and the frame budget below
-   * sheds whatever has not been emitted yet, so the sequence decides which
-   * columns are dropped.  Streaming will have to revisit this; keeping it here
-   * makes the move to slot-indexed storage a change with no visible effect.
+   * Walks slots now rather than a world extent, because with the window
+   * scrolling there is no longer a fixed range of columns to iterate -- and
+   * visible_columns, which culling already filled in per slot, is the only
+   * authority on what is on screen.
+   *
+   * This does change the order terrain is emitted in, which is not purely
+   * cosmetic: water is alpha blended, and the budget below sheds whatever has
+   * not been emitted yet, so order decides what gets dropped.  Slot order is
+   * still spatially coherent -- the high bits are x -- so it degrades the same
+   * way, just about a different axis.
    */
-  for (cx = 0; cx < CHUNKS_X; cx++) {
-    for (cz = 0; cz < CHUNKS_Z; cz++) {
-      if (visible_columns[player_num][WINDOW_SLOT(cx, cz)]) {
-        /* Dropping the most distant terrain is survivable; overrunning the
-           frame buffer is not. */
-        if (dlp >= frame_dlp_limit) {
-          frame_overflows++;
-          return;
-        }
-        gSPDisplayList(dlp++,
-          column_starts[active_column_arena][texture][WINDOW_SLOT(cx, cz)]);
+  for (slot = 0; slot < WINDOW_SLOTS; slot++) {
+    if (visible_columns[player_num][slot]) {
+      /* Dropping the most distant terrain is survivable; overrunning the
+         frame buffer is not. */
+      if (dlp >= frame_dlp_limit) {
+        frame_overflows++;
+        return;
       }
+      gSPDisplayList(dlp++,
+        column_starts[active_column_arena][texture][slot]);
     }
   }
 }
@@ -1218,8 +1358,10 @@ static void setStevePartTransform(u8 player_num, u8 part, Vector3 local_offset,
   Player *player = &players[player_num];
   Vector3 offset = rotateY(local_offset, -player->body_yaw);
 
-  guTranslate(&steve_translate[dl_no][player_num][part], player->position.x + offset.x,
-    player->position.y + offset.y, player->position.z + offset.z);
+  guTranslate(&steve_translate[dl_no][player_num][part],
+    player->position.x + offset.x - render_origin_units_x,
+    player->position.y + offset.y,
+    player->position.z + offset.z - render_origin_units_z);
   guRotateRPY(&steve_rotate[dl_no][player_num][part], pitch, yaw, 0);
 }
 
@@ -1389,8 +1531,9 @@ static void drawFirstPersonHand(u8 player_num) {
 static u8 pointVisibleToPlayer(u8 viewer_num, Vector3 point,
     float max_distance) {
   Vector3 offset = add(point, mul(players[viewer_num].position, -1.f));
-  int cx = point.x / (BLOCK_SIZE * CHUNK_SIZE);
-  int cz = point.z / (BLOCK_SIZE * CHUNK_SIZE);
+  /* floor, not truncation: west and north of the origin are negative now. */
+  int cx = floor(point.x / (BLOCK_SIZE * CHUNK_SIZE));
+  int cz = floor(point.z / (BLOCK_SIZE * CHUNK_SIZE));
 
   if (dot(offset, offset) > max_distance * max_distance) {
     return FALSE;
@@ -1405,8 +1548,9 @@ static void setMobPartTransform(u8 mob_num, u8 part,
   Vector3 offset = rotateY(local_offset, -mob->yaw);
 
   guTranslate(&mob_translate[dl_no][mob_num][part],
-    mob->position.x + offset.x, mob->position.y + offset.y,
-    mob->position.z + offset.z);
+    mob->position.x + offset.x - render_origin_units_x,
+    mob->position.y + offset.y,
+    mob->position.z + offset.z - render_origin_units_z);
   guRotateRPY(&mob_rotate[dl_no][mob_num][part], 0, -mob->yaw, 0);
 }
 
@@ -1582,9 +1726,10 @@ static void drawDroppedItems(u8 viewer_num) {
       continue;
     }
 
-    guTranslate(&dropped_item_translate[dl_no][i], drop->position.x,
+    guTranslate(&dropped_item_translate[dl_no][i],
+      drop->position.x - render_origin_units_x,
       drop->position.y + sinf(drop->rotation * M_DTOR) * 3.f,
-      drop->position.z);
+      drop->position.z - render_origin_units_z);
     guRotateRPY(&dropped_item_rotate[dl_no][i], 0, drop->rotation, 0);
     gSPMatrix(dlp++, OS_K0_TO_PHYSICAL(&dropped_item_translate[dl_no][i]),
       G_MTX_MODELVIEW | G_MTX_LOAD | G_MTX_NOPUSH);
@@ -1626,7 +1771,24 @@ static void drawFallingTreeBox(u8 slot, u8 box, u8 item, float x, float y,
   gSPDisplayList(dlp++, dropped_item_display_list);
 }
 
-static void drawFallingTree(TreeRecord *tree, u8 slot) {
+/*
+ * Tree records store x and z in wrapping u8 (trees.c keys its lookup by a
+ * window-relative table, so the wrap is deliberate).  A live tree is always
+ * inside the residency window and therefore within 128 blocks of any player,
+ * so the wrapped coordinate has exactly one absolute representative near the
+ * viewer -- recover it before any world-space math.
+ */
+static int unwrapTreeCoord(u8 wrapped, float viewer_units) {
+  int reference = floor(viewer_units / BLOCK_SIZE);
+  int delta = (int) ((u8) (wrapped - (u8) reference));
+
+  if (delta >= 128) {
+    delta -= 256;
+  }
+  return reference + delta;
+}
+
+static void drawFallingTree(TreeRecord *tree, u8 slot, int abs_x, int abs_z) {
   float progress = tree->fall_progress;
   float eased = progress * progress * (3.f - 2.f * progress);
   float angle = eased * 88.f + sinf(progress * 720.f * M_DTOR) *
@@ -1647,8 +1809,9 @@ static void drawFallingTree(TreeRecord *tree, u8 slot) {
   }
 
   guTranslate(&falling_tree_translate[dl_no][slot],
-    (tree->x + 0.5f) * BLOCK_SIZE, (tree->base_y + 1) * BLOCK_SIZE,
-    (tree->z + 0.5f) * BLOCK_SIZE);
+    (abs_x + 0.5f) * BLOCK_SIZE - render_origin_units_x,
+    (tree->base_y + 1) * BLOCK_SIZE,
+    (abs_z + 0.5f) * BLOCK_SIZE - render_origin_units_z);
   guRotateRPY(&falling_tree_rotate[dl_no][slot], pitch, 0, roll);
 
   drawFallingTreeBox(slot, 0, WOOD, 0, height * BLOCK_SIZE / 2.f, 0,
@@ -1670,9 +1833,13 @@ static void drawFallingTrees(u8 viewer_num) {
   u8 slot = 0;
 
   for (tree_index = 0; tree_index < MAX_TREES; tree_index++) {
-    Vector3 position = {(trees[tree_index].x + .5f) * BLOCK_SIZE,
+    int ax = unwrapTreeCoord(trees[tree_index].x,
+      players[viewer_num].position.x);
+    int az = unwrapTreeCoord(trees[tree_index].z,
+      players[viewer_num].position.z);
+    Vector3 position = {(ax + .5f) * BLOCK_SIZE,
       (trees[tree_index].base_y + 1) * BLOCK_SIZE,
-      (trees[tree_index].z + .5f) * BLOCK_SIZE};
+      (az + .5f) * BLOCK_SIZE};
     if (trees[tree_index].state == TREE_STATE_FALLING &&
         pointVisibleToPlayer(viewer_num, position, DROPPED_ITEM_RENDER_DISTANCE)) {
       break;
@@ -1685,12 +1852,16 @@ static void drawFallingTrees(u8 viewer_num) {
   gSPClearGeometryMode(dlp++, G_CULL_BACK);
   for (; tree_index < MAX_TREES &&
       slot < FALLING_TREE_RENDER_SLOTS; tree_index++) {
-    Vector3 position = {(trees[tree_index].x + .5f) * BLOCK_SIZE,
+    int ax = unwrapTreeCoord(trees[tree_index].x,
+      players[viewer_num].position.x);
+    int az = unwrapTreeCoord(trees[tree_index].z,
+      players[viewer_num].position.z);
+    Vector3 position = {(ax + .5f) * BLOCK_SIZE,
       (trees[tree_index].base_y + 1) * BLOCK_SIZE,
-      (trees[tree_index].z + .5f) * BLOCK_SIZE};
+      (az + .5f) * BLOCK_SIZE};
     if (trees[tree_index].state == TREE_STATE_FALLING &&
         pointVisibleToPlayer(viewer_num, position, DROPPED_ITEM_RENDER_DISTANCE)) {
-      drawFallingTree(&trees[tree_index], slot++);
+      drawFallingTree(&trees[tree_index], slot++, ax, az);
     }
   }
   gSPSetGeometryMode(dlp++, G_CULL_BACK);
@@ -1783,12 +1954,16 @@ void drawWireframes() {
     }
     gSPDisplayList(dlp++, wireframe_setup_display_list);
     loadCameraMatrices(player_num);
+    /* Shift and mask, not / and %: a negative target's quotient truncates
+       toward zero and its remainder goes negative, which walked b_models out
+       of bounds west or north of the origin.  Routing through c_models also
+       keeps the highlight origin-relative for free. */
     gSPMatrix(dlp++,OS_K0_TO_PHYSICAL(&c_models
-      [WINDOW_SLOT(players[player_num].target_x / CHUNK_SIZE,
-                   players[player_num].target_z / CHUNK_SIZE)]
+      [WINDOW_SLOT(players[player_num].target_x >> CHUNK_SHIFT,
+                   players[player_num].target_z >> CHUNK_SHIFT)]
       [players[player_num].target_y / CHUNK_SIZE]),
       G_MTX_MODELVIEW|G_MTX_LOAD|G_MTX_NOPUSH);
-    gSPMatrix(dlp++,OS_K0_TO_PHYSICAL(b_models + (players[player_num].target_x % CHUNK_SIZE) * CHUNK_SIZE * CHUNK_SIZE + (players[player_num].target_y % CHUNK_SIZE) * CHUNK_SIZE + (players[player_num].target_z % CHUNK_SIZE)),
+    gSPMatrix(dlp++,OS_K0_TO_PHYSICAL(b_models + (players[player_num].target_x & CHUNK_MASK) * CHUNK_SIZE * CHUNK_SIZE + (players[player_num].target_y % CHUNK_SIZE) * CHUNK_SIZE + (players[player_num].target_z & CHUNK_MASK)),
       G_MTX_MODELVIEW|G_MTX_MUL|G_MTX_NOPUSH);
     gSPVertex(dlp++, cube_verts, 8, 0);
     gSPDisplayList(dlp++, wireframe_display_list);
@@ -2613,10 +2788,82 @@ static u32 hudStringWidth(const char *text) {
   return width;
 }
 
+/*
+ * Streaming state, on screen, because this console cannot be observed any
+ * other way.  Reads, left to right:
+ *
+ *   R  columns resident in the window
+ *   D  of those, fully decorated and therefore eligible to be meshed
+ *   Q  columns queued for mesh compilation
+ *   A  per-cent of the mesh arena still free
+ *   C  1 while compacting, when no queued column can be compiled
+ *
+ * The failure this exists to catch is A pinned low with C stuck at 1: the
+ * resident set is too large to fit after compaction, so it compacts forever
+ * and Q never drains.  Terrain is then generated and walkable but never drawn.
+ */
+static void drawStreamingDiagnostics() {
+  u32 slot;
+  u32 resident = 0, decorated = 0, queued = 0, pending_terrain = 0;
+  u32 free_percent;
+  u32 x;
+
+  for (slot = 0; slot < WINDOW_SLOTS; slot++) {
+    if (windowSlotResident(slot)) {
+      resident++;
+      if (worldColumnState(windowSlotChunkX(slot), windowSlotChunkZ(slot)) ==
+          COLUMN_DECORATED) {
+        decorated++;
+      }
+    }
+    if (dirty_columns[slot]) {
+      queued++;
+    }
+  }
+  {
+    int pcx = floor(players[0].position.x / (BLOCK_SIZE * CHUNK_SIZE));
+    int pcz = floor(players[0].position.z / (BLOCK_SIZE * CHUNK_SIZE));
+    int dx, dz;
+
+    for (dx = -STREAM_TERRAIN_RADIUS; dx <= STREAM_TERRAIN_RADIUS; dx++) {
+      for (dz = -STREAM_TERRAIN_RADIUS; dz <= STREAM_TERRAIN_RADIUS; dz++) {
+        if (worldColumnState(pcx + dx, pcz + dz) < COLUMN_TERRAIN) {
+          pending_terrain++;
+        }
+      }
+    }
+  }
+  free_percent = (u32) ((column_display_lists[active_column_arena] +
+    DISPLAY_LIST_SIZE - column_arena_ends[active_column_arena]) /
+    (DISPLAY_LIST_SIZE / 100));
+
+  setHudTextColor(255, 220, 120);
+  drawString("R", 6, 6);
+  x = drawUnsigned(resident, 14, 6);
+  drawString("D", x + 4, 6);
+  x = drawUnsigned(decorated, x + 12, 6);
+  drawString("Q", x + 4, 6);
+  x = drawUnsigned(queued, x + 12, 6);
+  drawString("A", x + 4, 6);
+  x = drawUnsigned(free_percent, x + 12, 6);
+  /* 0 idle, 1 compacting, 2 the last pass could not fit every column. */
+  drawString("C", x + 4, 6);
+  x = drawUnsigned(compacting_columns ? 1 : (compaction_ran_short ? 2 : 0),
+    x + 12, 6);
+  /* Columns inside the ring that still have no blocks at all.  If the player
+     can walk into one, unloaded terrain reads as solid and stops them dead. */
+  drawString("T", x + 4, 6);
+  drawUnsigned(pending_terrain, x + 12, 6);
+  setHudTextColor(255, 255, 255);
+}
+
 static void drawGameText() {
   u8 player_num;
 
   beginText();
+  if (active_player_count == 1) {
+    drawStreamingDiagnostics();
+  }
   for (player_num = 0; player_num < active_player_count; player_num++) {
     u32 x_offset = playerViewportX(player_num);
     u32 y_offset = playerViewportY(player_num);

@@ -50,6 +50,6 @@ extern ChunkQuads column_quads[CHUNKS_Y];
    the dominant cost of compiling a world. */
 void geometrySetTjunctionRefinement(u8 enabled);
 void initGeometry();
-void makeColumnGeometry(u8 cx, u8 cz);
+void makeColumnGeometry(int cx, int cz);
 
 #endif /* GEOMETRY_H */

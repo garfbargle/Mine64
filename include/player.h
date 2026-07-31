@@ -95,11 +95,11 @@ typedef struct {
 
   /* Breaking is transient interaction state, separate from the world and
      save data.  It lets a held punch visibly take time instead of deleting a
-     block on a single button press. */
+     block on a single button press.  x and z match target_x/z: unbounded. */
   u8 breaking;
-  u8 breaking_x;
+  int breaking_x;
   u8 breaking_y;
-  u8 breaking_z;
+  int breaking_z;
   float break_progress;
   float break_time;
 } Player;
