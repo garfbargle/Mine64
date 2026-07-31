@@ -96,6 +96,11 @@ extern u16 fog_start;
    streaming/draw block, both over a rolling ~2s window, shown as W and B. */
 void diagNoteFrameInterval(u32 usec);
 void diagNoteGatedWork(u32 usec);
+/* Called once per submitted graphics task, from draw().  Frames displayed in
+   the last whole second show beside the W row.  Counting submissions rather
+   than callbacks is what makes it the rate the player sees: a callback that
+   finds a task still in flight returns without building a frame. */
+void diagNoteFrameSubmitted(void);
 #define DIAG_PHASE_STREAMING GPACK_RGBA5551(0, 255, 0, 1)    /* green */
 #define DIAG_PHASE_REBASE GPACK_RGBA5551(255, 255, 0, 1)     /* yellow */
 #define DIAG_PHASE_DRAW GPACK_RGBA5551(0, 255, 255, 1)       /* cyan */

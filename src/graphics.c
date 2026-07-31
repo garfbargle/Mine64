@@ -403,6 +403,54 @@ void diagNoteGatedWork(u32 usec) {
   }
 }
 
+/*
+ * Frames the player actually saw in the last whole second.
+ *
+ * This counts submitted graphics tasks, not graphics callbacks, and the
+ * difference is the whole point.  callbackGfx runs once per retrace message
+ * but only builds a frame when no task is in flight, so when the RSP/RDP is
+ * the bottleneck the callback keeps arriving at the field rate and returns
+ * without drawing -- three 60 Hz callbacks for one picture.  Counting
+ * callbacks would report 60 while the screen updates at 20.  Every
+ * submission below carries NU_SC_SWAPBUFFER and so becomes exactly one buffer
+ * swap, which makes this count the displayed rate by construction.
+ *
+ * That also makes it independent evidence from W: W only stretches once the
+ * CPU work in the callback is what is late, because a callback that finds a
+ * task still pending returns immediately and keeps its interval short.
+ *
+ * Counted unconditionally, so the number is already a full second old and
+ * correct the moment the overlay is switched on.
+ */
+static u32 diag_fps;
+static u32 diag_fps_frames;
+static OSTime diag_fps_window_start;
+
+void diagNoteFrameSubmitted(void) {
+  OSTime now = osGetTime();
+  OSTime second = OS_USEC_TO_CYCLES(1000000);
+
+  diag_fps_frames++;
+  if (diag_fps_window_start == 0) {
+    diag_fps_window_start = now;
+    return;
+  }
+  if (now - diag_fps_window_start < second) {
+    return;
+  }
+  diag_fps = diag_fps_frames;
+  diag_fps_frames = 0;
+  /* Advance by a whole second rather than restarting from now, so the window
+     does not drift by however late this frame noticed the boundary. */
+  diag_fps_window_start += second;
+  /* World generation can stall the pipeline for many seconds at a stretch.
+     Resynchronise instead of walking the backlog one second per frame, which
+     would report a stale count for as long as the stall lasted. */
+  if (now - diag_fps_window_start >= second) {
+    diag_fps_window_start = now;
+  }
+}
+
 #define BLOCKS_PER_CHUNK (CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE)
 
 /*
@@ -4020,6 +4068,12 @@ static u32 hudStringWidth(const char *text) {
  *   C  0 idle, 1 compacting, 2 the last pass could not fit every column
  *   T  ring columns with no terrain yet (reads as solid invisible walls)
  *
+ * FPS, beside the W row, is frames displayed in the last whole second -- the
+ * rate the player sees, counted at the point of submission rather than
+ * inferred from the callback interval.  Read it against W and B: a low FPS
+ * with W and B both near 166 is the RSP/RDP being the bottleneck, since a
+ * callback that finds a task still in flight returns early and never widens W.
+ *
  * The failure this exists to catch is A pinned low with C stuck at 1: the
  * resident set is too large to fit after compaction, so it compacts forever
  * and Q never drains.  Terrain is then generated and walkable but never drawn.
@@ -4096,6 +4150,12 @@ static void drawStreamingDiagnostics() {
      millisecond: W 166 is a clean 60 Hz frame, W 1000 is 10 fps.  B close to
      W blames the CPU work in the callback; W high with B low blames the
      RSP/RDP.  L counts runaway-loop guard trips in player collision code. */
+  /* Frames displayed in the last whole second, riding the W line: it is the
+     other frame-pacing number, and every row slot down to the hotbar is
+     spoken for.  x 60 clears W's widest five-digit value at x 16, and this
+     line sits above the C-button guide. */
+  drawString("FPS", 60, y);
+  drawUnsigned(diag_fps, 84, y);
   y = drawDiagnosticRow("W", diag_worst_frame_usec / 100, y);
   y = drawDiagnosticRow("B", diag_worst_gated_usec / 100, y);
   y = drawDiagnosticRow("L", diag_loop_clamps, y);
@@ -4339,6 +4399,9 @@ void draw(int can_reclaim_mesh_arena) {
   nuGfxTaskStart(frame_start,
     (s32)(dlp - frame_start) * sizeof (Gfx),
     NU_GFX_UCODE_F3DEX, NU_SC_SWAPBUFFER);
+  /* The one place a frame is handed to the RSP, and so the only honest place
+     to count displayed frames from. */
+  diagNoteFrameSubmitted();
 
   /* Switch display list buffers */
   dl_no ^= 1;
