@@ -1690,14 +1690,29 @@ void updatePlayers() {
   diagPaintPhase(DIAG_PHASE_MOBS);
   updateMobs(delta);
 
-  /* Z + D-pad Up toggles the diagnostics overlay.  Z is the camera modifier,
-     so this cannot collide with the plain D-pad save below -- the save
-     deliberately ignores the D-pad while Z is held. */
+  /* Z + D-pad is the developer chord; the plain D-pad save below ignores the
+     D-pad while Z is held, so these cannot collide with it.  Up toggles the
+     diagnostics overlay; with the overlay up, Left/Right walk the fog start
+     (the P row) and Down toggles fog for an A/B against the bare edge. */
   for (i = 0; i < active_player_count; i++) {
-    if ((cont_data[i].trigger & U_JPAD) && (cont_data[i].button & Z_TRIG)) {
-      diagnostics_visible = !diagnostics_visible;
-      break;
+    if ((cont_data[i].button & Z_TRIG) == 0) {
+      continue;
     }
+    if (cont_data[i].trigger & U_JPAD) {
+      diagnostics_visible = !diagnostics_visible;
+    }
+    if (diagnostics_visible) {
+      if ((cont_data[i].trigger & L_JPAD) && fog_start > FOG_START_MIN) {
+        fog_start--;
+      }
+      if ((cont_data[i].trigger & R_JPAD) && fog_start < FOG_START_MAX) {
+        fog_start++;
+      }
+      if (cont_data[i].trigger & D_JPAD) {
+        fog_enabled = !fog_enabled;
+      }
+    }
+    break;
   }
 
   if (saving_available) {

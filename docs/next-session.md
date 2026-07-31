@@ -30,7 +30,12 @@ see through the illusion so easily."
 
 ## The illusion problem, in priority order
 
-1. **Hide the loading edge.**  At sprint speed the player can reach the
+1. **Hide the loading edge.** — *landed, pending hardware tuning:*
+   sky-matched RSP fog now wraps the gameplay terrain/water pass (2-cycle,
+   `G_RM_FOG_SHADE_A`, combiner `G_CC_PASS2`, restored to 1-cycle before
+   entities), with the start tunable live (Z + D-pad Left/Right, P row;
+   Z + D-pad Down toggles).  Tune on a CRT, bake the chosen default into
+   `fog_start`, and watch W/B for the 2-cycle fill cost.  Original notes:  At sprint speed the player can reach the
    mesh edge and watch columns arrive in visible rows — worse, with no
    floor/walls in the unbuilt region they see cave cross-sections.  The
    N64's answer is **distance fog** (RSP fog blended toward the day-cycle

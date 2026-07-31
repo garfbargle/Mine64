@@ -221,6 +221,26 @@ volatile u8 diag_cpu_faulted;
  */
 u8 diagnostics_visible = FALSE;
 
+/*
+ * Distance fog, blended toward the sky color so the streaming edge sits
+ * behind haze instead of arriving in visible rows of bare columns.
+ *
+ * Fog on this hardware is a function of *screen* depth, which perspective
+ * compresses savagely toward the far plane: with near 10 / far 14000, ten
+ * blocks out is already ~985 of 1000 and the mesh edge (~44 blocks) is
+ * ~997.  The band is too nonlinear to compute credibly on a workstation,
+ * so the start is tunable on the console: with the diagnostics overlay up,
+ * Z + D-pad Left/Right moves it and Z + D-pad Down toggles fog outright
+ * for an A/B against the bare edge.  The P row shows the current start.
+ *
+ * Fog also forces the terrain pass into two-cycle mode -- roughly half the
+ * RDP's pixel rate -- which is why it is confined to the gameplay terrain
+ * and water pass and switched back off before entities and HUD.
+ */
+u8 fog_enabled = TRUE;
+u16 fog_start = 993;
+#define FOG_BAND 5
+
 /* Times a runaway loop guard fired in player collision code.  A rising L row
    with no freeze means a guard is eating what used to be the hang. */
 u32 diag_loop_clamps;
@@ -2304,6 +2324,8 @@ void drawWorld() {
   u8 cinematic = current_screen == LOADING_PREVIEW || current_screen == MENU ||
     current_screen == WORLD_NAMING;
   u8 viewer_count = cinematic ? 1 : active_player_count;
+  u8 fogged = !cinematic && fog_enabled;
+  SkyColor sky = dayCycleSkyColor(255);
 
   if (cinematic) {
     /* A brighter blue keeps the distant water legible while the warm
@@ -2311,8 +2333,9 @@ void drawWorld() {
     clearBuffers(GPACK_RGBA5551(48, 123, 211, 1));
   } else {
     /* A single time-varying clear is much cheaper than the former banded
-     * gradient while retaining a daylight/nightfall sky behind the terrain. */
-    SkyColor sky = dayCycleSkyColor(255);
+     * gradient while retaining a daylight/nightfall sky behind the terrain.
+     * Fog reuses the same color, so hazed terrain dissolves exactly into
+     * the sky it stands against. */
     clearBuffers(GPACK_RGBA5551(sky.r, sky.g, sky.b, 1));
   }
 
@@ -2332,12 +2355,35 @@ void drawWorld() {
         G_RM_AA_ZB_OPA_SURF2);
     } else {
       drawCelestialBodies(player_num);
-      /* Celestial sprites use AA texture-edge mode.  Terrain must explicitly
-       * restore its opaque no-read render mode afterwards. */
-      gDPSetRenderMode(dlp++, G_RM_ZB_OPA_SURF, G_RM_ZB_OPA_SURF2);
+      /* The celestial pass changed cycle type and combine; drain the pipe
+         before reconfiguring for terrain -- attributes changing under a
+         primitive still in flight is the lockup documented in the README. */
+      gDPPipeSync(dlp++);
+      if (fogged) {
+        /*
+         * Fog blended toward the sky clear color makes the terrain edge and
+         * the streamed-in pop both happen behind haze.  Fog needs two-cycle
+         * mode: cycle one runs the fog blender, cycle two the ordinary
+         * opaque z-buffered write; the combiner's second cycle passes the
+         * first cycle's texture result through untouched.
+         */
+        gDPSetCycleType(dlp++, G_CYC_2CYCLE);
+        gDPSetRenderMode(dlp++, G_RM_FOG_SHADE_A, G_RM_ZB_OPA_SURF2);
+        gDPSetFogColor(dlp++, sky.r, sky.g, sky.b, 255);
+        gSPFogPosition(dlp++, fog_start, fog_start + FOG_BAND);
+        gSPSetGeometryMode(dlp++, G_FOG);
+      } else {
+        /* Celestial sprites use AA texture-edge mode.  Terrain must
+           explicitly restore its opaque no-read render mode afterwards. */
+        gDPSetRenderMode(dlp++, G_RM_ZB_OPA_SURF, G_RM_ZB_OPA_SURF2);
+      }
     }
     gSPSetGeometryMode(dlp++, G_CULL_BACK | G_LIGHTING);
-    gDPSetCombineMode(dlp++, G_CC_MODULATERGB, G_CC_MODULATERGB);
+    if (fogged) {
+      gDPSetCombineMode(dlp++, G_CC_MODULATERGB, G_CC_PASS2);
+    } else {
+      gDPSetCombineMode(dlp++, G_CC_MODULATERGB, G_CC_MODULATERGB);
+    }
     if (cinematic) {
       setPreviewLight();
       gSPSetLights0(dlp++, preview_lights[dl_no]);
@@ -2357,6 +2403,14 @@ void drawWorld() {
       }
     }
     if (!cinematic) {
+      if (fogged) {
+        /* Entities and the HUD run unfogged in single-cycle mode; drain the
+           terrain pipe before switching the RDP back. */
+        gDPPipeSync(dlp++);
+        gDPSetCycleType(dlp++, G_CYC_1CYCLE);
+        gDPSetRenderMode(dlp++, G_RM_ZB_OPA_SURF, G_RM_ZB_OPA_SURF2);
+        gSPClearGeometryMode(dlp++, G_FOG);
+      }
       gSPClearGeometryMode(dlp++, G_LIGHTING);
       drawFallingTrees(player_num);
       drawDroppedItems(player_num);
@@ -3318,7 +3372,10 @@ static void drawStreamingDiagnostics() {
   /* Corrupt window keys caught and repaired.  Any non-zero K is the run-6
      guTranslate fault being absorbed; the first bad key's bits are in the
      freeze report. */
-  drawDiagnosticRow("K", window_key_faults, y);
+  y = drawDiagnosticRow("K", window_key_faults, y);
+  /* Fog start (screen depth), 0 when fog is toggled off.  Tune with
+     Z + D-pad Left/Right; Z + D-pad Down toggles. */
+  drawDiagnosticRow("P", fog_enabled ? fog_start : 0, y);
   setHudTextColor(255, 255, 255);
 }
 

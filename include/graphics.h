@@ -68,6 +68,13 @@ extern u32 diag_position_glitches;
    hang, key corruption, position snap) switches it on automatically.  The
    watchdog and SD post-mortem are never gated on it. */
 extern u8 diagnostics_visible;
+/* Sky-matched distance fog over the gameplay terrain pass.  The start is a
+   screen-depth value tuned on hardware: with the overlay up, Z + D-pad
+   Left/Right moves it (P row shows it) and Z + D-pad Down toggles fog. */
+extern u8 fog_enabled;
+extern u16 fog_start;
+#define FOG_START_MIN 900
+#define FOG_START_MAX 995
 #define DIAG_STEP_OBJECTIVES 1
 #define DIAG_STEP_INPUT 2
 #define DIAG_STEP_VAULT 3
