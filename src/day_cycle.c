@@ -238,9 +238,23 @@ SkyColor dayCycleAmbientLight() {
    * old value was high enough to wash the directional light out at noon.
    */
   SkyColor day_fill = {104, 124, 152};
-  SkyColor night_fill = {15, 21, 42};
-  SkyColor moon_fill = {40, 53, 94};
-  SkyColor lit = scaleColor(day_fill, .34f + .66f * clamp01(altitude));
+  /*
+   * Night is meant to be dark, not absent.  The old floor of 15 put a grass
+   * block at six percent of its texture and the ground simply stopped
+   * existing until the Moon came up; this reads as dusk that never quite
+   * finishes, which is what a player standing outside at night should see.
+   */
+  SkyColor night_fill = {52, 59, 82};
+  SkyColor moon_fill = {78, 92, 130};
+  /*
+   * The daytime floor is matched to the night one on purpose.  Ambient is the
+   * only term left at the moment the Sun crosses the horizon, so a low
+   * daylight fill and a high night fill would step the world's brightness the
+   * wrong way across dusk -- faces turned away from the Sun would brighten as
+   * it set.  Noon is untouched, which is where washing out the key light
+   * would have shown.
+   */
+  SkyColor lit = scaleColor(day_fill, .55f + .45f * clamp01(altitude));
   SkyColor dark = mixColor(night_fill, moon_fill, moonlight);
 
   return mixColor(dark, lit, day);
@@ -257,8 +271,19 @@ SkyColor dayCycleDirectLight() {
   /* Low Sun is warm; it fades naturally toward pale midday illumination. */
   SkyColor sunlight = mixColor(dawn, noon, smoothFade(.03f, .40f, altitude));
   SkyColor lit = scaleColor(sunlight, .28f + .72f * clamp01(altitude / .5f));
+  /*
+   * Starlight: a floor under the Moon's share, so a new-Moon night still has
+   * a direction to it.  Lit by ambient alone every face takes exactly the
+   * same colour and the world flattens into one field of blue -- a wall
+   * becomes indistinguishable from the floor it meets, which is a worse way
+   * to lose the terrain than the black it used to go.  It is not physically a
+   * key light; it is the cheapest thing that keeps edges readable at the
+   * darkest hour.  The .30 below (down from .40) keeps a full Moon clearly
+   * brighter than this rather than merely different.
+   */
+  float moon_share = .40f + .60f * dayCycleMoonIllumination();
   SkyColor dark = scaleColor(moonlight,
-    clamp01(-altitude) * dayCycleMoonIllumination() * .40f);
+    clamp01(-altitude) * moon_share * .30f);
 
   return mixColor(dark, lit, day);
 }

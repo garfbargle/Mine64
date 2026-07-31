@@ -915,10 +915,34 @@ static void setAmbientColor(Ambient *ambient, SkyColor color) {
   ambient->l.colc[2] = color.b;
 }
 
+/*
+ * Everything drawn after the terrain -- mobs, other players, dropped items,
+ * falling trees, the placed detail boxes -- carries vertex colours instead of
+ * normals, so the RSP light cannot touch it and it stayed at full daylight
+ * colour on ground that had gone dark.  This is the flat stand-in for that
+ * light: the same ambient the terrain gets, plus the share of the directional
+ * term a surface of no particular orientation catches.  It is handed to the
+ * RDP as a primitive colour and the entity passes modulate their shade by it.
+ *
+ * The share is the average of N.L over the faces of a box that is mostly
+ * facing sideways.  Higher and a sheep at noon comes out brighter than the
+ * grass it is standing on; lower and it reads as permanently in shadow.
+ */
+#define ENTITY_DIRECT_SHARE .45f
+
+static SkyColor entity_tint;
+
+static u8 addLightChannel(u8 ambient, u8 direct) {
+  u32 total = ambient + (u32) (direct * ENTITY_DIRECT_SHARE);
+
+  return total > 255 ? 255 : (u8) total;
+}
+
 static void setWorldLight(u8 player_num) {
   Lights1 *lights = &world_lights[dl_no][player_num];
   Vector3 direction = dayCycleLightDirection();
   SkyColor ambient = dayCycleAmbientLight();
+  SkyColor direct = dayCycleDirectLight();
   u8 torch = detailLightAt(players[player_num].position);
 
   /* One nearest-light sample per viewport sells a warm pool around the
@@ -928,11 +952,36 @@ static void setWorldLight(u8 player_num) {
   ambient.g = min(255, ambient.g + (torch * 2) / 5);
   ambient.b = min(255, ambient.b + torch / 8);
   setAmbientColor(&lights->a, ambient);
-  setLightColor(&lights->l[0], dayCycleDirectLight());
+  setLightColor(&lights->l[0], direct);
   lights->l[0].l.dir[0] = direction.x * 127;
   lights->l[0].l.dir[1] = direction.y * 127;
   lights->l[0].l.dir[2] = direction.z * 127;
+
+  /* Derived from the torch-boosted ambient, so an animal that walks into a
+     lit doorway brightens with the floor under it. */
+  entity_tint.r = addLightChannel(ambient.r, direct.r);
+  entity_tint.g = addLightChannel(ambient.g, direct.g);
+  entity_tint.b = addLightChannel(ambient.b, direct.b);
 }
+
+/*
+ * PRIM * SHADE for untextured entity geometry, and PRIM * TEXEL0 for the
+ * textured cubes, whose vertices are all white.  gbi.h has no canned mode for
+ * the first, and the second is only correct because nothing in these passes
+ * relies on shade for anything but the flat colour the tint replaces.
+ */
+static void setEntityShadeCombine(void) {
+  gDPSetCombineLERP(dlp++, PRIMITIVE, 0, SHADE, 0, 0, 0, 0, SHADE,
+    PRIMITIVE, 0, SHADE, 0, 0, 0, 0, SHADE);
+}
+
+static void setEntityTint(SkyColor tint) {
+  gDPSetPrimColor(dlp++, 0, 0, tint.r, tint.g, tint.b, 255);
+}
+
+/* Geometry that is a light source rather than a lit surface takes this
+   instead: a torch flame the day/night tint dimmed would be absurd. */
+static const SkyColor emissive_tint = {255, 255, 255};
 
 static void setPreviewLight() {
   Lights0 *lights = &preview_lights[dl_no];
@@ -2152,11 +2201,18 @@ static void setWaterTopVertex(Vtx *vertex, s16 x, s16 z, s16 s, s16 t) {
   vertex->v.flag = 0;
   vertex->v.tc[0] = s;
   vertex->v.tc[1] = t;
-  /* Water is rendered unlit so its atlas colours remain stable through the
-   * day/night render states.  White modulation keeps the blue texture intact. */
-  vertex->v.cn[0] = 255;
-  vertex->v.cn[1] = 255;
-  vertex->v.cn[2] = 255;
+  /*
+   * An upward normal, not white vertex colour.  These quads used to be drawn
+   * with lighting switched off so their atlas blue survived the render-state
+   * changes, which meant the sea stayed noon-bright on a shoreline that had
+   * gone black.  Water is a horizontal surface like any block top; giving it
+   * the normal the shared quad table already gives every other top face lets
+   * the one directional light handle it, and it darkens and reddens with the
+   * sand next to it for free.
+   */
+  vertex->v.cn[0] = 0;
+  vertex->v.cn[1] = 127;
+  vertex->v.cn[2] = 0;
   vertex->v.cn[3] = 255;
 }
 
@@ -2362,6 +2418,8 @@ static void drawDetailsForPlayer(u8 viewer_num) {
   u8 count = 0;
   u16 index;
   u8 render_slot;
+  u8 torch_slots[MAX_VISIBLE_DETAILS];
+  u8 torch_count = 0;
 
   /* No records means no pass and no state changes to undo afterwards. */
   if (detail_count == 0) {
@@ -2409,7 +2467,7 @@ static void drawDetailsForPlayer(u8 viewer_num) {
   }
 
   gSPTexture(dlp++, 0, 0, 0, G_TX_RENDERTILE, G_OFF);
-  gDPSetCombineMode(dlp++, G_CC_SHADE, G_CC_SHADE);
+  setEntityShadeCombine();
   gSPClearGeometryMode(dlp++, G_CULL_BACK);
   for (render_slot = 0; render_slot < count; render_slot++) {
     DetailCell *detail = &details[selected[render_slot]];
@@ -2432,8 +2490,10 @@ static void drawDetailsForPlayer(u8 viewer_num) {
       G_MTX_MODELVIEW | G_MTX_MUL | G_MTX_NOPUSH);
 
     if (detail->kind == DETAIL_TORCH) {
+      /* Stick only.  Its flame is emissive and goes in the second pass
+         below, at a primitive colour the nightfall tint does not reach. */
       drawDetailBox(torch_stick_verts);
-      drawDetailBox(torch_flame_verts);
+      torch_slots[torch_count++] = render_slot;
     } else if (detail->kind == DETAIL_WOOD_STAIRS) {
       drawDetailBox(wood_stair_lower_verts);
       drawDetailBox(wood_stair_upper_verts);
@@ -2449,6 +2509,28 @@ static void drawDetailsForPlayer(u8 viewer_num) {
       drawDetailBox(window_bottom_verts);
       drawDetailBox(window_cross_verts);
     }
+  }
+
+  /*
+   * Flames last, in one batch, so the primitive colour changes twice a frame
+   * rather than twice a torch.  Their matrices are the ones the loop above
+   * already wrote for the same render slot, which is why this re-references
+   * detail_translate rather than rebuilding anything.
+   */
+  if (torch_count > 0) {
+    u8 i;
+
+    gDPPipeSync(dlp++);
+    setEntityTint(emissive_tint);
+    for (i = 0; i < torch_count; i++) {
+      gSPMatrix(dlp++, OS_K0_TO_PHYSICAL(&detail_translate[dl_no][torch_slots[i]]),
+        G_MTX_MODELVIEW | G_MTX_LOAD | G_MTX_NOPUSH);
+      gSPMatrix(dlp++, OS_K0_TO_PHYSICAL(&detail_rotate[dl_no][torch_slots[i]]),
+        G_MTX_MODELVIEW | G_MTX_MUL | G_MTX_NOPUSH);
+      drawDetailBox(torch_flame_verts);
+    }
+    gDPPipeSync(dlp++);
+    setEntityTint(entity_tint);
   }
   gSPSetGeometryMode(dlp++, G_CULL_BACK);
   loaded_texture = NULL;
@@ -2531,7 +2613,7 @@ static void drawMobsForPlayer(u8 viewer_num) {
   u8 visible;
 
   gSPTexture(dlp++, 0, 0, 0, G_TX_RENDERTILE, G_OFF);
-  gDPSetCombineMode(dlp++, G_CC_SHADE, G_CC_SHADE);
+  setEntityShadeCombine();
   gSPClearGeometryMode(dlp++, G_CULL_BACK);
 
   /* The entity pool keeps passive animals in its first slots and reserves
@@ -2577,7 +2659,7 @@ static void drawOtherPlayers(u8 viewer_num) {
   u8 player_num;
 
   gSPTexture(dlp++, 0, 0, 0, G_TX_RENDERTILE, G_OFF);
-  gDPSetCombineMode(dlp++, G_CC_SHADE, G_CC_SHADE);
+  setEntityShadeCombine();
   /* The box model has intentionally minimal geometry; disabling culling
      keeps its face and eye quads reliable from every camera angle. */
   gSPClearGeometryMode(dlp++, G_CULL_BACK);
@@ -2653,13 +2735,16 @@ static void drawDroppedItems(u8 viewer_num) {
       G_MTX_MODELVIEW | G_MTX_MUL | G_MTX_NOPUSH);
     if (ITEM_IS_VALID(drop->item) && preview_textures[drop->item] != NULL) {
       gSPTexture(dlp++, 0x8000, 0x8000, 0, G_TX_RENDERTILE, G_ON);
-      gDPSetCombineMode(dlp++, G_CC_MODULATERGB, G_CC_MODULATERGB);
+      /* The cube's vertices are all white, so modulating the tile against the
+         tint alone is the whole lighting these get -- shade would only
+         multiply in a constant 255. */
+      gDPSetCombineMode(dlp++, G_CC_MODULATEI_PRIM, G_CC_MODULATEI_PRIM);
       loadTexture(preview_textures[drop->item]);
       gSPVertex(dlp++, dropped_item_verts, 8, 0);
       gSPDisplayList(dlp++, dropped_item_display_list);
     } else {
       gSPTexture(dlp++, 0, 0, 0, G_TX_RENDERTILE, G_OFF);
-      gDPSetCombineMode(dlp++, G_CC_SHADE, G_CC_SHADE);
+      setEntityShadeCombine();
       drawLooseItemGeometry(drop->item);
       loaded_texture = NULL;
     }
@@ -2770,6 +2855,12 @@ static void drawFallingTrees(u8 viewer_num) {
     }
     if (slot == 0) {
       gSPClearGeometryMode(dlp++, G_CULL_BACK);
+      /* Set explicitly rather than inherited.  This pass used to run on
+         whatever drawGroundShadows handed over, which the detail pass in
+         between then overwrote with an untextured shade-only combiner -- so a
+         tree felled anywhere near a torch or a door fell as a white box. */
+      gSPTexture(dlp++, 0x8000, 0x8000, 0, G_TX_RENDERTILE, G_ON);
+      gDPSetCombineMode(dlp++, G_CC_MODULATEI_PRIM, G_CC_MODULATEI_PRIM);
     }
     drawFallingTree(&trees[tree_index], slot++, ax, az);
   }
@@ -3045,10 +3136,10 @@ static void drawGroundShadows(void) {
 
   gDPPipeSync(dlp++);
   gDPSetRenderMode(dlp++, G_RM_ZB_OPA_SURF, G_RM_ZB_OPA_SURF2);
-  /* Hand the entity passes back the combiner they inherit rather than the
-     shade-only one above: drawFallingTrees sets no combine of its own, so a
-     frame with no details to draw would otherwise render its trees flat. */
-  gDPSetCombineMode(dlp++, G_CC_MODULATERGB, G_CC_MODULATERGB);
+  /* Every entity pass now sets its own combiner, so this only has to leave
+     behind something harmless rather than the exact mode the next one
+     wanted. */
+  gDPSetCombineMode(dlp++, G_CC_MODULATEI_PRIM, G_CC_MODULATEI_PRIM);
   gSPSetGeometryMode(dlp++, G_CULL_BACK);
 }
 
@@ -3132,16 +3223,12 @@ void drawWorld() {
       setWorldLight(player_num);
       gSPSetLights1(dlp++, world_lights[dl_no][player_num]);
     }
+    /* Water no longer needs an unlit exception here: its surface vertices
+       carry an upward normal like every other top face, so the whole terrain
+       bank goes through the one light. */
     for (i = 0; i < NUM_TEXTURES; i++) {
-      if (textures[i] == &water_spec) {
-        /* Water's dedicated vertices carry white RGB, not normals. */
-        gSPClearGeometryMode(dlp++, G_LIGHTING);
-      }
       loadTexture(textures[i]->texture);
       drawTextured(i, player_num);
-      if (textures[i] == &water_spec) {
-        gSPSetGeometryMode(dlp++, G_LIGHTING);
-      }
     }
     if (!cinematic) {
       if (fogged) {
@@ -3153,7 +3240,17 @@ void drawWorld() {
         gSPClearGeometryMode(dlp++, G_FOG);
       }
       drawGroundShadows();
+      /*
+       * From here the RSP light is off -- this geometry carries colours, not
+       * normals -- and the day/night level reaches it as a primitive colour
+       * the passes below modulate against instead.  Emitted once per viewport
+       * because the tint is a property of the view, not of any one entity.
+       * The sync is the usual precaution before touching an RDP attribute:
+       * drawGroundShadows returns without one when it has nothing to draw.
+       */
+      gDPPipeSync(dlp++);
       gSPClearGeometryMode(dlp++, G_LIGHTING);
+      setEntityTint(entity_tint);
       drawDetailsForPlayer(player_num);
       drawFallingTrees(player_num);
       drawDroppedItems(player_num);
