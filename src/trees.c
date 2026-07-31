@@ -135,6 +135,7 @@ void treesEvictColumn(int cx, int cz) {
  */
 void treesDropOutsideFixedExtent() {
   u8 i;
+  u8 fill = 0;
 
   for (i = 0; i < MAX_TREES; i++) {
     TreeRecord *tree = &trees[i];
@@ -148,6 +149,26 @@ void treesDropOutsideFixedExtent() {
       retireTree(i);
     }
   }
+
+  /*
+   * The save writes only the first TREE_SAVE_COUNT records (the frozen v10
+   * layout), while the live pool is larger to cover the wider decorated
+   * ring.  Pack the survivors below that line so none of them is silently
+   * dropped from the file.  Indices are derived state -- the lookup table is
+   * rebuilt afterwards, and nothing else holds one across frames.
+   */
+  for (i = 0; i < MAX_TREES; i++) {
+    if (trees[i].base_y == TREE_INACTIVE_Y) {
+      continue;
+    }
+    if (fill != i) {
+      trees[fill] = trees[i];
+      trees[i].base_y = TREE_INACTIVE_Y;
+      trees[i].state = TREE_STATE_STANDING;
+    }
+    fill++;
+  }
+  rebuildTreeLookup();
 }
 
 u8 createTree(u8 x, u8 z, u8 base_y, u8 height) {

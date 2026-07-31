@@ -244,8 +244,11 @@ void callbackGfx(int pendingGfx) {
 
         for (dx = -2; dx <= 2 && !urgent; dx++) {
           for (dz = -2; dz <= 2; dz++) {
+            /* Only genuinely missing terrain or mesh is an emergency.  A
+               pending LOD upgrade is routine -- treating it as urgent made
+               every chunk crossing hitch. */
             if (worldColumnState(pcx + dx, pcz + dz) < COLUMN_DECORATED ||
-                graphicsColumnNeedsMesh(pcx + dx, pcz + dz)) {
+                graphicsColumnMissingMesh(pcx + dx, pcz + dz)) {
               urgent = TRUE;
               break;
             }
@@ -439,9 +442,17 @@ static void diagWriteFreezeReport(void) {
     out = diagReportHex(out, "RA", (u32) faulted->context.ra);
     out = diagReportHex(out, "SP", (u32) faulted->context.sp);
   }
-  out = diagReportHex(out, "POSX", *(u32 *) &players[0].position.x);
-  out = diagReportHex(out, "POSY", *(u32 *) &players[0].position.y);
-  out = diagReportHex(out, "POSZ", *(u32 *) &players[0].position.z);
+  {
+    /* Raw float bits without the strict-aliasing trap of pointer punning. */
+    union { float f; u32 raw; } pun;
+
+    pun.f = players[0].position.x;
+    out = diagReportHex(out, "POSX", pun.raw);
+    pun.f = players[0].position.y;
+    out = diagReportHex(out, "POSY", pun.raw);
+    pun.f = players[0].position.z;
+    out = diagReportHex(out, "POSZ", pun.raw);
+  }
   out = diagReportHex(out, "ORGX", (u32) render_origin_x);
   out = diagReportHex(out, "ORGZ", (u32) render_origin_z);
   out = diagReportHex(out, "REBASE", render_rebase_count);

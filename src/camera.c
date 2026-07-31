@@ -15,7 +15,9 @@
 #define FOUR_PLAYER_FOV_RATIO ((float) (SCREEN_WD / 2) / (float) (SCREEN_HT / 2))
 #define NUM_CULL_LINES 4
 #define ALL_ACCEPT ((1 << NUM_CULL_LINES) - 1)
-#define SOLO_MAX_VISIBLE_COLUMNS 128
+/* Tuned on hardware against the W row: 160 was measurably choppy with the
+   wide ring, 120 keeps movement smooth while still doubling the old view. */
+#define SOLO_MAX_VISIBLE_COLUMNS 120
 #define COOP_MAX_VISIBLE_COLUMNS 24
 #define FOUR_PLAYER_MAX_VISIBLE_COLUMNS 8
 #define LOADING_MAX_VISIBLE_COLUMNS 96
@@ -66,7 +68,9 @@ static Line2D cull_lines[NUM_CULL_LINES];
  * residency ring's 15 columns, plus one for the far corners of the last
  * column.  Indexed relative to the span's base, not by absolute chunk.
  */
-#define CULL_RADIUS 7
+/* Matches the decorated/mesh ring: everything that can have geometry is
+   inside this span. */
+#define CULL_RADIUS STREAM_TREE_RADIUS
 #define CULL_SPAN (2 * CULL_RADIUS + 1)
 static u8 point_sides[CULL_SPAN + 1][CULL_SPAN + 1];
 static Player loading_camera;
@@ -200,7 +204,7 @@ static void updateVisibleColumnsFor(u8 player_num, Player *player,
   u16 slot;
   /* A full window is 256 columns, which does not fit the u8 this used to be. */
   u16 visible_count = 0;
-  float dx, dz, distance, farthest_distance;
+  float dx, dz, farthest_distance;
   u8 multiplayer = view_mode == CAMERA_VIEW_TWO_PLAYER ||
     view_mode == CAMERA_VIEW_FOUR_PLAYER;
   u8 max_visible_columns = view_mode == CAMERA_VIEW_LOADING ?
@@ -280,28 +284,42 @@ static void updateVisibleColumnsFor(u8 player_num, Player *player,
     }
   }
 
-  /* The loading orbit has no interaction radius to protect, so its smaller
-     cap trades the most distant terrain for steadier frame pacing.  It still
-     leaves a broad foreground and a full-width landmark horizon. */
-  while (visible_count > max_visible_columns) {
-    u16 farthest_slot = 0;
+  /* Shed the farthest columns down to the cap.  The wider ring can pass a
+     few hundred columns through the frustum, so the trim works from a
+     compact list gathered once rather than rescanning every window slot per
+     removal -- that rescan was quadratic in the overage. */
+  if (visible_count > max_visible_columns) {
+    static u16 trim_slots[CULL_SPAN * CULL_SPAN];
+    static float trim_distance[CULL_SPAN * CULL_SPAN];
+    u16 trim_count = 0;
+    u16 i;
 
-    farthest_distance = -1;
-    for (slot = 0; slot < WINDOW_SLOTS; slot++) {
+    for (slot = 0; slot < WINDOW_SLOTS && trim_count < CULL_SPAN * CULL_SPAN;
+        slot++) {
       if (visible_columns[player_num][slot]) {
         dx = windowSlotChunkX(slot) * CHUNK_SIZE + CHUNK_SIZE / 2 -
           camera_position.x / BLOCK_SIZE;
         dz = windowSlotChunkZ(slot) * CHUNK_SIZE + CHUNK_SIZE / 2 -
           camera_position.z / BLOCK_SIZE;
-        distance = dx * dx + dz * dz;
-        if (distance > farthest_distance) {
-          farthest_distance = distance;
-          farthest_slot = slot;
-        }
+        trim_slots[trim_count] = slot;
+        trim_distance[trim_count] = dx * dx + dz * dz;
+        trim_count++;
       }
     }
-    visible_columns[player_num][farthest_slot] = FALSE;
-    visible_count--;
+    while (visible_count > max_visible_columns) {
+      u16 farthest = 0;
+
+      farthest_distance = -1;
+      for (i = 0; i < trim_count; i++) {
+        if (trim_distance[i] > farthest_distance) {
+          farthest_distance = trim_distance[i];
+          farthest = i;
+        }
+      }
+      visible_columns[player_num][trim_slots[farthest]] = FALSE;
+      trim_distance[farthest] = -2;
+      visible_count--;
+    }
   }
 }
 

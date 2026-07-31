@@ -7,8 +7,15 @@
 
 /* A tree owns only the blocks it placed while generating.  The canopy mask is
    a packed 5 x 5 x 4 volume, so overlapping canopies and player-built logs
-   never become part of the same tree. */
-#define MAX_TREES 96
+   never become part of the same tree.
+
+   The live pool covers the radius-14 decorated ring; the save format is
+   frozen at the original 96 records (TREE_SAVE_COUNT), which comfortably
+   holds every tree the fixed save extent can contain --
+   treesDropOutsideFixedExtent compacts the pool below that line before a
+   save is written. */
+#define MAX_TREES 160
+#define TREE_SAVE_COUNT 96
 #define TREE_INACTIVE_Y 255
 #define TREE_LEAF_MASK_BYTES 13
 

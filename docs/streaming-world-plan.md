@@ -604,7 +604,40 @@ why they land as a pair.
 
 ## Task 5 — Two-ring residency with LOD — in-window LOD and the single arena done; the wide window remains
 
-**Single-arena rewrite — done, not yet hardware-verified.**  The
+**Hardware retune after the first 32×32 run:** radius 12 / cap 160 was
+measurably choppy and the arbitrary mesh order was visible ("terrain paints
+in from the fog toward me").  Now: radii 12/11/10 (view ~80 blocks, twice
+the original), solo cap 120, arena back to 1 MiB (headroom 304 KiB),
+`takeDirtyColumn` picks nearest-player-first so meshing radiates from the
+player outward, and the 25 ms urgency boost keys off *missing* mesh only --
+treating routine LOD promotions as emergencies made every chunk crossing
+hitch.  Deferred-underground generation (surface-only far columns, deepen
+on approach) is logged as the next big streaming-CPU win.
+
+**The 32×32 window — done, not yet hardware-verified.**  `WINDOW_SHIFT` 5,
+radii terrain 14 / waystones 13 / decorated+mesh 12: **view distance ~96
+blocks, 2.2× the old ring**, with the whole far field in shell LOD behind
+the fog.  What paid for it: the reclaimed arena megabyte (block window
+1 MiB), c_models dropped to one matrix per column with b_models extended to
+full column height (the baked format made the chunk dimension pointless),
+`tree_at_root` at the full 256-block wrap, the live tree pool at 160 with
+the on-disk payload frozen at 96 records (`treesDropOutsideFixedExtent`
+compacts below that line, so v10 saves stay byte-compatible), culling spans
+`CULL_RADIUS = STREAM_TREE_RADIUS` with the cap-trim rebuilt from a compact
+candidate list, solo visible cap 160.  Mesh arena 1.125 MiB.  Link headroom
+175 KiB — **audio is deferred**: it needs ~384 KiB, which arrives either
+with a pooled (indirected) block window or post-diff-save trimming.
+Saving also got roomier for free: the radius-14 terrain ring covers the
+whole fixed extent from anywhere inside it, so "too far to save" now only
+triggers genuinely far from the original footprint.
+
+Hardware checks: the horizon at ~96 blocks (retune the fog start — the P
+row wants to sit much farther out now), initial world entry filling ~500
+columns behind the fog, W/B with the 160-column cap in dense terrain, A row
+pressure (alloc-failure cooldowns would show as missing far columns that
+heal), and long-walk stability as before.
+
+**Single-arena rewrite — done, hardware-verified.**  The
 double-buffered pair and the whole compaction machinery are gone.  One
 1 MiB arena, first-fit blocks (one per column: baked vertex region first,
 then per-texture command segments), and a relocation defrag that slides one

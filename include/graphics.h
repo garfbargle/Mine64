@@ -99,8 +99,10 @@ void diagNoteGatedWork(u32 usec);
 void graphicsInvalidateColumnSlot(u32 slot);
 /* Queue a resident column for mesh compilation. */
 void graphicsMarkColumnDirty(int cx, int cz);
-/* TRUE for a resident column with no compiled geometry behind it. */
+/* TRUE for a resident column whose mesh is missing or LOD-stale. */
 u8 graphicsColumnNeedsMesh(int cx, int cz);
+/* TRUE only when the mesh is missing outright -- the urgency signal. */
+u8 graphicsColumnMissingMesh(int cx, int cz);
 void drawWorld();
 void drawWireframes();
 void drawHUD();

@@ -60,6 +60,9 @@ Gfx frame_display_lists[NUM_DISPLAY_LISTS][FRAME_DISPLAY_LIST_SIZE];
  * no compaction pass, no second arena, and no stop-the-world: a fully
  * fragmented arena heals over a few dozen frames while the game runs.
  */
+/* 1 MiB: the radius-10 mesh ring is ~390 shell columns plus the full-detail
+   near disc, and the shells' compact format is what keeps that affordable
+   at all. */
 #define MESH_ARENA_SIZE 131072
 static Gfx mesh_arena[MESH_ARENA_SIZE];
 
@@ -124,7 +127,6 @@ static u8 building_scenic;
    height for every candidate quad. */
 static u8 surface_heights[CHUNK_SIZE][CHUNK_SIZE];
 static u8 dirty_columns[WINDOW_SLOTS];
-static u16 dirty_column_cursor;
 /* Frames left before rebuilds may be attempted after the arena refused an
    allocation; the dirty marks and the ring scan keep the need alive. */
 static u8 mesh_alloc_cooldown;
@@ -359,8 +361,20 @@ void diagNoteGatedWork(u32 usec) {
  * had a permanent address; a slot outlives the column in it, so a slot's
  * matrices are rewritten whenever the column bound to it is compiled.
  */
-static Mtx c_models[WINDOW_SLOTS][CHUNKS_Y];
-static Mtx b_models[CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE];
+/*
+ * One translation per column, indexed by window slot.  The per-chunk second
+ * dimension went with the per-quad matrix scheme: baked columns carry their
+ * own full-height local coordinates, and everything else that needs a block
+ * translation goes through b_models, which now spans the whole column height
+ * -- 2048 matrices instead of 512, cheaper than a chunk dimension on a
+ * thousand slots.
+ */
+static Mtx c_models[WINDOW_SLOTS];
+static Mtx b_models[CHUNK_SIZE * MAX_Y * CHUNK_SIZE];
+
+/* Block translation within a column, matching BLOCK_LOCAL_INDEX's layout. */
+#define B_MODEL_INDEX(bx, y, bz) \
+  ((((u32) (bx) * MAX_Y) + (u32) (y)) * CHUNK_SIZE + (u32) (bz))
 
 /* Water keeps the normal block footprint but leaves a small lip below an
  * adjacent shore.  Only top faces need a special mesh, so this costs 4 KiB
@@ -1386,17 +1400,14 @@ static Gfx *emitColumnTextureDL(u32 slot, u8 texture, u8 lod,
     segment_start = cmds;
     for (i = 0; i < column_baked_total; i++) {
       BakedQuad *q = &column_baked[i];
-      u32 b;
 
       if (q->texture != texture) {
         continue;
       }
-      b = (u32) q->x * CHUNK_SIZE * CHUNK_SIZE +
-        (u32) (q->y & CHUNK_MASK) * CHUNK_SIZE + q->z;
-      gSPMatrix(cmds++,
-        OS_K0_TO_PHYSICAL(&c_models[slot][q->y >> CHUNK_SHIFT]),
+      gSPMatrix(cmds++, OS_K0_TO_PHYSICAL(&c_models[slot]),
         G_MTX_MODELVIEW | G_MTX_LOAD | G_MTX_NOPUSH);
-      gSPMatrix(cmds++, OS_K0_TO_PHYSICAL(b_models + b),
+      gSPMatrix(cmds++,
+        OS_K0_TO_PHYSICAL(b_models + B_MODEL_INDEX(q->x, q->y, q->z)),
         G_MTX_MODELVIEW | G_MTX_MUL | G_MTX_NOPUSH);
       gSPVertex(cmds++, q->water_top ?
         WATER_TOP_QUAD_ADDR(q->width, q->height) :
@@ -1440,7 +1451,7 @@ static Gfx *emitColumnTextureDL(u32 slot, u8 texture, u8 lod,
   *verts_cursor = verts + (u32) n * 4;
 
   segment_start = cmds;
-  gSPMatrix(cmds++, OS_K0_TO_PHYSICAL(&c_models[slot][0]),
+  gSPMatrix(cmds++, OS_K0_TO_PHYSICAL(&c_models[slot]),
     G_MTX_MODELVIEW | G_MTX_LOAD | G_MTX_NOPUSH);
   for (i = 0; i < n; i += BAKED_QUADS_PER_BATCH) {
     u16 batch;
@@ -1464,7 +1475,7 @@ static u8 mesh_build_surface_only;
 static u8 mesh_build_complete;
 
 static u8 makeColumnDisplayLists(int cx, int cz) {
-  u8 texture, cy;
+  u8 texture;
   u32 slot = WINDOW_SLOT(cx, cz);
   u8 lod = building_scenic ? MESH_LOD_SHELL : meshLodFor(cx, cz);
   /* World builds emit the incoming world's generation behind staged
@@ -1484,16 +1495,13 @@ static u8 makeColumnDisplayLists(int cx, int cz) {
   Gfx *cmds_cursor;
   int old_index;
 
-  /* The slot may have held a different column until now, so its translations
-     are rewritten here rather than prebaked once for a fixed world.  Doing it
+  /* The slot may have held a different column until now, so its translation
+     is rewritten here rather than prebaked once for a fixed world.  Doing it
      alongside the mesh keeps the two from ever describing different places.
      Origin-relative: the absolute coordinate no longer fits an s15.16 Mtx. */
-  for (cy = 0; cy < CHUNKS_Y; cy++) {
-    guTranslate(&c_models[slot][cy],
-      (float) (cx * CHUNK_SIZE - render_origin_x) * BLOCK_SIZE,
-      (float) cy * CHUNK_SIZE * BLOCK_SIZE,
-      (float) (cz * CHUNK_SIZE - render_origin_z) * BLOCK_SIZE);
-  }
+  guTranslate(&c_models[slot],
+    (float) (cx * CHUNK_SIZE - render_origin_x) * BLOCK_SIZE, 0,
+    (float) (cz * CHUNK_SIZE - render_origin_z) * BLOCK_SIZE);
 
   if (lod == MESH_LOD_SHELL) {
     u8 bx, bz;
@@ -1615,7 +1623,6 @@ void beginWorldMeshBuild(u8 surface_only) {
   u16 slot;
   u8 texture;
 
-  dirty_column_cursor = 0;
   mesh_alloc_cooldown = 0;
   for (slot = 0; slot < WINDOW_SLOTS; slot++) {
     dirty_columns[slot] = FALSE;
@@ -1699,7 +1706,6 @@ u8 stepWorldMeshBuild(u16 columns) {
 
 void graphicsSetRenderOrigin(int block_x, int block_z) {
   u32 slot;
-  u8 cy;
 
   render_origin_x = block_x;
   render_origin_z = block_z;
@@ -1737,12 +1743,8 @@ void graphicsSetRenderOrigin(int block_x, int block_z) {
       window_key_faults++;
       continue;
     }
-    for (cy = 0; cy < CHUNKS_Y; cy++) {
-      guTranslate(&c_models[slot][cy],
-        (float) off_x * BLOCK_SIZE,
-        (float) cy * CHUNK_SIZE * BLOCK_SIZE,
-        (float) off_z * BLOCK_SIZE);
-    }
+    guTranslate(&c_models[slot], (float) off_x * BLOCK_SIZE, 0,
+      (float) off_z * BLOCK_SIZE);
   }
 }
 
@@ -1797,25 +1799,55 @@ void makeDisplayListsAt(int x, int z) {
   }
 }
 
+/*
+ * Nearest-player-first, so meshing radiates outward from the player.  The
+ * round-robin this replaces picked dirty slots in window order, which is
+ * spatially arbitrary -- harmless when the ring was small, but with
+ * hundreds of columns to fill the player literally watched terrain paint
+ * in from the fog toward them instead of from their feet out.
+ */
 static u8 takeDirtyColumn(int *cx, int *cz) {
-  u16 offset;
+  u16 slot;
+  u16 best_slot = 0;
+  int best_distance = 0;
+  u8 found = FALSE;
 
-  for (offset = 0; offset < WINDOW_SLOTS; offset++) {
-    u16 slot = (dirty_column_cursor + offset) % WINDOW_SLOTS;
-    if (dirty_columns[slot]) {
+  for (slot = 0; slot < WINDOW_SLOTS; slot++) {
+    int distance;
+
+    if (!dirty_columns[slot]) {
+      continue;
+    }
+    /* The window can rebind a slot between an edit and this rebuild, which
+       leaves a mark referring to a column that is no longer there. */
+    if (!windowSlotResident(slot)) {
       dirty_columns[slot] = FALSE;
-      dirty_column_cursor = (slot + 1) % WINDOW_SLOTS;
-      /* The window can rebind a slot between an edit and this rebuild, which
-         leaves a mark referring to a column that is no longer there. */
-      if (!windowSlotResident(slot)) {
-        continue;
-      }
-      *cx = windowSlotChunkX(slot);
-      *cz = windowSlotChunkZ(slot);
-      return TRUE;
+      continue;
+    }
+    distance = columnPlayerDistance(windowSlotChunkX(slot),
+      windowSlotChunkZ(slot));
+    if (!found || distance < best_distance) {
+      found = TRUE;
+      best_distance = distance;
+      best_slot = slot;
     }
   }
-  return FALSE;
+  if (!found) {
+    return FALSE;
+  }
+  dirty_columns[best_slot] = FALSE;
+  *cx = windowSlotChunkX(best_slot);
+  *cz = windowSlotChunkZ(best_slot);
+  return TRUE;
+}
+
+/* TRUE only for a resident column with no geometry at all -- the state that
+   reads as a hole in the world.  A pending LOD upgrade deliberately does not
+   count: the urgency deadline boost keys off this, and treating routine
+   promotions as emergencies made every chunk crossing hitch. */
+u8 graphicsColumnMissingMesh(int cx, int cz) {
+  return windowColumnResident(cx, cz) &&
+    !column_meshed[WINDOW_SLOT(cx, cz)];
 }
 
 u8 graphicsColumnNeedsMesh(int cx, int cz) {
@@ -2561,10 +2593,12 @@ void drawWireframes() {
        keeps the highlight origin-relative for free. */
     gSPMatrix(dlp++,OS_K0_TO_PHYSICAL(&c_models
       [WINDOW_SLOT(players[player_num].target_x >> CHUNK_SHIFT,
-                   players[player_num].target_z >> CHUNK_SHIFT)]
-      [players[player_num].target_y / CHUNK_SIZE]),
+                   players[player_num].target_z >> CHUNK_SHIFT)]),
       G_MTX_MODELVIEW|G_MTX_LOAD|G_MTX_NOPUSH);
-    gSPMatrix(dlp++,OS_K0_TO_PHYSICAL(b_models + (players[player_num].target_x & CHUNK_MASK) * CHUNK_SIZE * CHUNK_SIZE + (players[player_num].target_y % CHUNK_SIZE) * CHUNK_SIZE + (players[player_num].target_z & CHUNK_MASK)),
+    gSPMatrix(dlp++,OS_K0_TO_PHYSICAL(b_models + B_MODEL_INDEX(
+      players[player_num].target_x & CHUNK_MASK,
+      players[player_num].target_y,
+      players[player_num].target_z & CHUNK_MASK)),
       G_MTX_MODELVIEW|G_MTX_MUL|G_MTX_NOPUSH);
     gSPVertex(dlp++, cube_verts, 8, 0);
     gSPDisplayList(dlp++, wireframe_display_list);
@@ -3736,9 +3770,10 @@ void initGraphics() {
      terrain to draw, and nothing reads them. */
 
   for (x = 0; x < CHUNK_SIZE; x++) {
-    for (y = 0; y < CHUNK_SIZE; y++) {
+    for (y = 0; y < MAX_Y; y++) {
       for (z = 0; z < CHUNK_SIZE; z++) {
-        guTranslate(&(b_models[x * CHUNK_SIZE * CHUNK_SIZE + y * CHUNK_SIZE + z]), x * BLOCK_SIZE, y * BLOCK_SIZE, z * BLOCK_SIZE);
+        guTranslate(&(b_models[B_MODEL_INDEX(x, y, z)]),
+          x * BLOCK_SIZE, y * BLOCK_SIZE, z * BLOCK_SIZE);
       }
     }
   }

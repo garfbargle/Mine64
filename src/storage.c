@@ -227,11 +227,17 @@ static u32 checksumWorldTicks(u32 checksum, u32 world_ticks) {
   return checksum;
 }
 
+/* The on-disk tree payload is frozen at the original 96 records even though
+   the live pool grew for the wider streaming ring;
+   treesDropOutsideFixedExtent packs every savable record below this line
+   before a save is written. */
+#define TREE_SAVE_BYTES (TREE_SAVE_COUNT * sizeof(TreeRecord))
+
 static u32 checksumTrees(u32 checksum) {
   u8 *bytes = (u8 *) trees;
   u32 index;
 
-  for (index = 0; index < sizeof(trees); index++) {
+  for (index = 0; index < TREE_SAVE_BYTES; index++) {
     checksum = checksumByte(checksum, bytes[index]);
   }
   return checksum;
@@ -589,7 +595,7 @@ u8 saveGame() {
   u8 had_previous_file;
   int block_x, block_y, block_z;
   u8 *trees_ptr;
-  const u8 *trees_end = (const u8 *) trees + sizeof(trees);
+  const u8 *trees_end = (const u8 *) trees + TREE_SAVE_BYTES;
 
   if (!saving_available || game_file_num < 1 || game_file_num > 3) {
     return FALSE;
@@ -1017,7 +1023,9 @@ void loadGame() {
   }
 
   if (tree_records_saved) {
-    for (trees_ptr = (u8 *) trees; trees_ptr < (u8 *) trees + sizeof(trees);
+    /* Only the frozen 96-record payload is on disk; the rest of the larger
+       live pool stays inactive from initTrees. */
+    for (trees_ptr = (u8 *) trees; trees_ptr < (u8 *) trees + TREE_SAVE_BYTES;
         trees_ptr++) {
       if (cursor_pos >= buffer_bytes_read) {
         if (!readPage(&file)) {
@@ -1030,8 +1038,9 @@ void loadGame() {
     }
   } else {
     if (legacy_tree_records_saved) {
+      /* V5 files carried the original 96-record pool. */
       for (tree_byte = 0;
-          tree_byte < sizeof(TreeRecordV5) * MAX_TREES; tree_byte++) {
+          tree_byte < sizeof(TreeRecordV5) * TREE_SAVE_COUNT; tree_byte++) {
         if (cursor_pos >= buffer_bytes_read) {
           if (!readPage(&file)) {
             read_ok = FALSE;

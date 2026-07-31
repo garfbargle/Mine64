@@ -31,9 +31,12 @@
  * column it is compiling.
  *
  * WINDOW_COLUMNS is a power of two so slot lookup is masking rather than a
- * division; blockGet sits in the meshing inner loop.
+ * division; blockGet sits in the meshing inner loop.  32 columns is a 1 MiB
+ * block window -- the budget the single mesh arena reclaimed -- and is what
+ * lets the residency rings quadruple in area: view distance is bounded by
+ * the decoration ring, which is bounded by the window span.
  */
-#define WINDOW_SHIFT 4
+#define WINDOW_SHIFT 5
 #define WINDOW_COLUMNS (1 << WINDOW_SHIFT)
 #define WINDOW_MASK (WINDOW_COLUMNS - 1)
 #define WINDOW_SLOTS (WINDOW_COLUMNS * WINDOW_COLUMNS)
@@ -190,9 +193,17 @@ u8 worldFixedExtentResident();
  * the columns that should be loaded and lets the ones that should not fall out
  * of the window.
  */
-#define STREAM_TERRAIN_RADIUS 7
-#define STREAM_WAYSTONE_RADIUS 6
-#define STREAM_TREE_RADIUS 5
+/* Chebyshev chunk radii.  Terrain one wider than waystones, waystones one
+   wider than trees: the neighbour gates decorate a column only when
+   everything it can write into is already claimed.  A 32-column window
+   could hold radius 15, but the mesh ring is what the RSP and the arena
+   actually pay for: radius 12 was measurably choppy on hardware, radius 10
+   -- an ~80-block view, still double the original ring -- is the middle
+   ground that keeps movement smooth.  The window slack also cushions the
+   wrap. */
+#define STREAM_TERRAIN_RADIUS 12
+#define STREAM_WAYSTONE_RADIUS 11
+#define STREAM_TREE_RADIUS 10
 
 /*
  * Wall-clock ceiling for the per-callback streaming and meshing work.
