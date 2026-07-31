@@ -45,7 +45,8 @@ enum CameraViewMode {
   CAMERA_VIEW_LOADING
 };
 
-u8 visible_columns[MAX_PLAYERS][CHUNKS_X * CHUNKS_Z];
+/* Indexed by window slot, matching the per-column tables in graphics.c. */
+u8 visible_columns[MAX_PLAYERS][WINDOW_SLOTS];
 u8 third_person_avatar_visible[MAX_PLAYERS];
 
 /*
@@ -187,8 +188,9 @@ static void updateVisibleColumnsFor(u8 player_num, Player *player,
     Vector3 camera_position, u8 view_mode) {
   u8 cx, cz, i;
   u8 s1, s2, s3, s4;
-  u8 visible_count = 0;
-  u8 farthest_x = 0, farthest_z = 0;
+  u16 slot;
+  /* A full window is 256 columns, which does not fit the u8 this used to be. */
+  u16 visible_count = 0;
   float dx, dz, distance, farthest_distance;
   u8 multiplayer = view_mode == CAMERA_VIEW_TWO_PLAYER ||
     view_mode == CAMERA_VIEW_FOUR_PLAYER;
@@ -217,13 +219,22 @@ static void updateVisibleColumnsFor(u8 player_num, Player *player,
     }
   }
 
+  /* Visibility is recorded per window slot, so clear every slot first: one the
+     extent below never visits must not keep a stale mark and send the draw
+     loop to a column that is no longer resident. */
+  for (slot = 0; slot < WINDOW_SLOTS; slot++) {
+    visible_columns[player_num][slot] = FALSE;
+  }
+
   for (cx = 0; cx < CHUNKS_X; cx++) {
     for (cz = 0; cz < CHUNKS_Z; cz++) {
+      u8 visible;
+
       s1 = point_sides[cx][cz];
       s2 = point_sides[cx + 1][cz];
       s3 = point_sides[cx][cz + 1];
       s4 = point_sides[cx + 1][cz + 1];
-      visible_columns[player_num][cx * CHUNKS_Z + cz] = (s1 | s2 | s3 | s4) == ALL_ACCEPT;
+      visible = (s1 | s2 | s3 | s4) == ALL_ACCEPT;
 
       /* A radius limit prevents multiplayer cameras from turning co-op into
          a worst-case multi-RSP transform. The world is fourteen chunks wide. */
@@ -232,9 +243,14 @@ static void updateVisibleColumnsFor(u8 player_num, Player *player,
       dz = cz * CHUNK_SIZE + CHUNK_SIZE / 2 -
         camera_position.z / BLOCK_SIZE;
       if (multiplayer && dx * dx + dz * dz > 1600) {
-        visible_columns[player_num][cx * CHUNKS_Z + cz] = FALSE;
+        visible = FALSE;
       }
-      if (visible_columns[player_num][cx * CHUNKS_Z + cz]) visible_count++;
+      /* An unbound slot has no mesh behind it. */
+      if (!windowColumnResident(cx, cz)) {
+        visible = FALSE;
+      }
+      visible_columns[player_num][WINDOW_SLOT(cx, cz)] = visible;
+      if (visible) visible_count++;
     }
   }
 
@@ -242,24 +258,23 @@ static void updateVisibleColumnsFor(u8 player_num, Player *player,
      cap trades the most distant terrain for steadier frame pacing.  It still
      leaves a broad foreground and a full-width landmark horizon. */
   while (visible_count > max_visible_columns) {
+    u16 farthest_slot = 0;
+
     farthest_distance = -1;
-    for (cx = 0; cx < CHUNKS_X; cx++) {
-      for (cz = 0; cz < CHUNKS_Z; cz++) {
-        if (visible_columns[player_num][cx * CHUNKS_Z + cz]) {
-          dx = cx * CHUNK_SIZE + CHUNK_SIZE / 2 -
-            camera_position.x / BLOCK_SIZE;
-          dz = cz * CHUNK_SIZE + CHUNK_SIZE / 2 -
-            camera_position.z / BLOCK_SIZE;
-          distance = dx * dx + dz * dz;
-          if (distance > farthest_distance) {
-            farthest_distance = distance;
-            farthest_x = cx;
-            farthest_z = cz;
-          }
+    for (slot = 0; slot < WINDOW_SLOTS; slot++) {
+      if (visible_columns[player_num][slot]) {
+        dx = windowSlotChunkX(slot) * CHUNK_SIZE + CHUNK_SIZE / 2 -
+          camera_position.x / BLOCK_SIZE;
+        dz = windowSlotChunkZ(slot) * CHUNK_SIZE + CHUNK_SIZE / 2 -
+          camera_position.z / BLOCK_SIZE;
+        distance = dx * dx + dz * dz;
+        if (distance > farthest_distance) {
+          farthest_distance = distance;
+          farthest_slot = slot;
         }
       }
     }
-    visible_columns[player_num][farthest_x * CHUNKS_Z + farthest_z] = FALSE;
+    visible_columns[player_num][farthest_slot] = FALSE;
     visible_count--;
   }
 }

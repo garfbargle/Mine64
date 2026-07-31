@@ -61,7 +61,77 @@ Because generation is a pure function of `(x, z, seed)`, an unmodified chunk
 costs zero bytes: evict it and regenerate it identically later. Eviction is
 **clean → drop, dirty → write diff**.
 
-## Task 2 — Widen coordinates, rebase the origin
+## Task 2 — Widen coordinates, rebase the origin — *in progress*
+
+**Two decisions taken that differ from what is written below.**
+
+*Coordinates stay absolute.* Rather than shifting entity positions when the
+origin moves, block coordinates (`s32`) and entity positions (`float`) stay
+absolute, and the render origin is subtracted only where a world position
+becomes an `Mtx`. That is five sites — `cam_translate`, `steve_translate`,
+`mob_translate`, `dropped_item_translate`, `falling_tree_translate` — plus
+`c_models`, and it means no churn at all in `player.c`, `mobs.c` or `items.c`.
+The cost is float precision: the mantissa gives about 1/128 of a block at
+±100k blocks out, which is far past anywhere this game can be walked.
+
+*Streaming lands before rebasing.* Inside ±512 blocks the matrices are already
+valid, so streaming can be built and debugged there first and any fault is
+unambiguously a streaming fault. Given the console cannot be observed from a
+dev machine, not stacking two new failure modes is worth more than doing these
+in the order they are numbered.
+
+**Increment 1 — per-column tables indexed by window slot — done.** A slot is
+the only name a column has once the world loses its edges, and it is what stays
+valid when the window rebinds. `c_models` (now `[WINDOW_SLOTS][CHUNKS_Y]`,
+written by `makeColumnDisplayLists` rather than prebaked in `initGraphics`),
+`column_starts`, `dirty_columns` and `visible_columns` all moved. Iteration
+still walks the fixed extent, so this is storage relabelling with no visible
+effect — deliberately, because it has to be verified on hardware.
+`drawTextured` in particular still walks world order: slot order draws the same
+columns in a different sequence, and sequence decides both alpha-blended water
+compositing and which columns the frame budget sheds. Costs ~23 KiB
+(`c_models` 50→64 KiB, `column_starts` 25→33 KiB); non-audio free RAM
+392→369 KiB.
+
+**Increment 2 — per-column generation — done.** Generation no longer assumes
+it is walking the whole world in x order.
+
+- The three rotating world-width height rows are gone, replaced by a 10×10
+  `height_patch` per chunk. The rows got terrain sampling down to one
+  multi-octave sample per block column, but only by sweeping x and keeping the
+  adjacent rows alive. The patch costs ~1.6 samples per block column and buys
+  the ability to build a chunk alone.
+- A column advances `EMPTY → TERRAIN → WAYSTONED → DECORATED`, gated on its
+  neighbours. Decoration reaches across boundaries — a tree writes canopy two
+  blocks out, a waystone reads ground two blocks east and south — and
+  waystones must all be placed before any tree decides, because a waystone
+  takes ground a tree would have rooted in. The gates are what make the result
+  independent of the order columns stream in.
+- `stepWorldGeneration` now walks *chunk* columns in three whole-extent
+  passes, which satisfies the same gates globally. `WORLD_GEN_COLUMNS_PER_STEP`
+  is therefore 1, not 48.
+
+**The invariant streaming must honour:** a neighbour that is not resident
+counts as satisfied, not as behind — otherwise a fixed world's edge columns
+would wait forever on columns outside the map. So **the ring that gets terrain
+must be one column wider than the ring that gets decorated**, or a canopy
+reaching into an unclaimed column is silently dropped.
+
+Verified in `tools/gentest`: building every column singly, in a shuffled order,
+with decoration driven to a fixpoint in a freshly shuffled order each round,
+produces a world byte-identical to the whole-world passes — across eight seeds.
+Multiple seeds matter because a tree canopy suppresses a tree that would have
+rooted under it, so adjacent-column trees are an order-dependent pair a single
+seed can easily not contain.
+
+One accepted change: decoration order moved from block-major over the whole
+world to chunk-column-major, so a *newly generated* world can differ from what
+earlier code produced for the same seed, in the rare case of two features
+within two blocks of each other. Saves carry blocks, so nothing existing moves.
+
+Remaining: the residency loop itself, then origin rebasing.
+
+### Original notes
 
 N64 `Mtx` is **s15.16 fixed point**. The integer part is 16 bits, so with
 `BLOCK_SIZE 64` translations lose sub-block precision past ±32767/64 ≈ **±512

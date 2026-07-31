@@ -126,6 +126,29 @@ static __inline__ __attribute__((unused)) void blockSet(int x, int y, int z,
    Generation and streaming both acquire columns through this. */
 u8 *windowClaimColumn(int cx, int cz);
 u8 windowColumnResident(int cx, int cz);
+
+/*
+ * Which column a slot currently holds.  Rendering indexes its per-column
+ * tables by slot rather than by a position in a fixed world, so it needs to
+ * get back from a slot to the coordinates it stands for.
+ *
+ * Each axis is a 15-bit two's complement field in the key.  Recovering the
+ * sign by flipping the field's own sign bit and subtracting keeps it defined
+ * for negative chunks, which shifting a value up into bit 31 would not.
+ */
+static __inline__ __attribute__((unused)) u8 windowSlotResident(u32 slot) {
+  return (window_keys[slot] & 0x80000000u) != 0;
+}
+
+static __inline__ __attribute__((unused)) int windowSlotChunkX(u32 slot) {
+  u32 field = (window_keys[slot] >> 15) & 0x7FFFu;
+  return (int) (field ^ 0x4000u) - 0x4000;
+}
+
+static __inline__ __attribute__((unused)) int windowSlotChunkZ(u32 slot) {
+  u32 field = window_keys[slot] & 0x7FFFu;
+  return (int) (field ^ 0x4000u) - 0x4000;
+}
 void windowReset();
 /* Bind every column of the fixed MAX_X by MAX_Z extent, for whole-world
    generation and whole-world loading. */
@@ -140,6 +163,23 @@ void initWorld();
    submitting frames while a world builds. */
 void beginWorldGeneration();
 u8 stepWorldGeneration(u32 columns);
+
+/*
+ * Per-column generation.  Terrain can always be built alone; decoration
+ * reaches into neighbouring columns, so it advances through stages and only
+ * when the neighbours it touches have caught up.  Driving these directly is
+ * how streaming builds a column, and running them as three whole-extent passes
+ * is how a fixed world is built -- both produce the same world.
+ */
+#define COLUMN_EMPTY 0
+#define COLUMN_TERRAIN 1
+#define COLUMN_WAYSTONED 2
+#define COLUMN_DECORATED 3
+
+u8 worldColumnState(int cx, int cz);
+void worldGenerateColumnTerrain(int cx, int cz);
+/* FALSE while the column still needs a neighbour to catch up. */
+u8 worldAdvanceColumnDecoration(int cx, int cz);
 u8 worldGenerationActive();
 u8 worldGenerationProgress();
 u8 tryPlantTree(int x, int y, int z);

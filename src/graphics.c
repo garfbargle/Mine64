@@ -51,8 +51,13 @@ Gfx frame_display_lists[NUM_DISPLAY_LISTS][FRAME_DISPLAY_LIST_SIZE];
 #define FRAME_COMMAND_TAIL_RESERVE 2048
 static Gfx column_display_lists[NUM_COLUMN_ARENAS][DISPLAY_LIST_SIZE];
 Gfx *column_dlp;
-static Gfx *column_starts[NUM_COLUMN_ARENAS][NUM_TEXTURES]
-  [CHUNKS_X * CHUNKS_Z];
+/*
+ * Per-column tables are indexed by window slot, not by a position in a fixed
+ * world.  A slot is the only name a column still has once the world stops
+ * having edges, and it is what stays valid when the window scrolls and rebinds
+ * the slot to a different column.
+ */
+static Gfx *column_starts[NUM_COLUMN_ARENAS][NUM_TEXTURES][WINDOW_SLOTS];
 static Gfx *column_arena_ends[NUM_COLUMN_ARENAS];
 static u8 active_column_arena;
 /* Hard ceiling for terrain branches within one frame list.  Release builds
@@ -72,8 +77,12 @@ static u8 building_surface_mesh;
 static u8 surface_heights[CHUNK_SIZE][CHUNK_SIZE];
 static u8 column_build_arena;
 static u8 column_display_list_full;
-static u8 dirty_columns[CHUNKS_X * CHUNKS_Z];
-static u8 dirty_column_cursor;
+static u8 dirty_columns[WINDOW_SLOTS];
+static u16 dirty_column_cursor;
+/* The column makeColumnDisplayLists is compiling, for the parts of quad
+   emission that need to know where in the world they are. */
+static int building_column_x;
+static int building_column_z;
 static u8 compacting_columns;
 static u16 compaction_column_cursor;
 
@@ -83,7 +92,13 @@ static Gfx empty_column_display_list[] = {
 
 #define BLOCKS_PER_CHUNK (CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE)
 
-static Mtx c_models[NUM_BLOCKS / BLOCKS_PER_CHUNK];
+/*
+ * One translation per chunk, indexed by the window slot its column occupies.
+ * These used to be prebaked once in initGraphics for a world whose chunks each
+ * had a permanent address; a slot outlives the column in it, so a slot's
+ * matrices are rewritten whenever the column bound to it is compiled.
+ */
+static Mtx c_models[WINDOW_SLOTS][CHUNKS_Y];
 static Mtx b_models[CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE];
 
 /* Water keeps the normal block footprint but leaves a small lip below an
@@ -593,8 +608,19 @@ static Gfx draw_setup_display_list[] = {
 };
 
 static Gfx wireframe_setup_display_list[] = {
+  /* Cycle type and render mode below reconfigure the RDP, which is only safe
+     once the pipe has drained. */
+  gsDPPipeSync(),
   gsDPSetCycleType(G_CYC_1CYCLE),
   gsDPSetRenderMode(G_RM_ZB_OPA_SURF, G_RM_ZB_OPA_SURF2),
+  /*
+   * The outline set no combiner of its own, so it drew with whatever the last
+   * thing on screen had left: shade if a mob or an untextured drop was in
+   * view, modulate against a stale texture tile otherwise.  That made the
+   * targeting box brighter or dimmer depending on whether an animal happened
+   * to wander past.  Shade-only ties it to the vertex colour and nothing else.
+   */
+  gsDPSetCombineMode(G_CC_SHADE, G_CC_SHADE),
   gsSPClearGeometryMode(0xFFFFFFFF),
   gsSPSetGeometryMode(G_ZBUFFER | G_CULL_BACK | G_SHADE | G_SHADING_SMOOTH),
   gsSPEndDisplayList()
@@ -715,25 +741,24 @@ static void beginColumnArenaBuild(u8 arena) {
 }
 
 static void resetColumnArenaBuild(u8 arena) {
-  u16 column;
+  u16 slot;
   u8 texture;
 
   beginColumnArenaBuild(arena);
   for (texture = 0; texture < NUM_TEXTURES; texture++) {
-    for (column = 0; column < CHUNKS_X * CHUNKS_Z; column++) {
-      column_starts[arena][texture][column] = empty_column_display_list;
+    for (slot = 0; slot < WINDOW_SLOTS; slot++) {
+      column_starts[arena][texture][slot] = empty_column_display_list;
     }
   }
 }
 
-static void makeQuadDL(u16 chunk, u8 bx, u8 by, u8 bz, u8 width, u8 height,
-    u8 face, u8 is_water) {
+static void makeQuadDL(u32 slot, u8 cy, u8 bx, u8 by, u8 bz, u8 width,
+    u8 height, u8 face, u8 is_water) {
   u32 b = bx * CHUNK_SIZE * CHUNK_SIZE + by * CHUNK_SIZE + bz;
 
   if (building_surface_mesh) {
-    u8 cx = chunk / (CHUNKS_Y * CHUNKS_Z);
-    u8 cy = (chunk / CHUNKS_Z) % CHUNKS_Y;
-    u8 cz = chunk % CHUNKS_Z;
+    int cx = building_column_x;
+    int cz = building_column_z;
     int max_quad_y = cy * CHUNK_SIZE + by;
     int surface_y;
 
@@ -771,7 +796,7 @@ static void makeQuadDL(u16 chunk, u8 bx, u8 by, u8 bz, u8 width, u8 height,
     column_display_list_full = TRUE;
     return;
   }
-  gSPMatrix(column_dlp++,OS_K0_TO_PHYSICAL(c_models + chunk),
+  gSPMatrix(column_dlp++,OS_K0_TO_PHYSICAL(&c_models[slot][cy]),
     G_MTX_MODELVIEW|G_MTX_LOAD|G_MTX_NOPUSH);
   gSPMatrix(column_dlp++,OS_K0_TO_PHYSICAL(b_models + b),
     G_MTX_MODELVIEW|G_MTX_MUL|G_MTX_NOPUSH);
@@ -780,22 +805,22 @@ static void makeQuadDL(u16 chunk, u8 bx, u8 by, u8 bz, u8 width, u8 height,
   gSP1Quadrangle(column_dlp++, 3, 2, 1, 0, 0);
 }
 
-static void makeQuadDLRST(u16 chunk, u8 br, u8 bs, u8 bt, u8 axes, u8 width,
-    u8 height, u8 face, u8 is_water) {
+static void makeQuadDLRST(u32 slot, u8 cy, u8 br, u8 bs, u8 bt, u8 axes,
+    u8 width, u8 height, u8 face, u8 is_water) {
   if (face == NONE) {
     return;
   }
 
   if (axes == ZXY) {
-    makeQuadDL(chunk, bs, bt, br, width, height, face, is_water);
+    makeQuadDL(slot, cy, bs, bt, br, width, height, face, is_water);
   } else if (axes == XZY) {
-    makeQuadDL(chunk, br, bt, bs, width, height, face, is_water);
+    makeQuadDL(slot, cy, br, bt, bs, width, height, face, is_water);
   } else if (axes == YXZ) {
-    makeQuadDL(chunk, bs, br, bt, width, height, face, is_water);
+    makeQuadDL(slot, cy, bs, br, bt, width, height, face, is_water);
   }
 }
 
-static void makeChunkAxisDL(DualQuadList *axis_quads, u16 chunk, u8 axes,
+static void makeChunkAxisDL(DualQuadList *axis_quads, u32 slot, u8 cy, u8 axes,
     u8 face1, u8 face2, u8 block) {
   u8 br, i;
   DualQuadList *both_quads;
@@ -803,7 +828,8 @@ static void makeChunkAxisDL(DualQuadList *axis_quads, u16 chunk, u8 axes,
     both_quads = &(axis_quads)[br];
     for (i = 0; i < both_quads->n_front + both_quads->n_back; i++) {
       if (both_quads->quads[i].block == block) {
-        makeQuadDLRST(chunk, br, both_quads->quads[i].bs, both_quads->quads[i].bt, axes,
+        makeQuadDLRST(slot, cy, br, both_quads->quads[i].bs,
+          both_quads->quads[i].bt, axes,
           both_quads->quads[i].width, both_quads->quads[i].height,
           i < both_quads->n_front ? face1 : face2, block == WATER);
       }
@@ -811,9 +837,8 @@ static void makeChunkAxisDL(DualQuadList *axis_quads, u16 chunk, u8 axes,
   }
 }
 
-static u8 makeColumnDL(u8 cx, u8 cz, u8 texture, Gfx **new_start) {
+static u8 makeColumnDL(u32 slot, u8 texture, Gfx **new_start) {
   u8 cy, i;
-  u16 chunk;
   Gfx *texture_start;
   ChunkQuads *c_quads;
   FaceSpec *faces = textures[texture]->faces;
@@ -826,17 +851,16 @@ static u8 makeColumnDL(u8 cx, u8 cz, u8 texture, Gfx **new_start) {
   texture_start = column_dlp;
 
   for (cy = 0; cy < CHUNKS_Y; cy++) {
-    chunk = cx * CHUNKS_Y * CHUNKS_Z + cy * CHUNKS_Z + cz;
     c_quads = &column_quads[cy];
 
     for (i = 0; i < textures[texture]->n_faces; i++) {
       if (faces[i].sides) {
-        makeChunkAxisDL(c_quads->z_quads, chunk, ZXY, FRONT, BACK, faces[i].block);
-        makeChunkAxisDL(c_quads->x_quads, chunk, XZY, RIGHT, LEFT, faces[i].block);
+        makeChunkAxisDL(c_quads->z_quads, slot, cy, ZXY, FRONT, BACK, faces[i].block);
+        makeChunkAxisDL(c_quads->x_quads, slot, cy, XZY, RIGHT, LEFT, faces[i].block);
       }
 
       if (faces[i].top || faces[i].bottom) {
-        makeChunkAxisDL(c_quads->y_quads, chunk, YXZ, faces[i].top? TOP : NONE, faces[i].bottom? BOTTOM : NONE, faces[i].block);
+        makeChunkAxisDL(c_quads->y_quads, slot, cy, YXZ, faces[i].top? TOP : NONE, faces[i].bottom? BOTTOM : NONE, faces[i].block);
       }
     }
   }
@@ -857,11 +881,24 @@ static u8 makeColumnDL(u8 cx, u8 cz, u8 texture, Gfx **new_start) {
   return TRUE;
 }
 
-static u8 makeColumnDisplayLists(u8 cx, u8 cz) {
-  u8 texture;
-  u16 column = cx * CHUNKS_Z + cz;
+static u8 makeColumnDisplayLists(int cx, int cz) {
+  u8 texture, cy;
+  u32 slot = WINDOW_SLOT(cx, cz);
   Gfx *column_start = column_dlp;
   Gfx *new_starts[NUM_TEXTURES];
+
+  building_column_x = cx;
+  building_column_z = cz;
+
+  /* The slot may have held a different column until now, so its translations
+     are rewritten here rather than prebaked once for a fixed world.  Doing it
+     alongside the mesh keeps the two from ever describing different places. */
+  for (cy = 0; cy < CHUNKS_Y; cy++) {
+    guTranslate(&c_models[slot][cy],
+      (float) cx * CHUNK_SIZE * BLOCK_SIZE,
+      (float) cy * CHUNK_SIZE * BLOCK_SIZE,
+      (float) cz * CHUNK_SIZE * BLOCK_SIZE);
+  }
 
   /* Do not publish any new pointer until every material in the replacement
      column fits. Previous RSP tasks can keep reading the old immutable lists,
@@ -893,15 +930,14 @@ static u8 makeColumnDisplayLists(u8 cx, u8 cz) {
   }
   makeColumnGeometry(cx, cz);
   for (texture = 0; texture < NUM_TEXTURES; texture++) {
-    if (!makeColumnDL(cx, cz, texture, &new_starts[texture])) {
+    if (!makeColumnDL(slot, texture, &new_starts[texture])) {
       column_dlp = column_start;
       column_display_list_full = TRUE;
       return FALSE;
     }
   }
   for (texture = 0; texture < NUM_TEXTURES; texture++) {
-    column_starts[column_build_arena][texture][column] =
-      new_starts[texture];
+    column_starts[column_build_arena][texture][slot] = new_starts[texture];
   }
   return TRUE;
 }
@@ -940,12 +976,12 @@ static u8 mesh_build_complete;
  * only when complete, so the outgoing world keeps rendering throughout.
  */
 void beginWorldMeshBuild(u8 surface_only) {
-  u16 column;
+  u16 slot;
 
   compacting_columns = FALSE;
   dirty_column_cursor = 0;
-  for (column = 0; column < CHUNKS_X * CHUNKS_Z; column++) {
-    dirty_columns[column] = FALSE;
+  for (slot = 0; slot < WINDOW_SLOTS; slot++) {
+    dirty_columns[slot] = FALSE;
   }
   mesh_build_arena = active_column_arena ^ 1;
   mesh_build_surface_only = surface_only;
@@ -1025,15 +1061,17 @@ u8 makeGameWorldDisplayLists() {
   return buildAllColumns(FALSE);
 }
 
-static void markColumnDirty(u8 cx, u8 cz) {
-  if (cx < CHUNKS_X && cz < CHUNKS_Z) {
-    dirty_columns[cx * CHUNKS_Z + cz] = TRUE;
+static void markColumnDirty(int cx, int cz) {
+  /* Only a resident column has anything to rebuild; an edit that reaches past
+     the window has no mesh to invalidate. */
+  if (windowColumnResident(cx, cz)) {
+    dirty_columns[WINDOW_SLOT(cx, cz)] = TRUE;
   }
 }
 
 void makeDisplayListsAt(u8 x, u8 z) {
-  u8 cx = x / CHUNK_SIZE;
-  u8 cz = z / CHUNK_SIZE;
+  int cx = x / CHUNK_SIZE;
+  int cz = z / CHUNK_SIZE;
 
   /* Block edits are cheap to mark now.  A later graphics callback bakes a
      bounded amount of geometry, so mining and tree felling cannot monopolize
@@ -1047,17 +1085,21 @@ void makeDisplayListsAt(u8 x, u8 z) {
   }
 }
 
-static u8 takeDirtyColumn(u8 *cx, u8 *cz) {
+static u8 takeDirtyColumn(int *cx, int *cz) {
   u16 offset;
-  u16 count = CHUNKS_X * CHUNKS_Z;
 
-  for (offset = 0; offset < count; offset++) {
-    u16 index = (dirty_column_cursor + offset) % count;
-    if (dirty_columns[index]) {
-      dirty_columns[index] = FALSE;
-      dirty_column_cursor = (index + 1) % count;
-      *cx = index / CHUNKS_Z;
-      *cz = index % CHUNKS_Z;
+  for (offset = 0; offset < WINDOW_SLOTS; offset++) {
+    u16 slot = (dirty_column_cursor + offset) % WINDOW_SLOTS;
+    if (dirty_columns[slot]) {
+      dirty_columns[slot] = FALSE;
+      dirty_column_cursor = (slot + 1) % WINDOW_SLOTS;
+      /* The window can rebind a slot between an edit and this rebuild, which
+         leaves a mark referring to a column that is no longer there. */
+      if (!windowSlotResident(slot)) {
+        continue;
+      }
+      *cx = windowSlotChunkX(slot);
+      *cz = windowSlotChunkZ(slot);
       return TRUE;
     }
   }
@@ -1109,7 +1151,7 @@ static void processColumnDisplayListUpdates(int can_reclaim_mesh_arena) {
   }
 
   for (budget = 0; budget < MESH_REBUILD_BUDGET; budget++) {
-    u8 cx, cz;
+    int cx, cz;
     if (!takeDirtyColumn(&cx, &cz)) {
       break;
     }
@@ -1130,18 +1172,27 @@ static void processColumnDisplayListUpdates(int can_reclaim_mesh_arena) {
 }
 
 void drawTextured(u8 texture, u8 player_num) {
-  u8 cx, cz;
+  int cx, cz;
+
+  /*
+   * Still walked in world order rather than slot order.  Slot order would draw
+   * the same set of columns, but in a different sequence, and terrain order is
+   * not purely cosmetic: water is alpha blended, and the frame budget below
+   * sheds whatever has not been emitted yet, so the sequence decides which
+   * columns are dropped.  Streaming will have to revisit this; keeping it here
+   * makes the move to slot-indexed storage a change with no visible effect.
+   */
   for (cx = 0; cx < CHUNKS_X; cx++) {
     for (cz = 0; cz < CHUNKS_Z; cz++) {
-      if (visible_columns[player_num][cx * CHUNKS_Z + cz]) {
+      if (visible_columns[player_num][WINDOW_SLOT(cx, cz)]) {
         /* Dropping the most distant terrain is survivable; overrunning the
            frame buffer is not. */
         if (dlp >= frame_dlp_limit) {
           frame_overflows++;
           return;
         }
-        gSPDisplayList(dlp++, column_starts[active_column_arena][texture]
-          [cx * CHUNKS_Z + cz]);
+        gSPDisplayList(dlp++,
+          column_starts[active_column_arena][texture][WINDOW_SLOT(cx, cz)]);
       }
     }
   }
@@ -1344,8 +1395,8 @@ static u8 pointVisibleToPlayer(u8 viewer_num, Vector3 point,
   if (dot(offset, offset) > max_distance * max_distance) {
     return FALSE;
   }
-  return cx >= 0 && cx < CHUNKS_X && cz >= 0 && cz < CHUNKS_Z &&
-    visible_columns[viewer_num][cx * CHUNKS_Z + cz];
+  return windowColumnResident(cx, cz) &&
+    visible_columns[viewer_num][WINDOW_SLOT(cx, cz)];
 }
 
 static void setMobPartTransform(u8 mob_num, u8 part,
@@ -1732,7 +1783,10 @@ void drawWireframes() {
     }
     gSPDisplayList(dlp++, wireframe_setup_display_list);
     loadCameraMatrices(player_num);
-    gSPMatrix(dlp++,OS_K0_TO_PHYSICAL(c_models + (players[player_num].target_x / CHUNK_SIZE) * CHUNKS_Y * CHUNKS_Z + (players[player_num].target_y / CHUNK_SIZE) * CHUNKS_Z + (players[player_num].target_z / CHUNK_SIZE)),
+    gSPMatrix(dlp++,OS_K0_TO_PHYSICAL(&c_models
+      [WINDOW_SLOT(players[player_num].target_x / CHUNK_SIZE,
+                   players[player_num].target_z / CHUNK_SIZE)]
+      [players[player_num].target_y / CHUNK_SIZE]),
       G_MTX_MODELVIEW|G_MTX_LOAD|G_MTX_NOPUSH);
     gSPMatrix(dlp++,OS_K0_TO_PHYSICAL(b_models + (players[player_num].target_x % CHUNK_SIZE) * CHUNK_SIZE * CHUNK_SIZE + (players[player_num].target_y % CHUNK_SIZE) * CHUNK_SIZE + (players[player_num].target_z % CHUNK_SIZE)),
       G_MTX_MODELVIEW|G_MTX_MUL|G_MTX_NOPUSH);
@@ -2774,13 +2828,10 @@ void initGraphics() {
   nuGfxInit();
   nuGfxDisplayOn();
 
-  for (x = 0; x < CHUNKS_X; x++) {
-    for (y = 0; y < CHUNKS_Y; y++) {
-      for (z = 0; z < CHUNKS_Z; z++) {
-        guTranslate(&(c_models[x * CHUNKS_Y * CHUNKS_Z + y * CHUNKS_Z + z]), x * BLOCK_SIZE * CHUNK_SIZE, y * BLOCK_SIZE * CHUNK_SIZE, z * BLOCK_SIZE * CHUNK_SIZE);
-      }
-    }
-  }
+  /* Chunk translations are no longer prebaked here.  A slot's matrices belong
+     to whichever column is bound to it, so makeColumnDisplayLists writes them
+     as it compiles that column.  Until the first world is built there is no
+     terrain to draw, and nothing reads them. */
 
   for (x = 0; x < CHUNK_SIZE; x++) {
     for (y = 0; y < CHUNK_SIZE; y++) {

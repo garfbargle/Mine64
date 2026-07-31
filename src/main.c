@@ -38,7 +38,9 @@
  * full greedy pass over four chunks, so these are deliberately small: the
  * point is a world that arrives smoothly, not one that arrives fastest.
  */
-#define WORLD_GEN_COLUMNS_PER_STEP 48
+/* Counted in chunk columns now, not block columns: one step builds a whole
+   8x32x8 column, which is roughly what 48 block columns used to cost. */
+#define WORLD_GEN_COLUMNS_PER_STEP 1
 #define WORLD_MESH_COLUMNS_PER_STEP 3
 
 static u8 world_job_stage = WORLD_JOB_IDLE;

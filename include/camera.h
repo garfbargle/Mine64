@@ -5,7 +5,7 @@
 #include "geometry.h"
 #include "player.h"
 
-extern u8 visible_columns[MAX_PLAYERS][CHUNKS_X * CHUNKS_Z];
+extern u8 visible_columns[MAX_PLAYERS][WINDOW_SLOTS];
 extern u8 third_person_avatar_visible[MAX_PLAYERS];
 
 void initCamera();

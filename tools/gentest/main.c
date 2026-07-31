@@ -111,7 +111,119 @@ static int countColumnsContaining(const u8 *world, u8 block, u8 or_block) {
   return columns;
 }
 
+/*
+ * The property streaming actually needs: a column built on its own, in
+ * whatever order the player happened to walk, is the column the whole-world
+ * passes would have produced.  Terrain goes in shuffled, then decoration is
+ * driven to a fixpoint in a freshly shuffled order each round, so nothing can
+ * quietly depend on columns being reached in a sweep.
+ */
+static u32 shuffle_state = 0x2F6E2B1u;
+
+static u32 nextShuffle(u32 limit) {
+  shuffle_state ^= shuffle_state << 13;
+  shuffle_state ^= shuffle_state >> 17;
+  shuffle_state ^= shuffle_state << 5;
+  return shuffle_state % limit;
+}
+
+static void shuffleOrder(int *order, int count) {
+  int i;
+
+  for (i = count - 1; i > 0; i--) {
+    int j = (int) nextShuffle((u32) (i + 1));
+    int swap = order[i];
+    order[i] = order[j];
+    order[j] = swap;
+  }
+}
+
+static void generateColumnByColumn(u64 time) {
+  static int order[CHUNKS_X * CHUNKS_Z];
+  const int count = CHUNKS_X * CHUNKS_Z;
+  int i, round, pending;
+
+  /* Claims the extent and clears the per-column states, then the passes are
+     bypassed entirely in favour of driving single columns. */
+  gentestSetTime(time);
+  beginWorldGeneration();
+
+  for (i = 0; i < count; i++) {
+    order[i] = i;
+  }
+
+  shuffleOrder(order, count);
+  for (i = 0; i < count; i++) {
+    worldGenerateColumnTerrain(order[i] / CHUNKS_Z, order[i] % CHUNKS_Z);
+  }
+
+  /* Each round re-shuffles, so a column blocked on a neighbour is retried from
+     a different direction.  Three stages cannot need more rounds than that. */
+  for (round = 0; round < COLUMN_DECORATED + 2; round++) {
+    shuffleOrder(order, count);
+    pending = 0;
+    for (i = 0; i < count; i++) {
+      if (!worldAdvanceColumnDecoration(order[i] / CHUNKS_Z,
+          order[i] % CHUNKS_Z)) {
+        pending++;
+      }
+    }
+    if (pending == 0) {
+      return;
+    }
+  }
+  printf("  note: %d columns never finished decorating\n", pending);
+}
+
 #define WAYSTONE_TRIALS 12
+
+/*
+ * The window slot is now the only name a column has: rendering indexes every
+ * per-column table by it, and recovers the column's coordinates back out of
+ * the key.  Both directions have to hold for negative chunks, which the fixed
+ * world never produced and streaming reaches on the first step west or north.
+ */
+static void checkSlotMapping(void) {
+  int cx, cz;
+  int collisions = 0, round_trip_failures = 0;
+  static int seen[WINDOW_SLOTS];
+
+  for (cx = 0; cx < CHUNKS_X; cx++) {
+    for (cz = 0; cz < CHUNKS_Z; cz++) {
+      u32 slot = WINDOW_SLOT(cx, cz);
+      if (seen[slot]++) {
+        collisions++;
+      }
+    }
+  }
+  if (collisions == 0) {
+    printf("  PASS  the fixed world's columns occupy distinct slots\n");
+  } else {
+    printf("  FAIL  %d slot collisions inside the fixed extent\n", collisions);
+    failures++;
+  }
+
+  /* Well past the fixed world in both directions, including negatives. */
+  windowReset();
+  for (cx = -40; cx <= 40; cx++) {
+    for (cz = -40; cz <= 40; cz++) {
+      u32 slot = WINDOW_SLOT(cx, cz);
+      windowClaimColumn(cx, cz);
+      if (!windowSlotResident(slot) || windowSlotChunkX(slot) != cx ||
+          windowSlotChunkZ(slot) != cz) {
+        round_trip_failures++;
+      }
+    }
+  }
+  if (round_trip_failures == 0) {
+    printf("  PASS  slot decode round-trips, negative chunks included\n");
+  } else {
+    printf("  FAIL  %d slots did not decode back to their column\n",
+      round_trip_failures);
+    failures++;
+  }
+  windowReset();
+}
 
 int main(void) {
   u8 *base = malloc(SNAPSHOT_BYTES);
@@ -125,6 +237,8 @@ int main(void) {
   }
 
   printf("Generation determinism (%dx%dx%d world)\n", MAX_X, MAX_Y, MAX_Z);
+
+  checkSlotMapping();
 
   generateWorld(0x1234ABCDULL, 64, 0);
   snapshot(base);
@@ -144,6 +258,29 @@ int main(void) {
   generateWorld(0x1234ABCDULL, 64, 1);
   snapshot(other);
   expectIdentical("gameplay RNG cannot disturb generation", base, other);
+
+  /*
+   * What streaming will actually do, against what the fixed world does.
+   *
+   * Run over several seeds rather than one.  A tree canopy suppresses a tree
+   * that would have rooted under it -- the root scan meets leaves before it
+   * meets grass -- so two trees in adjacent columns are an order-dependent
+   * pair that a single seed can easily fail to contain.
+   */
+  for (trial = 0; trial < 8; trial++) {
+    u64 seed_time = 0x1234ABCDULL + trial * 104729ULL;
+
+    generateWorld(seed_time, 64, 0);
+    snapshot(base);
+    generateColumnByColumn(seed_time);
+    snapshot(other);
+    expectIdentical("columns built one at a time, in shuffled order", base,
+      other);
+  }
+
+  /* Restore the reference world the remaining checks compare against. */
+  generateWorld(0x1234ABCDULL, 64, 0);
+  snapshot(base);
 
   generateWorld(0x1234ABCEULL, 64, 0);
   snapshot(other);

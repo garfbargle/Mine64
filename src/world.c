@@ -183,17 +183,40 @@ static int shapedSurfaceHeight(int x, int z, int natural_height,
   return natural_height;
 }
 
-static void fillTerrainHeightRow(u8 *row, int x) {
-  int z;
+/*
+ * The height field for one chunk plus a one-block halo.  The slope test in
+ * generateTerrainColumn reads each block column's four neighbours, so a chunk
+ * can never be built from its own 8x8 alone.
+ *
+ * This replaces three rotating world-width rows.  Those amortised terrain
+ * sampling down to one multi-octave sample per block column, but only by
+ * walking the whole world in x order and keeping the two adjacent rows alive
+ * -- precisely the assumption a streaming world cannot make.  A 10x10 patch
+ * costs about 1.6 samples per block column instead, and buys the ability to
+ * generate a chunk alone, in any order.
+ */
+#define HEIGHT_PATCH_SIZE (CHUNK_SIZE + 2)
+static u8 height_patch[HEIGHT_PATCH_SIZE][HEIGHT_PATCH_SIZE];
+static int height_patch_base_x;
+static int height_patch_base_z;
 
-  /*
-   * Keep a one-column halo at each edge.  Three rotating rows are enough for
-   * both axes of the slope test, avoiding four redundant multi-octave terrain
-   * samples per column without retaining a full second world-sized map.
-   */
-  for (z = -1; z <= MAX_Z; z++) {
-    row[z + 1] = terrainHeight(x, z);
+static void fillHeightPatch(int base_x, int base_z) {
+  int px, pz;
+
+  height_patch_base_x = base_x;
+  height_patch_base_z = base_z;
+  for (px = 0; px < HEIGHT_PATCH_SIZE; px++) {
+    for (pz = 0; pz < HEIGHT_PATCH_SIZE; pz++) {
+      height_patch[px][pz] =
+        (u8) terrainHeight(base_x + px - 1, base_z + pz - 1);
+    }
   }
+}
+
+/* Only valid for the chunk the patch was filled for, plus its halo. */
+static int patchHeight(int x, int z) {
+  return height_patch[x - height_patch_base_x + 1]
+                     [z - height_patch_base_z + 1];
 }
 
 static int isCave(int x, int y, int z, int surface_height) {
@@ -386,10 +409,28 @@ static u8 treeSeededAt(int x, int z) {
 static u8 world_gen_stage = WORLD_GEN_IDLE;
 static int world_gen_x;
 static int world_gen_z;
-static u8 terrain_height_rows[3][MAX_Z + 2];
-static u8 *previous_heights;
-static u8 *current_heights;
-static u8 *next_heights;
+
+/*
+ * How far a column has been built, per window slot.
+ *
+ * Decoration reaches across chunk boundaries: a tree writes its canopy up to
+ * two blocks into its neighbours, and a waystone reads the ground two blocks
+ * east and south before placing its outriggers.  A column may therefore only
+ * advance once its neighbours are far enough along to be written into and read
+ * from, which is what makes the finished world independent of the order
+ * columns happened to stream in.
+ *
+ * Waystones are a separate stage from trees for the same reason they ran as a
+ * separate whole-world pass before: a waystone takes the ground a tree would
+ * have rooted in, so every waystone in reach must be placed before any tree
+ * decides.
+ */
+#define COLUMN_EMPTY 0
+#define COLUMN_TERRAIN 1
+#define COLUMN_WAYSTONED 2
+#define COLUMN_DECORATED 3
+
+static u8 column_state[WINDOW_SLOTS];
 
 static void generateTerrainColumn(int x, int z) {
   int y;
@@ -397,10 +438,10 @@ static void generateTerrainColumn(int x, int z) {
   float biome, slope;
   u8 block, do_sand, exposed_stone;
 
-  height = shapedSurfaceHeight(x, z, current_heights[z + 1], &water_level);
+  height = shapedSurfaceHeight(x, z, patchHeight(x, z), &water_level);
   biome = perlin2d(x + 883, z + 521, 0.025f, 3);
-  slope = absolute((float)(next_heights[z + 1] - previous_heights[z + 1])) +
-    absolute((float)(current_heights[z + 2] - current_heights[z]));
+  slope = absolute((float)(patchHeight(x + 1, z) - patchHeight(x - 1, z))) +
+    absolute((float)(patchHeight(x, z + 1) - patchHeight(x, z - 1)));
   /* Sand belongs at shorelines and a few shallow lowland patches.  Do
    * not let a broad biome signal turn hills or mountain shoulders into
    * implausible vertical sand stacks. */
@@ -440,7 +481,102 @@ static void generateTerrainColumn(int x, int z) {
   }
 }
 
+u8 worldColumnState(int cx, int cz) {
+  u32 slot = WINDOW_SLOT(cx, cz);
+
+  if (!windowColumnResident(cx, cz)) {
+    return COLUMN_EMPTY;
+  }
+  return column_state[slot];
+}
+
+/*
+ * TRUE when every neighbour touching this column has reached `state`.
+ *
+ * A neighbour that is not resident is not counted as behind, because it is not
+ * coming: whole-world generation claims exactly the world, so its edge columns
+ * decorate exactly as they always did rather than waiting forever on a column
+ * outside the map.  The cost of that reading is an invariant streaming has to
+ * honour -- **the ring that gets terrain must be one column wider than the
+ * ring that gets decorated** -- or a canopy reaching into a column that has
+ * not been claimed yet is silently dropped.
+ */
+static u8 neighboursReached(int cx, int cz, u8 state) {
+  int dx, dz;
+
+  for (dx = -1; dx <= 1; dx++) {
+    for (dz = -1; dz <= 1; dz++) {
+      if (!windowColumnResident(cx + dx, cz + dz)) {
+        continue;
+      }
+      if (column_state[WINDOW_SLOT(cx + dx, cz + dz)] < state) {
+        return FALSE;
+      }
+    }
+  }
+  return TRUE;
+}
+
+/* Claim a slot and fill it with bare terrain.  Nothing here reads a
+   neighbour, so a column can always take this step alone. */
+void worldGenerateColumnTerrain(int cx, int cz) {
+  int base_x = cx * CHUNK_SIZE;
+  int base_z = cz * CHUNK_SIZE;
+  int bx, bz;
+
+  windowClaimColumn(cx, cz);
+  fillHeightPatch(base_x, base_z);
+  for (bx = 0; bx < CHUNK_SIZE; bx++) {
+    for (bz = 0; bz < CHUNK_SIZE; bz++) {
+      generateTerrainColumn(base_x + bx, base_z + bz);
+    }
+  }
+  column_state[WINDOW_SLOT(cx, cz)] = COLUMN_TERRAIN;
+}
+
+/* Returns FALSE when the column's neighbours are not built far enough yet and
+   the caller should come back to it. */
+u8 worldAdvanceColumnDecoration(int cx, int cz) {
+  int base_x = cx * CHUNK_SIZE;
+  int base_z = cz * CHUNK_SIZE;
+  int bx, bz;
+  u32 slot = WINDOW_SLOT(cx, cz);
+
+  if (column_state[slot] == COLUMN_TERRAIN) {
+    /* Reads the ground two blocks east and south, which can be a neighbour. */
+    if (!neighboursReached(cx, cz, COLUMN_TERRAIN)) {
+      return FALSE;
+    }
+    for (bx = 0; bx < CHUNK_SIZE; bx++) {
+      for (bz = 0; bz < CHUNK_SIZE; bz++) {
+        tryPlaceWaystone(base_x + bx, base_z + bz);
+      }
+    }
+    column_state[slot] = COLUMN_WAYSTONED;
+    return FALSE;
+  }
+
+  if (column_state[slot] == COLUMN_WAYSTONED) {
+    /* Writes canopy up to two blocks out, and must not root in ground a
+       neighbour's waystone is about to take. */
+    if (!neighboursReached(cx, cz, COLUMN_WAYSTONED)) {
+      return FALSE;
+    }
+    for (bx = 0; bx < CHUNK_SIZE; bx++) {
+      for (bz = 0; bz < CHUNK_SIZE; bz++) {
+        if (treeSeededAt(base_x + bx, base_z + bz)) {
+          trySpawnTree(base_x + bx, base_z + bz);
+        }
+      }
+    }
+    column_state[slot] = COLUMN_DECORATED;
+  }
+  return column_state[slot] == COLUMN_DECORATED;
+}
+
 void beginWorldGeneration() {
+  u32 slot;
+
   /* One draw of entropy fixes the world; the gameplay RNG starts from the same
      place but is free to wander, because nothing reproducible reads it. */
   world_seed = (u32) osGetTime();
@@ -449,13 +585,9 @@ void beginWorldGeneration() {
   initTrees();
 
   windowClaimFixedExtent();
-
-  previous_heights = terrain_height_rows[0];
-  current_heights = terrain_height_rows[1];
-  next_heights = terrain_height_rows[2];
-  fillTerrainHeightRow(previous_heights, -1);
-  fillTerrainHeightRow(current_heights, 0);
-  fillTerrainHeightRow(next_heights, 1);
+  for (slot = 0; slot < WINDOW_SLOTS; slot++) {
+    column_state[slot] = COLUMN_EMPTY;
+  }
 
   world_gen_x = 0;
   world_gen_z = 0;
@@ -474,58 +606,37 @@ u8 worldGenerationProgress() {
      does not stall visibly at the end.  Both decoration stages walk every
      column now, so they split that tenth between them. */
   if (world_gen_stage == WORLD_GEN_TERRAIN) {
-    return (u8) ((world_gen_x * 90) / MAX_X);
+    return (u8) ((world_gen_x * 90) / CHUNKS_X);
   }
   if (world_gen_stage == WORLD_GEN_WAYSTONES) {
-    return (u8) (90 + (world_gen_x * 5) / MAX_X);
+    return (u8) (90 + (world_gen_x * 5) / CHUNKS_X);
   }
-  return (u8) (95 + (world_gen_x * 5) / MAX_X);
+  return (u8) (95 + (world_gen_x * 5) / CHUNKS_X);
 }
 
+/*
+ * Walks chunk columns rather than block columns now, in three whole-extent
+ * passes.  The passes are what satisfy the neighbour gates everywhere at once:
+ * by the time the waystone pass reaches a column every column has terrain, and
+ * by the time the tree pass reaches it every column has its waystones.  A
+ * streaming world reaches the same states one column at a time instead, and
+ * gets the same world out -- which is what the host harness checks.
+ */
 u8 stepWorldGeneration(u32 columns) {
   while (columns > 0 && world_gen_stage != WORLD_GEN_IDLE) {
     if (world_gen_stage == WORLD_GEN_TERRAIN) {
-      generateTerrainColumn(world_gen_x, world_gen_z);
-      columns--;
-      if (++world_gen_z >= MAX_Z) {
-        world_gen_z = 0;
-        /* The slope test reads one column either side, so rotate the three
-           sampled rows exactly where the original single pass did. */
-        if (world_gen_x + 1 < MAX_X) {
-          u8 *old_previous = previous_heights;
-          previous_heights = current_heights;
-          current_heights = next_heights;
-          next_heights = old_previous;
-          fillTerrainHeightRow(next_heights, world_gen_x + 2);
-        }
-        if (++world_gen_x >= MAX_X) {
-          world_gen_x = 0;
-          world_gen_stage = WORLD_GEN_WAYSTONES;
-        }
-      }
-    } else if (world_gen_stage == WORLD_GEN_WAYSTONES) {
-      /* Both decoration stages are now per-column walks, so each one slices on
-         the same budget the terrain pass does.  Waystones still run ahead of
-         trees as a whole pass: a waystone replaces the grass a tree would have
-         rooted in, and doing them in one order everywhere is what keeps that
-         interaction reproducible. */
-      tryPlaceWaystone(world_gen_x, world_gen_z);
-      columns--;
-      if (++world_gen_z >= MAX_Z) {
-        world_gen_z = 0;
-        if (++world_gen_x >= MAX_X) {
-          world_gen_x = 0;
-          world_gen_stage = WORLD_GEN_TREES;
-        }
-      }
+      worldGenerateColumnTerrain(world_gen_x, world_gen_z);
     } else {
-      if (treeSeededAt(world_gen_x, world_gen_z)) {
-        trySpawnTree(world_gen_x, world_gen_z);
-      }
-      columns--;
-      if (++world_gen_z >= MAX_Z) {
-        world_gen_z = 0;
-        if (++world_gen_x >= MAX_X) {
+      worldAdvanceColumnDecoration(world_gen_x, world_gen_z);
+    }
+    columns--;
+
+    if (++world_gen_z >= CHUNKS_Z) {
+      world_gen_z = 0;
+      if (++world_gen_x >= CHUNKS_X) {
+        world_gen_x = 0;
+        world_gen_stage++;
+        if (world_gen_stage > WORLD_GEN_TREES) {
           world_gen_stage = WORLD_GEN_IDLE;
         }
       }
