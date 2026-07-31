@@ -28,10 +28,27 @@
 #define RECIPE_LIST_Y 39
 #define RECIPE_ROW_HEIGHT 20
 #define RECIPE_VISIBLE_ROWS 6
-#define CELESTIAL_DISTANCE_SOLO 11000.f
-#define CELESTIAL_DISTANCE_COOP 7000.f
-#define SUN_SIZE 430.f
-#define MOON_SIZE 360.f
+/*
+ * The Sun and Moon ride a fixed radius around the camera, comfortably inside
+ * the tighter of the two projections (co-op's far plane is 8000).  The pass
+ * no longer z-buffers, so this radius has nothing to do with depth precision
+ * any more -- it only has to survive clipping, and the sizes below set the
+ * apparent size against it.  The previous 11000, against a 14000 far plane,
+ * encoded to within a thousandth of the cleared maximum depth: the sprites
+ * were passing the z-test by a hair.
+ *
+ * Sizes are half-widths against that radius, so they read as angles: the Sun
+ * spans about 11 degrees and the Moon about 10, which at the solo lens (60
+ * degrees over 240 lines) puts them at roughly 46 and 42 pixels tall.  Both
+ * are deliberately generous -- a physically-sized 0.5-degree disc is two
+ * pixels on a CRT, and the sky is scenery here, not astronomy.
+ */
+#define CELESTIAL_DISTANCE 6000.f
+#define SUN_SIZE 600.f
+#define MOON_SIZE 540.f
+/* Keep drawing a body slightly past the horizon so it sets behind the
+   landscape rather than blinking out of an empty sky. */
+#define CELESTIAL_SET_ALTITUDE (-.06f)
 #define DROPPED_ITEM_RENDER_DISTANCE (BLOCK_SIZE * 36.f)
 #define PLAYER_RENDER_DISTANCE (BLOCK_SIZE * 64.f)
 #define MOB_RENDER_DISTANCE (BLOCK_SIZE * 30.f)
@@ -424,6 +441,16 @@ static Vtx water_top_verts[CHUNK_SIZE * CHUNK_SIZE * 4]
 static Lights1 world_lights[NUM_DISPLAY_LISTS][MAX_PLAYERS];
 static Lights0 preview_lights[NUM_DISPLAY_LISTS];
 static Vtx celestial_verts[NUM_DISPLAY_LISTS][MAX_PLAYERS][8];
+/*
+ * The sky's own modelview.  It carries the camera position, so the quads
+ * themselves stay in a local space bounded by the orbit radius -- which is
+ * what keeps them inside the s16 vertex format no matter how far the player
+ * has walked.  Building them at absolute world coordinates instead is what
+ * broke the sky when the world stopped having edges: the camera matrix is
+ * origin-relative, so the sprites were displaced by the whole render origin
+ * and then wrapped their s16 coordinates a few hundred blocks later.
+ */
+static Mtx celestial_model[NUM_DISPLAY_LISTS][MAX_PLAYERS];
 
 static Mtx dropped_item_translate[NUM_DISPLAY_LISTS][MAX_DROPPED_ITEMS];
 static Mtx dropped_item_rotate[NUM_DISPLAY_LISTS][MAX_DROPPED_ITEMS];
@@ -873,21 +900,32 @@ static void setPreviewLight() {
   lights->l[0].l.dir[2] = 54;
 }
 
-static void setCelestialVertex(Vtx *vertex, Vector3 point, u16 s, u16 t) {
+static void setCelestialVertex(Vtx *vertex, Vector3 point, u16 s, u16 t,
+    SkyColor tint) {
   vertex->v.ob[0] = point.x;
   vertex->v.ob[1] = point.y;
   vertex->v.ob[2] = point.z;
   vertex->v.flag = 0;
   vertex->v.tc[0] = s;
   vertex->v.tc[1] = t;
-  vertex->v.cn[0] = 255;
-  vertex->v.cn[1] = 255;
-  vertex->v.cn[2] = 255;
+  /* Shade carries the body's colour; the combiner modulates the tile by it,
+     so a horizon-red Sun costs nothing beyond these three bytes. */
+  vertex->v.cn[0] = tint.r;
+  vertex->v.cn[1] = tint.g;
+  vertex->v.cn[2] = tint.b;
   vertex->v.cn[3] = 255;
 }
 
+/*
+ * Texture coordinates are texels * 64, not * 32.  The whole renderer runs
+ * with an 0x8000 (x0.5) SP texture scale -- terrain spans 1024 across a
+ * 16-texel block -- so the halved convention this used to follow addressed
+ * only the tile's top-left 8x8 quadrant and stretched it over the sprite.
+ */
+#define CELESTIAL_TILE_TC (16 << 6)
+
 static void makeCelestialQuad(Vtx *vertices, Vector3 center, Vector3 right,
-    Vector3 up, float size) {
+    Vector3 up, float size, SkyColor tint) {
   Vector3 horizontal = mul(right, size);
   Vector3 vertical = mul(up, size);
   Vector3 top_left = add(add(center, vertical), mul(horizontal, -1.f));
@@ -895,10 +933,11 @@ static void makeCelestialQuad(Vtx *vertices, Vector3 center, Vector3 right,
   Vector3 bottom_right = add(add(center, mul(vertical, -1.f)), horizontal);
   Vector3 bottom_left = add(add(center, mul(vertical, -1.f)), mul(horizontal, -1.f));
 
-  setCelestialVertex(&vertices[0], top_left, 0, 0);
-  setCelestialVertex(&vertices[1], top_right, 16 << 5, 0);
-  setCelestialVertex(&vertices[2], bottom_right, 16 << 5, 16 << 5);
-  setCelestialVertex(&vertices[3], bottom_left, 0, 16 << 5);
+  setCelestialVertex(&vertices[0], top_left, 0, 0, tint);
+  setCelestialVertex(&vertices[1], top_right, CELESTIAL_TILE_TC, 0, tint);
+  setCelestialVertex(&vertices[2], bottom_right, CELESTIAL_TILE_TC,
+    CELESTIAL_TILE_TC, tint);
+  setCelestialVertex(&vertices[3], bottom_left, 0, CELESTIAL_TILE_TC, tint);
 }
 
 static Texture *moonTexture() {
@@ -909,38 +948,69 @@ static Texture *moonTexture() {
   return moon_textures[dayCycleMoonPhase()];
 }
 
+/*
+ * Sky pass.  Runs first in each viewport, before the terrain, and writes no
+ * depth at all: everything drawn afterwards simply paints over it, which is
+ * both correct (the sky is behind the world by definition) and immune to the
+ * far-plane depth crunch a z-buffered sprite at the edge of the frustum has
+ * to survive.
+ */
 static void drawCelestialBodies(u8 player_num) {
   Player *player = &players[player_num];
-  Vector3 sun = dayCycleSunDirection();
-  Vector3 moon = mul(sun, -1.f);
+  float altitude = dayCycleSunAltitude();
   Vector3 camera = playerCameraPosition(player_num);
   Vector3 right = rotateY((Vector3) {1, 0, 0}, -player->yaw);
   Vector3 up = rotateY(rotateX((Vector3) {0, 1, 0}, player->pitch), -player->yaw);
   Vtx *vertices = celestial_verts[dl_no][player_num];
-  float distance = active_player_count > 1 ? CELESTIAL_DISTANCE_COOP :
-    CELESTIAL_DISTANCE_SOLO;
+  u8 sun_up = altitude >= CELESTIAL_SET_ALTITUDE;
+  u8 moon_up = -altitude >= CELESTIAL_SET_ALTITUDE;
 
-  gSPClearGeometryMode(dlp++, G_CULL_BACK | G_LIGHTING);
-  gDPSetCombineMode(dlp++, G_CC_MODULATERGB, G_CC_MODULATERGB);
-  gDPSetRenderMode(dlp++, G_RM_AA_ZB_TEX_EDGE, G_RM_AA_ZB_TEX_EDGE2);
+  if (!sun_up && !moon_up) {
+    return;
+  }
+
+  /* The pipe is still carrying the sky clear's fill rectangles; draining it
+     before the mode changes below is the lockup documented in the README. */
+  gDPPipeSync(dlp++);
+  gSPClearGeometryMode(dlp++, G_CULL_BACK | G_LIGHTING | G_ZBUFFER);
+  /* DECALA, not plain MODULATE: the plain form's alpha equation is
+     (0,0,0,SHADE), which discards the tile's alpha entirely and drew the
+     Moon's transparent surround as an opaque black square. */
+  gDPSetCombineMode(dlp++, G_CC_MODULATERGBDECALA, G_CC_MODULATERGBDECALA);
+  gDPSetRenderMode(dlp++, G_RM_AA_TEX_EDGE, G_RM_AA_TEX_EDGE2);
+  /* G_AC_THRESHOLD compares against this register.  Nothing else in the
+     program sets it, so leaving it out left the cutout at whatever the RDP
+     happened to be holding. */
+  gDPSetBlendColor(dlp++, 0, 0, 0, 1);
   gDPSetAlphaCompare(dlp++, G_AC_THRESHOLD);
 
-  if (sun.y >= 0) {
-    makeCelestialQuad(vertices, add(camera, mul(sun, distance)),
-      right, up, SUN_SIZE);
+  /* Camera-anchored, origin-relative -- the same subtraction every other
+     world-space matrix in the renderer makes. */
+  guTranslate(&celestial_model[dl_no][player_num],
+    camera.x - render_origin_units_x, camera.y,
+    camera.z - render_origin_units_z);
+  gSPMatrix(dlp++, OS_K0_TO_PHYSICAL(&celestial_model[dl_no][player_num]),
+    G_MTX_MODELVIEW | G_MTX_LOAD | G_MTX_NOPUSH);
+
+  if (sun_up) {
+    makeCelestialQuad(vertices, mul(dayCycleSunDirection(), CELESTIAL_DISTANCE),
+      right, up, SUN_SIZE, dayCycleSunTint());
     loadTexture(&sun_texture);
     gSPVertex(dlp++, vertices, 4, 0);
     gSP1Quadrangle(dlp++, 0, 1, 2, 3, 0);
   }
-  if (moon.y >= 0) {
-    makeCelestialQuad(vertices + 4, add(camera, mul(moon, distance)),
-      right, up, MOON_SIZE);
+  if (moon_up) {
+    makeCelestialQuad(vertices + 4,
+      mul(dayCycleMoonDirection(), CELESTIAL_DISTANCE),
+      right, up, MOON_SIZE, dayCycleMoonTint());
     loadTexture(moonTexture());
     gSPVertex(dlp++, vertices + 4, 4, 0);
     gSP1Quadrangle(dlp++, 0, 1, 2, 3, 0);
   }
 
   gDPSetAlphaCompare(dlp++, G_AC_NONE);
+  /* Terrain z-buffers; only the sky does not. */
+  gSPSetGeometryMode(dlp++, G_ZBUFFER);
   loaded_texture = NULL;
 }
 
@@ -2660,6 +2730,280 @@ static void drawFallingTrees(u8 viewer_num) {
   }
 }
 
+/*
+ * Cast shadows.
+ *
+ * A shadow map is not on the table here -- no depth textures, no second
+ * pass over the terrain, and a mesh that is compiled once per column and
+ * then left alone for as long as the column survives.  What the hardware can
+ * afford is the classic: a soft blob per caster, laid on the ground where the
+ * light says the caster's shadow falls.  Because the projection is computed
+ * from the live light direction rather than dropped straight down, shadows
+ * genuinely swing and stretch through the day -- and, on a clear night with
+ * the Moon up, a fainter set swings the other way.
+ *
+ * Cost is a hard ceiling: SHADOW_SLOTS casters, nine vertices and eight
+ * triangles each, one identity matrix for the whole pass, and no per-shadow
+ * RDP state at all -- strength lives in vertex alpha, so a shadow costs the
+ * RSP a transform and the RDP some fill, and nothing else.  The set is built
+ * once per frame and drawn in every viewport: the vertices are world space,
+ * so split-screen shares them.
+ */
+#define SHADOW_SLOTS 12
+#define SHADOW_VERTS 9
+/* A caster this far from every player is not worth a slot. */
+#define SHADOW_RENDER_DISTANCE (BLOCK_SIZE * 22.f)
+/* Ground search depth, in blocks, below a caster. */
+#define SHADOW_GROUND_SCAN 6
+/* A low light would otherwise project a shadow to the horizon.  The strength
+   curve has already faded most of it out by the time this bites. */
+#define SHADOW_MAX_OFFSET (BLOCK_SIZE * 4.f)
+/* How far a caster can rise off the ground before its shadow has dissolved
+   entirely.  This is airborne height only -- a tall caster is not a faint
+   one, it is a wide one. */
+#define SHADOW_FADE_HEIGHT (BLOCK_SIZE * 7.f)
+
+static Vtx shadow_verts[NUM_DISPLAY_LISTS][SHADOW_SLOTS][SHADOW_VERTS];
+static u8 shadow_count;
+/*
+ * Shadow vertices are already in origin-relative world space, which is what
+ * the camera matrix expects, so the pass needs an identity modelview.  It is
+ * written once and never again: nothing may rewrite a matrix an in-flight
+ * task can still be reading.
+ */
+static Mtx shadow_model;
+
+static Gfx shadow_blob_display_list[] = {
+  gsSP2Triangles(0, 1, 4, 0, 0, 4, 3, 0),
+  gsSP2Triangles(1, 2, 5, 0, 1, 5, 4, 0),
+  gsSP2Triangles(3, 4, 7, 0, 3, 7, 6, 0),
+  gsSP2Triangles(4, 5, 8, 0, 4, 8, 7, 0),
+  gsSPEndDisplayList()
+};
+
+/* Surface of the first solid block at or below a caster.  FALSE when there is
+   none within the scan: over a cliff edge, or above space that has not
+   streamed in, where a blob would hang in the air. */
+static u8 shadowGroundAt(float wx, float wy, float wz, float *surface_y) {
+  int bx = floor(wx / BLOCK_SIZE);
+  int bz = floor(wz / BLOCK_SIZE);
+  int top = floor(wy / BLOCK_SIZE);
+  int limit = top - SHADOW_GROUND_SCAN;
+  int y;
+
+  if (top >= MAX_Y) {
+    top = MAX_Y - 1;
+  }
+  if (limit < 0) {
+    limit = 0;
+  }
+  for (y = top; y >= limit; y--) {
+    u8 block = blockGet(bx, y, bz);
+
+    if (block != BLOCK_NOT_RESIDENT && BLOCK_IS_SOLID(block)) {
+      *surface_y = (float) (y + 1) * BLOCK_SIZE;
+      return TRUE;
+    }
+  }
+  return FALSE;
+}
+
+static u8 shadowNearAnyPlayer(float wx, float wz) {
+  u8 i;
+
+  for (i = 0; i < active_player_count; i++) {
+    float dx = wx - players[i].position.x;
+    float dz = wz - players[i].position.z;
+
+    if (dx * dx + dz * dz <= SHADOW_RENDER_DISTANCE * SHADOW_RENDER_DISTANCE) {
+      return TRUE;
+    }
+  }
+  return FALSE;
+}
+
+/*
+ * One caster.  `body_height` is how far the middle of the caster sits above
+ * its own footing -- a tree's canopy, a player's chest.  Height above the
+ * *ground* is measured here and kept separate: the two do different jobs, and
+ * conflating them faded a tree's shadow out precisely because the tree was
+ * tall enough to cast a good one.
+ */
+static void addGroundShadow(Vector3 position, float body_height,
+    float radius, float strength) {
+  Vector3 light;
+  float ground, airborne, height, offset_x, offset_z, spread, reach, alpha;
+  Vtx *verts;
+  u8 i;
+
+  if (shadow_count >= SHADOW_SLOTS || strength <= .02f) {
+    return;
+  }
+  if (!shadowNearAnyPlayer(position.x, position.z)) {
+    return;
+  }
+  /* A unit below the caster's footing, not above it: starting the search at
+     the caster's own base finds the caster -- a tree trunk reads as its own
+     ground and lifts the blob a block into the air. */
+  if (!shadowGroundAt(position.x, position.y - 1.f, position.z, &ground)) {
+    return;
+  }
+
+  airborne = position.y - ground;
+  if (airborne < 0) {
+    airborne = 0;
+  }
+  /* Height of the caster's middle over the ground it shadows.  Both the
+     throw and the penumbra scale with it. */
+  height = airborne + body_height;
+  spread = 1.f + height / (BLOCK_SIZE * 5.f);
+  if (spread > 2.2f) {
+    spread = 2.2f;
+  }
+  /* Only leaving the ground fades a shadow.  Spreading merely softens it, so
+     it divides by a gentler curve than the spread itself. */
+  alpha = strength * (1.f - min(1.f, airborne / SHADOW_FADE_HEIGHT)) /
+    (.55f + .45f * spread);
+  if (alpha <= .02f) {
+    return;
+  }
+
+  /* Opposite the light, displaced by the caster's height over the tangent of
+     the light's altitude.  The floor under the vertical term is what keeps a
+     grazing light from projecting to infinity. */
+  light = dayCycleLightDirection();
+  reach = height / max(light.y, .30f);
+  offset_x = -light.x * reach;
+  offset_z = -light.z * reach;
+  if (offset_x > SHADOW_MAX_OFFSET) offset_x = SHADOW_MAX_OFFSET;
+  if (offset_x < -SHADOW_MAX_OFFSET) offset_x = -SHADOW_MAX_OFFSET;
+  if (offset_z > SHADOW_MAX_OFFSET) offset_z = SHADOW_MAX_OFFSET;
+  if (offset_z < -SHADOW_MAX_OFFSET) offset_z = -SHADOW_MAX_OFFSET;
+
+  radius *= spread;
+  verts = shadow_verts[dl_no][shadow_count++];
+  for (i = 0; i < SHADOW_VERTS; i++) {
+    /* A 3x3 grid: opaque in the middle, transparent all the way round the
+       rim, which reads as a soft round blob for eight triangles and no
+       texture at all. */
+    static const float grid[3] = {-1.f, 0.f, 1.f};
+    u8 col = i % 3;
+    u8 row = i / 3;
+    u8 edge = (col == 1) + (row == 1);
+
+    verts[i].v.ob[0] = position.x + offset_x + grid[col] * radius -
+      render_origin_units_x;
+    verts[i].v.ob[1] = ground;
+    verts[i].v.ob[2] = position.z + offset_z + grid[row] * radius -
+      render_origin_units_z;
+    verts[i].v.flag = 0;
+    verts[i].v.tc[0] = 0;
+    verts[i].v.tc[1] = 0;
+    verts[i].v.cn[0] = 0;
+    verts[i].v.cn[1] = 0;
+    verts[i].v.cn[2] = 0;
+    /* edge == 2 is the centre, 1 the four side midpoints, 0 the corners. */
+    verts[i].v.cn[3] = edge == 2 ? (u8) (alpha * 255.f) :
+      (edge == 1 ? (u8) (alpha * 140.f) : 0);
+  }
+}
+
+/*
+ * Choose the frame's casters, most valuable first, and stop at the cap.
+ * Trees lead deliberately: a tree's shadow is long, it lands on ground the
+ * player is walking over, and it is the one that sells a moving sun.
+ */
+static void buildGroundShadows(void) {
+  float strength = dayCycleShadowStrength();
+  u16 i;
+
+  shadow_count = 0;
+  if (strength <= .02f) {
+    return;
+  }
+
+  for (i = 0; i < MAX_TREES && shadow_count < SHADOW_SLOTS; i++) {
+    TreeRecord *tree = &trees[i];
+    Vector3 position;
+    float height;
+
+    /* A tree mid-fall is a rigid body swinging through 88 degrees; a blob
+       under its stump would contradict what the player is watching. */
+    if (tree->base_y == TREE_INACTIVE_Y || tree->state != TREE_STATE_STANDING) {
+      continue;
+    }
+    position.x = (unwrapTreeCoord(tree->x, players[0].position.x) + .5f) *
+      BLOCK_SIZE;
+    position.z = (unwrapTreeCoord(tree->z, players[0].position.z) + .5f) *
+      BLOCK_SIZE;
+    position.y = (float) (tree->base_y + 1) * BLOCK_SIZE;
+    height = (float) (tree->canopy_y - tree->base_y) * BLOCK_SIZE;
+    /* Measured from the canopy, not the trunk: the canopy is what actually
+       blocks the light, and it is what the player expects to see on the
+       ground. */
+    addGroundShadow(position, height, BLOCK_SIZE * 1.35f, strength * .85f);
+  }
+
+  for (i = 0; i < active_player_count && shadow_count < SHADOW_SLOTS; i++) {
+    addGroundShadow(players[i].position, BLOCK_SIZE * .9f, BLOCK_SIZE * .42f,
+      strength);
+  }
+
+  for (i = 0; i < MAX_MOBS && shadow_count < SHADOW_SLOTS; i++) {
+    if (!mobs[i].active) {
+      continue;
+    }
+    addGroundShadow(mobs[i].position, BLOCK_SIZE * .5f, BLOCK_SIZE * .40f,
+      strength);
+  }
+
+  for (i = 0; i < MAX_DROPPED_ITEMS && shadow_count < SHADOW_SLOTS; i++) {
+    if (!dropped_items[i].active) {
+      continue;
+    }
+    addGroundShadow(dropped_items[i].position, BLOCK_SIZE * .2f,
+      BLOCK_SIZE * .18f, strength * .8f);
+  }
+}
+
+/* Emitted after the terrain has laid down depth and before the entities, in
+   every viewport, from the one set built above. */
+static void drawGroundShadows(void) {
+  u8 i;
+
+  if (shadow_count == 0) {
+    return;
+  }
+  gDPPipeSync(dlp++);
+  /* The texture unit is deliberately left as the terrain set it: G_CC_SHADE
+     never references TEXEL0, and drawFallingTrees below still expects
+     texturing to be enabled. */
+  gDPSetCombineMode(dlp++, G_CC_SHADE, G_CC_SHADE);
+  /* Decal: the blob is coplanar with the block top it lies on, which is
+     exactly the case ZMODE_DEC exists for. */
+  gDPSetRenderMode(dlp++, G_RM_ZB_XLU_DECAL, G_RM_ZB_XLU_DECAL2);
+  gSPClearGeometryMode(dlp++, G_CULL_BACK | G_LIGHTING);
+  /* osVirtualToPhysical, not OS_K0_TO_PHYSICAL: the macro subtracts
+     0x80000000 from the pointer, and against a plain static (rather than an
+     array element reached by a runtime index) the compiler folds that into a
+     constant and reports it as an out-of-bounds subscript. */
+  gSPMatrix(dlp++, osVirtualToPhysical(&shadow_model),
+    G_MTX_MODELVIEW | G_MTX_LOAD | G_MTX_NOPUSH);
+
+  for (i = 0; i < shadow_count; i++) {
+    gSPVertex(dlp++, shadow_verts[dl_no][i], SHADOW_VERTS, 0);
+    gSPDisplayList(dlp++, shadow_blob_display_list);
+  }
+
+  gDPPipeSync(dlp++);
+  gDPSetRenderMode(dlp++, G_RM_ZB_OPA_SURF, G_RM_ZB_OPA_SURF2);
+  /* Hand the entity passes back the combiner they inherit rather than the
+     shade-only one above: drawFallingTrees sets no combine of its own, so a
+     frame with no details to draw would otherwise render its trees flat. */
+  gDPSetCombineMode(dlp++, G_CC_MODULATERGB, G_CC_MODULATERGB);
+  gSPSetGeometryMode(dlp++, G_CULL_BACK);
+}
+
 void drawWorld() {
   u8 i, player_num;
   u8 cinematic = current_screen == LOADING_PREVIEW || current_screen == MENU ||
@@ -2667,6 +3011,14 @@ void drawWorld() {
   u8 viewer_count = cinematic ? 1 : active_player_count;
   u8 fogged = !cinematic && fog_enabled;
   SkyColor sky = dayCycleSkyColor(255);
+
+  /* One set of casters for the whole frame.  Shadow vertices are world
+     space, so every viewport draws the same nine-vertex blobs. */
+  if (cinematic) {
+    shadow_count = 0;
+  } else {
+    buildGroundShadows();
+  }
 
   if (cinematic) {
     /* A brighter blue keeps the distant water legible while the warm
@@ -2696,9 +3048,9 @@ void drawWorld() {
         G_RM_AA_ZB_OPA_SURF2);
     } else {
       drawCelestialBodies(player_num);
-      /* The celestial pass changed cycle type and combine; drain the pipe
-         before reconfiguring for terrain -- attributes changing under a
-         primitive still in flight is the lockup documented in the README. */
+      /* The sky pass changed combine, render mode and alpha compare; drain
+         the pipe before reconfiguring for terrain -- attributes changing
+         under a primitive still in flight is the README's lockup. */
       gDPPipeSync(dlp++);
       if (fogged) {
         /*
@@ -2752,6 +3104,7 @@ void drawWorld() {
         gDPSetRenderMode(dlp++, G_RM_ZB_OPA_SURF, G_RM_ZB_OPA_SURF2);
         gSPClearGeometryMode(dlp++, G_FOG);
       }
+      drawGroundShadows();
       gSPClearGeometryMode(dlp++, G_LIGHTING);
       drawDetailsForPlayer(player_num);
       drawFallingTrees(player_num);
@@ -3754,7 +4107,11 @@ static void drawStreamingDiagnostics() {
     diag_ray_clamps ? diag_ray_guard_time : window_key_faults, y);
   /* Fog start (screen depth), 0 when fog is toggled off.  Tune with
      Z + D-pad Left/Right; Z + D-pad Down toggles. */
-  drawDiagnosticRow("P", fog_enabled ? fog_start : 0, y);
+  y = drawDiagnosticRow("P", fog_enabled ? fog_start : 0, y);
+  /* Cast-shadow casters drawn this frame, capped at SHADOW_SLOTS.  The pass
+     costs eight triangles and some translucent fill per caster, so S is the
+     number to watch if the sky work ever shows up in W or B. */
+  drawDiagnosticRow("S", shadow_count, y);
   setHudTextColor(255, 255, 255);
 }
 
@@ -3994,6 +4351,11 @@ void initGraphics() {
   nuGfxDisplayOn();
 
   buildFaceTextureTable();
+
+  /* The shadow pass draws origin-relative world coordinates straight through,
+     so its modelview is an identity -- written once here, because a matrix an
+     in-flight task may still be reading must never be rewritten. */
+  guTranslate(&shadow_model, 0.f, 0.f, 0.f);
 
   /* Chunk translations are no longer prebaked here.  A slot's matrices belong
      to whichever column is bound to it, so makeColumnDisplayLists writes them

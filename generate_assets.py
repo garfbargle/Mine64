@@ -137,14 +137,22 @@ def tile(kind, x, y):
             return 1
         return 2 + ((x // 4 + y // 5) & 1)
     if kind == "sun":
-        # A subtle cross-shaped corona reads clearly at N64 resolution without
-        # shimmering like a noisy radial gradient.
-        distance = abs(x - 7) + abs(y - 7)
-        if distance < 4:
-            return 3
-        if distance < 7:
+        # A round disc brightening toward the core, on a transparent field.
+        # Index 0 has to stay the transparent entry: the sprite's cutout is
+        # the tile's own alpha, so everything outside the disc must land on
+        # palette 0 -- exactly as the moon phases do.  The previous diamond
+        # filled all 256 texels and ran one index past the end of a
+        # three-colour palette, which put a hole through the sun's middle.
+        dx = x - 7.5
+        dy = y - 7.5
+        radius = dx * dx + dy * dy
+        if radius > 49:
+            return 0
+        if radius > 30:
+            return 1
+        if radius > 12:
             return 2
-        return 1
+        return 3
     if kind.startswith("moon_"):
         phase = int(kind.rsplit("_", 1)[1])
         dx = x - 7.5
@@ -188,7 +196,7 @@ PALETTES = {
     "bricks": [(93, 43, 34), (126, 57, 45), (157, 73, 57), (188, 92, 72)],
     "wool": [(142, 144, 145), (188, 190, 188), (224, 224, 216), (248, 246, 232)],
     "water": [(22, 62, 112), (31, 88, 148), (47, 116, 178), (72, 145, 201)],
-    "sun": [(255, 175, 56), (255, 207, 76), (255, 239, 139)],
+    "sun": [(0, 0, 0, 0), (255, 170, 54), (255, 210, 92), (255, 245, 176)],
     "moon_0": [(0, 0, 0, 0), (121, 137, 166), (186, 200, 218), (226, 231, 236)],
     "moon_1": [(0, 0, 0, 0), (121, 137, 166), (186, 200, 218), (226, 231, 236)],
     "moon_2": [(0, 0, 0, 0), (121, 137, 166), (186, 200, 218), (226, 231, 236)],
