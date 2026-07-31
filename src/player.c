@@ -54,6 +54,12 @@ static Vector3 bounding_box[] = {
 };
 
 static NUContData cont_data[MAX_PLAYERS];
+
+/* World units.  ~30x further out than anyone has walked on hardware; only a
+   corrupt float gets here.  See the sanity snap at the top of updatePlayer. */
+#define POSITION_SANITY_LIMIT 20000000.f
+static Vector3 last_good_position[MAX_PLAYERS];
+static u8 last_good_valid[MAX_PLAYERS];
 static OSTime last_time = 0;
 static u16 down_held = FALSE;
 static u16 up_held = FALSE;
@@ -764,6 +770,7 @@ static float detectCollision(Player *player, Vector3 velocity, float max_t, int 
   Vector3i step;
   int step_axis;
   Vector3 pos;
+  u16 ray_steps = 0;
   Vector3 origin = add(player->position,
     mul(bounding_box[(velocity.x > 0) * 4 + (velocity.y > 0) * 2 + (velocity.z > 0)], BLOCK_SIZE));
   Vector3i block = divToInt(origin, BLOCK_SIZE);
@@ -784,6 +791,21 @@ static float detectCollision(Player *player, Vector3 velocity, float max_t, int 
     if (boxObstructed(pos, step_axis, *ati(&block, step_axis))) {
       *collision_axis = step_axis;
       return t;
+    }
+    /*
+     * A frame's move is at most a few blocks, so a legitimate march crosses
+     * a handful of boundaries.  Hundreds means t has stopped advancing --
+     * float precision on an exact boundary can pin it -- and on this console
+     * that is not a stall but a freeze: this loop runs on the graphics
+     * thread, and nothing preempts it.  Give up on the *movement* rather
+     * than the collision: reporting an immediate hit halts the player for a
+     * frame, where the earlier "no collision" reading let them tunnel
+     * through terrain and fall out of the world.  The L row still counts it.
+     */
+    if (++ray_steps >= 128) {
+      diag_loop_clamps++;
+      *collision_axis = step_axis;
+      return 0;
     }
   }
 }
@@ -1251,6 +1273,40 @@ static u8 updatePlayer(u8 player_num, float delta) {
   u8 swimming = playerInWater(player);
   u8 grounded;
   u8 vaulted = FALSE;
+  u8 resolve_steps = 0;
+
+  diag_player_step = DIAG_STEP_INPUT;
+
+  /*
+   * Position sanity, before anything derives state from it.  Run 5 faulted
+   * converting a position-derived value inside the origin rebase, and a NaN
+   * or runaway float here is the only way that value goes insane: NaN
+   * compares false against everything (so `!(finite range)` catches it),
+   * and the magnitude bound is ~30x further than anyone has ever walked.
+   * Snap back to the last position that passed, count it on the G row.
+   */
+  if (!(player->position.x > -POSITION_SANITY_LIMIT &&
+        player->position.x < POSITION_SANITY_LIMIT &&
+        player->position.y > -POSITION_SANITY_LIMIT &&
+        player->position.y < POSITION_SANITY_LIMIT &&
+        player->position.z > -POSITION_SANITY_LIMIT &&
+        player->position.z < POSITION_SANITY_LIMIT)) {
+    diag_position_glitches++;
+    if (last_good_valid[player_num]) {
+      player->position = last_good_position[player_num];
+    } else {
+      player->position.x = START_X * BLOCK_SIZE;
+      player->position.y = (MAX_Y - 2) * BLOCK_SIZE;
+      player->position.z = START_Z * BLOCK_SIZE;
+    }
+    player->y_velocity = 0;
+    player->knockback_velocity.x = 0;
+    player->knockback_velocity.y = 0;
+    player->knockback_velocity.z = 0;
+  } else {
+    last_good_position[player_num] = player->position;
+    last_good_valid[player_num] = TRUE;
+  }
 
   if (cont->trigger & U_CBUTTONS) {
     /* Z already means "the camera is mine", so it is the natural modifier for
@@ -1360,6 +1416,7 @@ static u8 updatePlayer(u8 player_num, float delta) {
     }
   } else block_inc_held[player_num] = FALSE;
 
+  diag_player_step = DIAG_STEP_VAULT;
   grounded = onGround(player);
   if (!swimming && grounded && (cont->button & L_TRIG) &&
       (cont->button & R_TRIG)) {
@@ -1385,6 +1442,7 @@ static u8 updatePlayer(u8 player_num, float delta) {
   }
   velocity.y += player->y_velocity;
 
+  diag_player_step = DIAG_STEP_COLLIDE;
   velocity = mul(velocity, delta);
   while (t_total < 1) {
     t = detectCollision(player, velocity, 1 - t_total, &collision_axis);
@@ -1400,9 +1458,19 @@ static u8 updatePlayer(u8 player_num, float delta) {
         player->y_velocity = 0;
       }
     }
+    /* Three axis hits resolve any legal frame; more means t has stopped
+       advancing (a t=0 collision reported against an axis that is already
+       zeroed, or float dust) and the loop would otherwise spin the graphics
+       thread forever.  Stop moving this frame and count it on the L row. */
+    if (++resolve_steps >= 8) {
+      diag_loop_clamps++;
+      break;
+    }
   }
 
+  diag_player_step = DIAG_STEP_TARGET;
   updateTargetBlock(player_num);
+  diag_player_step = DIAG_STEP_ACTIONS;
   if (cont->trigger & A_BUTTON) {
     if (player->target_present &&
         blockGet(player->target_x, player->target_y,
@@ -1426,9 +1494,11 @@ static u8 updatePlayer(u8 player_num, float delta) {
       /* A tap should always read as a punch, even if it hits air or starts
          mining.  Continuous mining has its own rhythmic arm motion. */
       player->attack_time = PLAYER_ATTACK_DURATION;
+      diag_player_step = DIAG_STEP_POST;
       updateBreaking(player_num, delta);
     }
   } else {
+    diag_player_step = DIAG_STEP_POST;
     updateBreaking(player_num, delta);
   }
   return FALSE;
@@ -1451,6 +1521,7 @@ void updatePlayers() {
     delta = MAX_FRAME_DELTA;
   }
   diagPaintPhase(DIAG_PHASE_PLAYERS);
+  diag_player_step = DIAG_STEP_OBJECTIVES;
   if (current_screen == GAME) {
     for (i = 0; i < active_player_count; i++) {
       updatePlayerObjective(&players[i], delta);
@@ -1619,9 +1690,20 @@ void updatePlayers() {
   diagPaintPhase(DIAG_PHASE_MOBS);
   updateMobs(delta);
 
+  /* Z + D-pad Up toggles the diagnostics overlay.  Z is the camera modifier,
+     so this cannot collide with the plain D-pad save below -- the save
+     deliberately ignores the D-pad while Z is held. */
+  for (i = 0; i < active_player_count; i++) {
+    if ((cont_data[i].trigger & U_JPAD) && (cont_data[i].button & Z_TRIG)) {
+      diagnostics_visible = !diagnostics_visible;
+      break;
+    }
+  }
+
   if (saving_available) {
     for (i = 0; i < active_player_count; i++) {
-      if (cont_data[i].trigger &
+      if ((cont_data[i].button & Z_TRIG) == 0 &&
+          cont_data[i].trigger &
           (U_JPAD | D_JPAD | L_JPAD | R_JPAD)) {
         if (!worldFixedExtentResident()) {
           /* The save format still writes the whole original extent, and part

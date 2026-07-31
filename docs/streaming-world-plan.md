@@ -358,6 +358,111 @@ gentest-verified, none yet on hardware:
   `drawFallingTrees` no longer double-scans 96 records with four `floor()`
   calls each when nothing is falling.
 
+**Bisection run 4: MAGENTA at (x 120, z 31)** — first run of the baked-verts
++ LOD build.  The CPU died inside the *player* phase (`updatePlayers`), with
+F frozen at 407, O 0, M 2449, V 0, R 213, D 153, Q 17, A 27, C 0, T 12.
+Same family as the unexplained run-1/2 freezes: update-path death while
+walking, streaming healthy.  Also reported: movement felt like quicksand —
+consistent with a collapsed frame rate plus the MAX_FRAME_DELTA clamp
+slowing the simulation, and with A 27 / Q 17 showing far more arena traffic
+than the LOD split predicts.  Two suspicious loops in the player phase
+(`updatePlayer`'s collision resolve, `detectCollision`'s boundary march)
+terminate on clean math but have razor-thin float assumptions.
+
+**Run-5 build sharpens the evidence rather than guessing:**
+
+- The frozen square now has **three bands**: top = phase (red = RSP hang),
+  middle = last player sub-step (green objectives, yellow input/steer,
+  orange vault, red collision resolve, cyan targeting, magenta actions,
+  blue post), bottom = **white if the CPU took an OS_EVENT_FAULT (crash)**,
+  black if not (loop).  Crash vs loop are entirely different hunts.
+- Both suspect loops now carry **runaway guards**: the collision resolve
+  breaks after 8 axis hits, the boundary march gives up after 128 steps.
+  If one of these was the freeze, the console now *survives* and the new
+  `L` row counts the clamps instead.  A rising L with no freeze is the
+  confession.
+- New rows `W` and `B` (tenths of ms, worst over ~2s): W is the real frame
+  time (166 = 60 Hz, 1000 = 10 fps); B is the CPU cost of the gated
+  streaming/mesh/draw block.  B ≈ W blames callback CPU work; W high with
+  B low blames the RSP/RDP.  This is the quicksand diagnosis.
+
+Report on the next freeze: all three band colours plus X Z W B L Q A.  If
+there is no freeze but quicksand returns, photograph the stack while it is
+happening.
+
+**Bisection run 5: yellow / blue / WHITE at (x 113, z 432)** — three findings
+at once:
+
+- **The player-phase freeze is caught.** `L 18`: the new loop guards fired
+  eighteen times and the console survived every one.  Whatever drives the
+  collision code degenerate is real and frequent, but it no longer kills the
+  machine — it is clamped and counted.
+- **The quicksand is diagnosed.** `W 1430 B 1419`: single callbacks were
+  spending ~143 ms of pure CPU in the gated streaming/mesh block while
+  physics kept running at retrace pace.  The RSP was never the problem.
+- **A new death: a CPU FAULT (white band) inside the origin rebase (yellow
+  phase), with O 1.**  At those coordinates a second rebase should not even
+  have fired unless x was negative — or the position was corrupt.  A
+  corrupt position both *triggers* a spurious rebase and *faults* inside
+  it: guTranslate's float→s15.16 conversion of an insane value raises the
+  VR4300's unimplemented-operation exception.  Eighteen collision clamps
+  upstream are eighteen chances for physics to have produced exactly that.
+
+**Run-6 build — evidence and armour:**
+
+- **SD post-mortem.**  Once the heartbeat is 2 s stale the watchdog writes
+  `mine64/freeze.txt`: faulting thread id, PC, CAUSE, BADVADDR, RA, SP,
+  plus raw position bits, origin, and every counter.  With `mine64.out`'s
+  symbol map, PC/RA turn the next freeze into a source line —
+  `mips-n64-objdump` or `nm` on the .out resolves it.
+- **Position sanity snap** at the top of `updatePlayer`: a non-finite or
+  absurd position is replaced with the last known-good one (G row counts
+  it).  The rebase separately refuses insane coordinates.  If the corrupt-
+  position theory is right, the fault becomes a G tick and play continues.
+- **Time-sliced streaming.**  `stream_work_deadline` caps the gated block's
+  generation/decoration/meshing at ~10 ms per callback (first unit of work
+  always runs, so nothing starves; the loading screen is uncapped).  W/B
+  should now hover near 166/100 while walking, and the quicksand should be
+  gone — terrain arrives over a few more frames instead.
+
+**Run 6: the black box delivered.**  Two freezes on the run-6 build (one
+photographed at x 517 z 639 with O 3, G 0, L 25; W 521 B 511 —
+time-slicing killed the quicksand).  `mine64/freeze.txt` off the SD card
+resolved the death exactly:
+
+    PC 800504F8 = guTranslate+0x58  (trunc.w.s of the *z* argument)
+    RA 8002CD24 = graphicsSetRenderOrigin+0x124
+    CAUSE 1000003C = FPU exception (unimplemented operation), thread 4
+
+`trunc.w.s` faults when the s15.16 conversion overflows: |z offset| ≥ 512
+blocks.  The report's origin (56,56) and position (~56,59 blocks) are sane
+and G 0 says the position guard never fired — so a **resident window key
+decoded to a column hundreds of chunks away that no one ever walked to: a
+stray store is corrupting `window_keys`**.  The x argument converted fine,
+so the low halfword (the z field) was clobbered while the high half
+survived — not a sequential overrun from `window_blocks`; more like a
+16/32-bit store landing mid-key.  The writer is still unidentified.
+
+**Run-7 build — catch the writer, survive the wound, fix the pop-in:**
+
+- `windowAuditKeys` walks the keys every streaming step: a resident key
+  decoding past ±2000 chunks is latched (first bad value + slot go to the
+  freeze report as KVAL/KSLOT — the bit pattern should name the writer),
+  counted on the new `K` row, and repaired by evicting the slot (the column
+  regenerates from the seed).  `graphicsSetRenderOrigin` independently
+  refuses any offset past ±500 blocks, so the fault site itself is armored.
+- **Pop-in fix**: the 10 ms deadline was letting terrain generation starve
+  decoration (and meshing waits on decoration) — blocks existed, mobs
+  walked on them, the mesh arrived seconds late.  Every streaming stage now
+  gets one guaranteed step per callback before the deadline may refuse it,
+  and `nearestColumnNeeding` ranks candidates around a point two chunks
+  ahead of the player's smoothed heading, so the ground being walked toward
+  builds first instead of last.
+
+Watch: K (any tick = corruption caught and survived; then pull freeze.txt
+for KVAL/KSLOT), and whether the edge-of-world pop-in while sprinting is
+gone.
+
 **Hardware checklist for the next session** (nothing else above has been on
 the console yet; checklist items 4 and 5 specifically exercise the tree and
 save fixes described above — the far felling in item 4 would previously have
@@ -448,7 +553,34 @@ tree. Planting is an edit and will be captured as a diff either way, so this is
 harmless — but it is a choice, and reverting it just means giving `spawnTree` a
 flag to draw shape from `random()` instead.
 
-## Task 4 — Drop per-quad matrices
+## Task 4 — Drop per-quad matrices — **done, not yet hardware-verified**
+
+Landed together with the in-window half of task 5, because neither pays for
+itself alone:
+
+- **Baked vertex buffers** (`makeColumnTextureDL`, graphics.c): a full-detail
+  column's quads copy their four vertices out of the shared table,
+  pre-translated into column-local space (y spans all four chunks, so one
+  matrix serves the whole column), batched 8 quads per gSPVertex.  The two
+  per-quad matrix operations are gone from the near terrain entirely.
+- **Two-level LOD inside the window**: full detail within Chebyshev 3-4 of
+  the nearest player (split-screen aware), the scenic surface shell —
+  in the old compact matrix-pair format, whose memory cost is what makes it
+  affordable — for the rest of the decorated ring.  Promote at 3, demote at
+  5; the gap is hysteresis.  Freshly streamed columns always arrive as
+  shells, and shells skip T-junction refinement, which was the dominant cost
+  of compiling an arriving column — this is the fix for the walk-hitches.
+- **Single-pass texture bucketing** (`resolveColumnQuads`): one walk of the
+  greedy scratch into a flat per-texture-counted array replaced sixteen full
+  rescans per column.
+
+The old 16-bank rescan emitters (`makeColumnDL`, `makeQuadDL*`) are gone.
+View distance is *unchanged* in this step: the mesh ring is still capped by
+the decoration chain (terrain 7 → waystones 6 → trees 5) and the 16×16
+window.  The view-distance payoff needs the window widened to 32×32, which
+needs the ~1 MiB the two mesh arenas currently pin — see the revised task 5.
+
+### Original notes
 
 Every quad currently costs two matrix ops:
 
@@ -470,7 +602,23 @@ throughput**. This does not pay for itself alone — the current fixed world
 cannot absorb the memory. It only works together with task 5's LOD, which is
 why they land as a pair.
 
-## Task 5 — Two-ring residency with LOD
+## Task 5 — Two-ring residency with LOD — in-window half done; view distance remains
+
+The LOD split and per-column format landed with task 4 above.  What remains
+is the actual view-distance increase, and the RAM math forces an order:
+
+1. **Single mesh arena with a free-list allocator and incremental
+   relocation-defrag** replaces the double-arena compaction scheme.  With
+   `pendingGfx == 0` guaranteed each callback, one column per frame can be
+   relocated to close a hole and its start pointer swapped atomically — no
+   second arena needed.  Reclaims ~1 MiB.
+2. **Widen the window 16 → 32** (the slot math needs a power of two; 20 or
+   24 would put a modulo in blockGet's hot path).  Costs ~768 KiB of block
+   storage plus enlarged per-slot tables — affordable only after step 1.
+   Streaming radii become terrain 15 / waystones 14 / decorated+mesh 13:
+   view distance ~104 blocks, 2.4× today, with the far ring all shell.
+3. Budgets, culling extents (`CULL_SPAN`), `tree_at_root` span, and the
+   visible-column caps then need retuning on hardware.
 
 - Block ring: generous disc, cheap, covers physics and turning.
 - Mesh disc: sized to view distance; far columns use the **surface-shell path

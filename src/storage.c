@@ -561,6 +561,24 @@ static u8 writePage(FIL *file) {
   return result == FR_OK && written == BUFFER_LEN;
 }
 
+u8 storageWriteFreezeReport(const char *text, u32 length) {
+  FIL file;
+  UINT written;
+  u8 ok;
+
+  if (!saving_available) {
+    return FALSE;
+  }
+  if (f_open(&file, "mine64/freeze.txt", FA_WRITE | FA_CREATE_ALWAYS)
+      != FR_OK) {
+    return FALSE;
+  }
+  ok = f_write(&file, text, length, &written) == FR_OK && written == length;
+  f_sync(&file);
+  f_close(&file);
+  return ok;
+}
+
 u8 saveGame() {
   FIL file;
   Header *header = (Header *) file_buffer;

@@ -66,6 +66,9 @@
  * of spawn is automatically rebase-free.
  */
 #define REBASE_DISTANCE 256
+/* Blocks.  Any legitimate walk stays far inside this; past it the position is
+   corrupt and must not be trusted with the render origin. */
+#define REBASE_SANITY_LIMIT 100000
 
 static u8 world_job_stage = WORLD_JOB_IDLE;
 static u8 world_job_kind;
@@ -187,11 +190,20 @@ static void stepWorldJob() {
 }
 
 void callbackGfx(int pendingGfx) {
+  static OSTime last_callback_time;
+  OSTime callback_time = osGetTime();
+  OSTime gated_start;
+
   /* Freeze forensics: the heartbeat tells the watchdog thread this callback
      is still arriving and completing; the tick latches red if a graphics
      task has been in flight for ~2 seconds (RSP/RDP hang). */
   diag_heartbeat++;
   diagWatchdogTick(pendingGfx);
+  if (last_callback_time != 0) {
+    diagNoteFrameInterval(
+      (u32) OS_CYCLES_TO_USEC(callback_time - last_callback_time));
+  }
+  last_callback_time = callback_time;
 
   /*
    * One cinematic task can outlive a video retrace.  Queuing a second in that
@@ -201,6 +213,10 @@ void callbackGfx(int pendingGfx) {
    * pace itself to the actual RSP/RDP cost.
    */
   if (pendingGfx == 0) {
+    gated_start = osGetTime();
+    /* No ceiling outside gameplay: the loading screen has no physics to
+       starve and wants the world built as fast as slices allow. */
+    stream_work_deadline = 0;
     if (world_job_stage != WORLD_JOB_IDLE) {
       stepWorldJob();
     } else if (worldGameBuildRequested()) {
@@ -211,6 +227,11 @@ void callbackGfx(int pendingGfx) {
       int player_block_x = floor(players[0].position.x / BLOCK_SIZE);
       int player_block_z = floor(players[0].position.z / BLOCK_SIZE);
 
+      /* Spread streaming and meshing over frames instead of letting one
+         callback spend 100+ ms: the run-5 quicksand was B tracking W at
+         ~143 ms, all of it CPU work in this block. */
+      stream_work_deadline = gated_start + OS_USEC_TO_CYCLES(10000);
+
       /*
        * Re-centre the render origin before it drifts out of the s15.16 Mtx
        * range (~+-512 blocks).  This rewrites every resident column's chunk
@@ -219,7 +240,20 @@ void callbackGfx(int pendingGfx) {
        * matrices need no special handling: draw() rebuilds all of them every
        * frame, so the frame drawn below is consistently in the new origin.
        */
-      if (stream_rebase_enabled &&
+      /*
+       * A corrupt player position must not become the render origin: run 5
+       * died with a CPU fault inside this rebase, and converting an insane
+       * float through guTranslate's s15.16 path raises exactly that
+       * exception.  updatePlayer now snaps bad positions back, so a value
+       * this far out can only be corruption -- skip and count it rather
+       * than crash on it.
+       */
+      if (player_block_x > REBASE_SANITY_LIMIT ||
+          player_block_x < -REBASE_SANITY_LIMIT ||
+          player_block_z > REBASE_SANITY_LIMIT ||
+          player_block_z < -REBASE_SANITY_LIMIT) {
+        diag_position_glitches++;
+      } else if (stream_rebase_enabled &&
           (player_block_x - render_origin_x > REBASE_DISTANCE ||
            render_origin_x - player_block_x > REBASE_DISTANCE ||
            player_block_z - render_origin_z > REBASE_DISTANCE ||
@@ -241,6 +275,31 @@ void callbackGfx(int pendingGfx) {
        * only fight the camera.
        */
       diagPaintPhase(DIAG_PHASE_STREAMING);
+      /*
+       * Prefetch bias: rank streaming work toward where the player is
+       * heading, from a smoothed per-frame block displacement.  Without it,
+       * nearest-first builds the ring edge directly ahead -- the exact
+       * ground about to be stepped on -- dead last.
+       */
+      {
+        static float heading_x, heading_z;
+        static int prev_block_x, prev_block_z;
+        static u8 heading_valid;
+
+        if (heading_valid) {
+          heading_x = heading_x * .95f +
+            (float) (player_block_x - prev_block_x) * .05f;
+          heading_z = heading_z * .95f +
+            (float) (player_block_z - prev_block_z) * .05f;
+        }
+        prev_block_x = player_block_x;
+        prev_block_z = player_block_z;
+        heading_valid = TRUE;
+        /* A steady walk settles the average near 0.12 blocks a frame; 0.04
+           is fast enough to catch a new direction within a second or so. */
+        worldSetStreamBias(heading_x > .04f ? 2 : (heading_x < -.04f ? -2 : 0),
+          heading_z > .04f ? 2 : (heading_z < -.04f ? -2 : 0));
+      }
       stepWorldStreaming(player_block_x >> CHUNK_SHIFT,
         player_block_z >> CHUNK_SHIFT,
         STREAM_TERRAIN_PER_STEP, STREAM_DECORATE_PER_STEP);
@@ -249,6 +308,7 @@ void callbackGfx(int pendingGfx) {
        reference its display lists. */
     diagPaintPhase(DIAG_PHASE_DRAW);
     draw(TRUE);
+    diagNoteGatedWork((u32) OS_CYCLES_TO_USEC(osGetTime() - gated_start));
   }
 
   if (current_screen == LOADING_PREVIEW && loadingPreviewFinished()) {
@@ -308,17 +368,85 @@ static u64 diag_watchdog_stack[0x800 / sizeof (u64)];
 static OSMesgQueue diag_watchdog_queue;
 static OSMesg diag_watchdog_messages[1];
 static OSTimer diag_watchdog_timer;
+/* A CPU exception posts OS_EVENT_FAULT.  The watchdog polls it so the frozen
+   square's bottom band can say whether the dead thread crashed (white) or is
+   spinning in a loop (black) -- entirely different hunts. */
+static OSMesgQueue diag_fault_queue;
+static OSMesg diag_fault_messages[1];
+
+/* From libultra's fault handler (os_internal_error.h); present in the
+   release library.  NULL when no thread has faulted. */
+extern OSThread *__osGetCurrFaultedThread(void);
+
+static char *diagReportHex(char *out, const char *label, u32 value) {
+  int shift;
+
+  while (*label) {
+    *out++ = *label++;
+  }
+  *out++ = ' ';
+  for (shift = 28; shift >= 0; shift -= 4) {
+    *out++ = "0123456789ABCDEF"[(value >> shift) & 15];
+  }
+  *out++ = '\n';
+  return out;
+}
+
+/*
+ * The post-mortem the frozen screen cannot show: with the .out symbol map,
+ * PC/RA turn a fault into a source line, and the raw position bits either
+ * confirm or kill the corrupt-position theory.  Written once, after the
+ * heartbeat has been stale for two seconds, from the watchdog thread -- the
+ * console is already dead, so a failed write loses nothing.
+ */
+static void diagWriteFreezeReport(void) {
+  static char report[640];
+  char *out = report;
+  OSThread *faulted = __osGetCurrFaultedThread();
+
+  out = diagReportHex(out, "PHASE", diag_current_phase);
+  out = diagReportHex(out, "PSTEP", diag_player_step);
+  out = diagReportHex(out, "HEART", diag_heartbeat);
+  if (faulted != NULL) {
+    out = diagReportHex(out, "THREAD", (u32) faulted->id);
+    out = diagReportHex(out, "PC", faulted->context.pc);
+    out = diagReportHex(out, "CAUSE", faulted->context.cause);
+    out = diagReportHex(out, "BADV", faulted->context.badvaddr);
+    out = diagReportHex(out, "SR", faulted->context.sr);
+    out = diagReportHex(out, "RA", (u32) faulted->context.ra);
+    out = diagReportHex(out, "SP", (u32) faulted->context.sp);
+  }
+  out = diagReportHex(out, "POSX", *(u32 *) &players[0].position.x);
+  out = diagReportHex(out, "POSY", *(u32 *) &players[0].position.y);
+  out = diagReportHex(out, "POSZ", *(u32 *) &players[0].position.z);
+  out = diagReportHex(out, "ORGX", (u32) render_origin_x);
+  out = diagReportHex(out, "ORGZ", (u32) render_origin_z);
+  out = diagReportHex(out, "REBASE", render_rebase_count);
+  out = diagReportHex(out, "CLAMPS", diag_loop_clamps);
+  out = diagReportHex(out, "GLITCH", diag_position_glitches);
+  out = diagReportHex(out, "KFAULT", window_key_faults);
+  out = diagReportHex(out, "KVAL", window_key_fault_value);
+  out = diagReportHex(out, "KSLOT", window_key_fault_slot);
+  storageWriteFreezeReport(report, (u32) (out - report));
+}
 
 static void diagWatchdogThread(void *arg) {
   u32 last_heartbeat = 0;
   u32 stale_seconds = 0;
+  u8 report_written = FALSE;
 
   (void) arg;
   osCreateMesgQueue(&diag_watchdog_queue, diag_watchdog_messages, 1);
+  osCreateMesgQueue(&diag_fault_queue, diag_fault_messages, 1);
+  osSetEventMesg(OS_EVENT_FAULT, &diag_fault_queue, NULL);
   osSetTimer(&diag_watchdog_timer, 0, OS_USEC_TO_CYCLES(1000000),
     &diag_watchdog_queue, NULL);
   while (1) {
     (void) osRecvMesg(&diag_watchdog_queue, NULL, OS_MESG_BLOCK);
+    if (!diag_cpu_faulted &&
+        osRecvMesg(&diag_fault_queue, NULL, OS_MESG_NOBLOCK) == 0) {
+      diag_cpu_faulted = TRUE;
+    }
     if (diag_heartbeat != last_heartbeat) {
       last_heartbeat = diag_heartbeat;
       stale_seconds = 0;
@@ -326,6 +454,10 @@ static void diagWatchdogThread(void *arg) {
     }
     if (++stale_seconds >= 2) {
       diagPaintStalePhase();
+      if (!report_written) {
+        report_written = TRUE;
+        diagWriteFreezeReport();
+      }
     }
   }
 }

@@ -101,9 +101,10 @@ static Gfx *frame_dlp_limit;
 /* Non-zero means a frame had to shed terrain or was dropped outright.  Shown
    on the picker so this failure mode can never be silent again. */
 u32 frame_overflows;
-/* Set while compiling the reduced scenic mesh; makeQuadDL drops everything
-   below the surface shell. */
-static u8 building_surface_mesh;
+/* Set while compiling the menu's scenic preview, whose shell additionally
+   hides the fixed world's underground outer wall.  Gameplay LOD is chosen
+   per column instead; see MESH_LOD_* below. */
+static u8 building_scenic;
 /* Surface height of each block column in the footprint being compiled, so the
    scenic pass resolves it once per column instead of rescanning the full
    height for every candidate quad. */
@@ -112,10 +113,6 @@ static u8 column_build_arena;
 static u8 column_display_list_full;
 static u8 dirty_columns[WINDOW_SLOTS];
 static u16 dirty_column_cursor;
-/* The column makeColumnDisplayLists is compiling, for the parts of quad
-   emission that need to know where in the world they are. */
-static int building_column_x;
-static int building_column_z;
 static u8 compacting_columns;
 static u16 compaction_column_cursor;
 /* Set when a compaction pass could not fit every resident column. */
@@ -199,14 +196,57 @@ static u32 frame_command_peak = 0;
  */
 volatile u16 diag_current_phase;
 volatile u32 diag_heartbeat;
+/*
+ * Run 4 (magenta at x 120 z 31) narrowed the death to the player phase but
+ * no further, so the frozen square now carries three bands:
+ *
+ *   top     the phase colour (or red for an RSP/RDP hang), as before
+ *   middle  which player sub-step ran last -- see the palette below
+ *   bottom  white if the CPU took a fault (the OS_EVENT_FAULT fired, so the
+ *           thread crashed), black if not (so it is spinning in a loop)
+ *
+ * Middle-band palette, meaningful when the top band is magenta:
+ *   black none | green objectives | yellow input/steer | orange vault |
+ *   red collision resolve | cyan targeting | magenta actions | blue post
+ */
+volatile u8 diag_player_step;
+volatile u8 diag_cpu_faulted;
+/*
+ * Whether the diagnostics stack and phase-square flicker are drawn.  Off by
+ * default now that streaming is stable; Z + D-pad Up toggles it, and it
+ * switches itself on the moment any integrity counter ticks -- corruption
+ * caught, a position snapped, a task hung, a CPU fault -- so an anomaly is
+ * never silently absorbed.  The freeze watchdog and the SD post-mortem are
+ * NOT gated on this: a dead console always reports.
+ */
+u8 diagnostics_visible = FALSE;
 
-static void diagPaintBuffer(u16 *frame_buffer, u16 color) {
+/* Times a runaway loop guard fired in player collision code.  A rising L row
+   with no freeze means a guard is eating what used to be the hang. */
+u32 diag_loop_clamps;
+/* Times a player position failed the sanity check (non-finite or absurdly far
+   out) and was snapped back, or a rebase was refused for the same reason.
+   Any non-zero G proves the position-corruption theory of the run-5 fault. */
+u32 diag_position_glitches;
+
+static const u16 diag_step_colors[8] = {
+  GPACK_RGBA5551(0, 0, 0, 1),       /* 0 none */
+  GPACK_RGBA5551(0, 255, 0, 1),     /* 1 objectives */
+  GPACK_RGBA5551(255, 255, 0, 1),   /* 2 input/steer */
+  GPACK_RGBA5551(255, 140, 0, 1),   /* 3 vault */
+  GPACK_RGBA5551(255, 0, 0, 1),     /* 4 collision resolve */
+  GPACK_RGBA5551(0, 255, 255, 1),   /* 5 targeting */
+  GPACK_RGBA5551(255, 0, 255, 1),   /* 6 actions */
+  GPACK_RGBA5551(0, 0, 255, 1)      /* 7 post */
+};
+
+static void diagPaintRows(u16 *frame_buffer, int y0, int rows, u16 color) {
   int x, y;
 
   if (frame_buffer == NULL) {
     return;
   }
-  for (y = 0; y < DIAG_SQUARE_SIZE; y++) {
+  for (y = y0; y < y0 + rows; y++) {
     u16 *row = frame_buffer + (DIAG_SQUARE_Y + y) * SCREEN_WD + DIAG_SQUARE_X;
     for (x = 0; x < DIAG_SQUARE_SIZE; x++) {
       row[x] = color;
@@ -216,22 +256,38 @@ static void diagPaintBuffer(u16 *frame_buffer, u16 color) {
   }
 }
 
+static void diagPaintBuffer(u16 *frame_buffer, u16 color) {
+  diagPaintRows(frame_buffer, 0, DIAG_SQUARE_SIZE, color);
+}
+
 void diagPaintPhase(u16 color) {
+  /* Always record -- the watchdog reports the phase whether or not the
+     overlay is showing.  Only the alive-flicker paint is cosmetic. */
   diag_current_phase = color;
-  if (diag_task_hung) {
+  if (diag_task_hung || !diagnostics_visible) {
     return;
   }
   diagPaintBuffer((u16 *) osViGetCurrentFramebuffer(), color);
 }
 
 /* Called by the watchdog thread after the heartbeat stops: keep the fatal
-   phase colour on screen no matter which buffer the VI ends up scanning. */
+   evidence on screen no matter which buffer the VI ends up scanning. */
 void diagPaintStalePhase(void) {
-  u16 color = diag_task_hung ? GPACK_RGBA5551(255, 0, 0, 1)
+  u16 phase = diag_task_hung ? GPACK_RGBA5551(255, 0, 0, 1)
     : diag_current_phase;
+  u16 step = diag_step_colors[diag_player_step & 7];
+  u16 fault = diag_cpu_faulted ? GPACK_RGBA5551(255, 255, 255, 1)
+    : GPACK_RGBA5551(0, 0, 0, 1);
+  u16 *buffers[2];
+  int i;
 
-  diagPaintBuffer((u16 *) osViGetCurrentFramebuffer(), color);
-  diagPaintBuffer((u16 *) osViGetNextFramebuffer(), color);
+  buffers[0] = (u16 *) osViGetCurrentFramebuffer();
+  buffers[1] = (u16 *) osViGetNextFramebuffer();
+  for (i = 0; i < 2; i++) {
+    diagPaintRows(buffers[i], 0, 6, phase);
+    diagPaintRows(buffers[i], 6, 5, step);
+    diagPaintRows(buffers[i], 11, 5, fault);
+  }
 }
 
 void diagWatchdogTick(int pendingGfx) {
@@ -242,6 +298,36 @@ void diagWatchdogTick(int pendingGfx) {
   if (++diag_pending_streak > 120 && !diag_task_hung) {
     diag_task_hung = TRUE;
     diagPaintStalePhase();
+  }
+}
+
+/*
+ * Worst-of-window frame pacing, for the quicksand symptom.  W is the wall
+ * clock between consecutive graphics callbacks -- the player's actual frame
+ * time, whatever is causing it.  B is the CPU cost of the gated block
+ * (streaming, rebasing, mesh work, frame build).  B near W says the CPU work
+ * in the callback is the bottleneck; W high with B low says the RSP/RDP is.
+ * The window resets every ~2s so a single historical spike does not pin the
+ * numbers forever.
+ */
+static u32 diag_worst_frame_usec;
+static u32 diag_worst_gated_usec;
+static u16 diag_perf_window;
+
+void diagNoteFrameInterval(u32 usec) {
+  if (usec > diag_worst_frame_usec) {
+    diag_worst_frame_usec = usec;
+  }
+  if (++diag_perf_window >= 120) {
+    diag_perf_window = 0;
+    diag_worst_frame_usec = usec;
+    diag_worst_gated_usec = 0;
+  }
+}
+
+void diagNoteGatedWork(u32 usec) {
+  if (usec > diag_worst_gated_usec) {
+    diag_worst_gated_usec = usec;
   }
 }
 
@@ -913,132 +999,323 @@ static void resetColumnArenaBuild(u8 arena) {
   }
 }
 
-static void makeQuadDL(u32 slot, u8 cy, u8 bx, u8 by, u8 bz, u8 width,
-    u8 height, u8 face, u8 is_water) {
-  u32 b = bx * CHUNK_SIZE * CHUNK_SIZE + by * CHUNK_SIZE + bz;
+/*
+ * Which texture bank draws each block face.  Derived once from textures[]'s
+ * FaceSpec lists, so one pass over a column's quads can bucket them by
+ * texture instead of rescanning every quad sixteen times -- once per bank --
+ * as the old per-texture emitters did.
+ */
+#define FACE_TEXTURE_NONE 0xFF
+static u8 face_texture[16][6];
 
-  if (building_surface_mesh) {
-    int cx = building_column_x;
-    int cz = building_column_z;
-    int max_quad_y = cy * CHUNK_SIZE + by;
-    int surface_y;
+static void buildFaceTextureTable(void) {
+  u8 t, f, i;
 
-    /*
-     * The scenic camera looks down on the world from outside it, so every
-     * cave wall and ore face in a visible column is transformed by the RSP
-     * and then hidden behind the terrain above it.  Column culling cannot
-     * reject those -- there is no occlusion pass -- and they dominate the
-     * frame.  Keep only the two-block surface shell here; gameplay compiles
-     * the untouched full mesh into the other arena.
-     */
-    /* The world's underground outer wall is one long greedy quad spanning
-       bedrock to surface.  It is what produced the "chunks below the map"
-       silhouette on the title screen. */
-    if ((cx == 0 || cx == CHUNKS_X - 1 ||
-         cz == 0 || cz == CHUNKS_Z - 1) &&
-        face != TOP && face != BOTTOM) {
-      return;
-    }
-    if (face == TOP) {
-      max_quad_y++;
-    } else if (face != BOTTOM) {
-      max_quad_y += height + 1;
-    }
-    surface_y = surface_heights[bx][bz];
-    if (max_quad_y < surface_y - 1 || face == BOTTOM) {
-      return;
+  for (t = 0; t < 16; t++) {
+    for (f = 0; f < 6; f++) {
+      face_texture[t][f] = FACE_TEXTURE_NONE;
     }
   }
+  for (t = 0; t < NUM_TEXTURES; t++) {
+    for (i = 0; i < textures[t]->n_faces; i++) {
+      FaceSpec *spec = &textures[t]->faces[i];
 
-  /* Reserve one final command for the column's EndDisplayList.  A maximally
-     fragmented player-built chunk can exceed the normal greedy-mesh budget;
-     dropping only excess faces is far safer than overwriting adjacent RAM. */
-  if (columnArenaFree() < 6) {
-    column_display_list_full = TRUE;
-    return;
-  }
-  gSPMatrix(column_dlp++,OS_K0_TO_PHYSICAL(&c_models[slot][cy]),
-    G_MTX_MODELVIEW|G_MTX_LOAD|G_MTX_NOPUSH);
-  gSPMatrix(column_dlp++,OS_K0_TO_PHYSICAL(b_models + b),
-    G_MTX_MODELVIEW|G_MTX_MUL|G_MTX_NOPUSH);
-  gSPVertex(column_dlp++, is_water && face == TOP ?
-    WATER_TOP_QUAD_ADDR(width, height) : QUAD_ADDR(face, width, height), 4, 0);
-  gSP1Quadrangle(column_dlp++, 3, 2, 1, 0, 0);
-}
-
-static void makeQuadDLRST(u32 slot, u8 cy, u8 br, u8 bs, u8 bt, u8 axes,
-    u8 width, u8 height, u8 face, u8 is_water) {
-  if (face == NONE) {
-    return;
-  }
-
-  if (axes == ZXY) {
-    makeQuadDL(slot, cy, bs, bt, br, width, height, face, is_water);
-  } else if (axes == XZY) {
-    makeQuadDL(slot, cy, br, bt, bs, width, height, face, is_water);
-  } else if (axes == YXZ) {
-    makeQuadDL(slot, cy, bs, br, bt, width, height, face, is_water);
+      if (spec->top) {
+        face_texture[spec->block][TOP] = t;
+      }
+      if (spec->bottom) {
+        face_texture[spec->block][BOTTOM] = t;
+      }
+      if (spec->sides) {
+        face_texture[spec->block][FRONT] = t;
+        face_texture[spec->block][BACK] = t;
+        face_texture[spec->block][LEFT] = t;
+        face_texture[spec->block][RIGHT] = t;
+      }
+    }
   }
 }
 
-static void makeChunkAxisDL(DualQuadList *axis_quads, u32 slot, u8 cy, u8 axes,
-    u8 face1, u8 face2, u8 block) {
+/*
+ * Level of detail per column mesh.
+ *
+ * FULL is the gameplay mesh in baked-vertex form: every quad's four vertices
+ * are copied out of the shared origin-space table, pre-translated into
+ * column-local space, and referenced by batched gSPVertex loads under a
+ * single column matrix.  That trades roughly 81 bytes a quad against the old
+ * 32, to remove the two per-quad matrix operations (a DMA'd LOAD and a full
+ * fixed-point MUL each) that dominated the RSP's terrain cost.
+ *
+ * SHELL is the two-block surface skin in the old matrix-pair format: about
+ * 20-35 quads a column instead of ~110-270, so its RSP cost is trivial and
+ * the compact format keeps hundreds of far columns affordable in the arena.
+ * Shell columns also skip T-junction refinement -- the seams it repairs are
+ * sub-pixel at that distance, and the refinement was the dominant cost of
+ * compiling a freshly streamed column, which is exactly the moment the frame
+ * can least afford it.
+ *
+ * The near disc is promoted at PROMOTE and demoted at DEMOTE, with the gap
+ * between them the hysteresis that stops a column on the boundary from
+ * re-meshing every time the player takes a step across it.
+ */
+#define MESH_LOD_FULL 0
+#define MESH_LOD_SHELL 1
+#define MESH_LOD_PROMOTE_RADIUS 3
+#define MESH_LOD_DEMOTE_RADIUS 5
+static u8 column_mesh_lod[NUM_COLUMN_ARENAS][WINDOW_SLOTS];
+
+/* Chebyshev chunk distance from a column to the nearest active player --
+   every LOD and compaction decision keys off this, so split-screen terrain
+   follows all players rather than only player one. */
+static int columnPlayerDistance(int cx, int cz) {
+  int best = 1000;
+  u8 i;
+
+  for (i = 0; i < active_player_count; i++) {
+    int pcx = floor(players[i].position.x / (BLOCK_SIZE * CHUNK_SIZE));
+    int pcz = floor(players[i].position.z / (BLOCK_SIZE * CHUNK_SIZE));
+    int dx = cx - pcx;
+    int dz = cz - pcz;
+    int d;
+
+    if (dx < 0) dx = -dx;
+    if (dz < 0) dz = -dz;
+    d = dx > dz ? dx : dz;
+    if (d < best) {
+      best = d;
+    }
+  }
+  return best;
+}
+
+/* The LOD a rebuild should compile now.  The midpoint between the promote and
+   demote radii, so a column marked stale by either hysteresis edge settles
+   into a state that edge no longer complains about. */
+static u8 meshLodFor(int cx, int cz) {
+  return columnPlayerDistance(cx, cz) <= MESH_LOD_PROMOTE_RADIUS + 1 ?
+    MESH_LOD_FULL : MESH_LOD_SHELL;
+}
+
+/*
+ * One column's quads, resolved out of the axis-major greedy scratch into
+ * plain column-local records, bucket-counted by texture.  Resolving once and
+ * emitting per texture from this flat array replaced sixteen full rescans of
+ * the scratch per column.
+ *
+ * The cap covers every realistic column several times over (a typical column
+ * is 110-270 quads); a pathological player-built column loses its excess
+ * faces, which is the same degradation the arena-space check always had.
+ */
+#define COLUMN_QUAD_CAP 1536
+typedef struct {
+  u8 x;       /* block offsets in column space; y spans the full 0..31 */
+  u8 y;
+  u8 z;
+  u8 width;   /* stored minus one, as the shared vertex table indexes them */
+  u8 height;
+  u8 face;
+  u8 texture;
+  u8 water_top;
+} BakedQuad;
+static BakedQuad column_baked[COLUMN_QUAD_CAP];
+static u16 column_baked_total;
+static u16 column_baked_counts[NUM_TEXTURES];
+
+/* TRUE for quads the surface shell keeps: the skin the world shows from a
+   distance.  Same filter the scenic preview always used. */
+static u8 shellKeepsQuad(int cx, int cz, u8 bx, u8 column_y, u8 bz, u8 height,
+    u8 face) {
+  int max_quad_y = column_y;
+  int surface_y;
+
+  /* The fixed world's underground outer wall is one long greedy quad from
+     bedrock to surface -- the "chunks below the map" silhouette the title
+     screen orbit used to show.  Only the scenic build has a world edge to
+     hide; a streaming shell keeps its sides. */
+  if (building_scenic &&
+      (cx == 0 || cx == CHUNKS_X - 1 || cz == 0 || cz == CHUNKS_Z - 1) &&
+      face != TOP && face != BOTTOM) {
+    return FALSE;
+  }
+  if (face == BOTTOM) {
+    return FALSE;
+  }
+  if (face == TOP) {
+    max_quad_y++;
+  } else {
+    max_quad_y += height + 1;
+  }
+  surface_y = surface_heights[bx][bz];
+  return max_quad_y >= surface_y - 1;
+}
+
+static void resolveAxisQuads(DualQuadList *axis_quads, int cx, int cz, u8 cy,
+    u8 axes, u8 face_front, u8 face_back, u8 shell) {
   u8 br, i;
-  DualQuadList *both_quads;
+
   for (br = 0; br < CHUNK_SIZE; br++) {
-    both_quads = &(axis_quads)[br];
-    for (i = 0; i < both_quads->n_front + both_quads->n_back; i++) {
-      if (both_quads->quads[i].block == block) {
-        makeQuadDLRST(slot, cy, br, both_quads->quads[i].bs,
-          both_quads->quads[i].bt, axes,
-          both_quads->quads[i].width, both_quads->quads[i].height,
-          i < both_quads->n_front ? face1 : face2, block == WATER);
+    DualQuadList *both_quads = &axis_quads[br];
+    u8 n = both_quads->n_front + both_quads->n_back;
+
+    for (i = 0; i < n; i++) {
+      Quad *quad = &both_quads->quads[i];
+      u8 face = i < both_quads->n_front ? face_front : face_back;
+      u8 texture = face_texture[quad->block][face];
+      u8 bx, by, bz;
+      BakedQuad *baked;
+
+      if (texture == FACE_TEXTURE_NONE) {
+        continue;
       }
+      if (axes == ZXY) {
+        bx = quad->bs; by = quad->bt; bz = br;
+      } else if (axes == XZY) {
+        bx = br; by = quad->bt; bz = quad->bs;
+      } else {
+        bx = quad->bs; by = br; bz = quad->bt;
+      }
+      if (shell && !shellKeepsQuad(cx, cz, bx,
+          (u8) (cy * CHUNK_SIZE + by), bz, quad->height, face)) {
+        continue;
+      }
+      if (column_baked_total >= COLUMN_QUAD_CAP) {
+        return;
+      }
+      baked = &column_baked[column_baked_total++];
+      baked->x = bx;
+      baked->y = (u8) (cy * CHUNK_SIZE + by);
+      baked->z = bz;
+      baked->width = quad->width;
+      baked->height = quad->height;
+      baked->face = face;
+      baked->texture = texture;
+      baked->water_top = quad->block == WATER && face == TOP;
+      column_baked_counts[texture]++;
     }
   }
 }
 
-static u8 makeColumnDL(u32 slot, u8 texture, Gfx **new_start) {
-  u8 cy, i;
-  Gfx *texture_start;
-  ChunkQuads *c_quads;
-  FaceSpec *faces = textures[texture]->faces;
+static void resolveColumnQuads(int cx, int cz, u8 lod) {
+  u8 cy, texture;
+  u8 shell = lod == MESH_LOD_SHELL;
 
-  if (column_display_list_full ||
-      columnArenaFree() < 1) {
-    column_display_list_full = TRUE;
-    return FALSE;
+  column_baked_total = 0;
+  for (texture = 0; texture < NUM_TEXTURES; texture++) {
+    column_baked_counts[texture] = 0;
   }
-  texture_start = column_dlp;
-
   for (cy = 0; cy < CHUNKS_Y; cy++) {
-    c_quads = &column_quads[cy];
+    ChunkQuads *cq = &column_quads[cy];
 
-    for (i = 0; i < textures[texture]->n_faces; i++) {
-      if (faces[i].sides) {
-        makeChunkAxisDL(c_quads->z_quads, slot, cy, ZXY, FRONT, BACK, faces[i].block);
-        makeChunkAxisDL(c_quads->x_quads, slot, cy, XZY, RIGHT, LEFT, faces[i].block);
-      }
-
-      if (faces[i].top || faces[i].bottom) {
-        makeChunkAxisDL(c_quads->y_quads, slot, cy, YXZ, faces[i].top? TOP : NONE, faces[i].bottom? BOTTOM : NONE, faces[i].block);
-      }
-    }
+    resolveAxisQuads(cq->z_quads, cx, cz, cy, ZXY, FRONT, BACK, shell);
+    resolveAxisQuads(cq->x_quads, cx, cz, cy, XZY, RIGHT, LEFT, shell);
+    resolveAxisQuads(cq->y_quads, cx, cz, cy, YXZ, TOP, BOTTOM, shell);
   }
+}
 
-  if (column_display_list_full) {
-    return FALSE;
-  }
+/* Quads per gSPVertex batch: 8 quads' 32 vertices fill the F3DEX2 vertex
+   buffer exactly. */
+#define BAKED_QUADS_PER_BATCH 8
 
-  if (column_dlp == texture_start) {
-    /* Most columns use only a subset of the texture bank. Sharing one empty
+static u8 makeColumnTextureDL(u32 slot, u8 texture, u8 lod, Gfx **new_start) {
+  u16 n = column_baked_counts[texture];
+  u16 i, emitted, batch_n;
+  u32 needed;
+  Vtx *verts;
+  Gfx *cmds;
+
+  if (n == 0) {
+    /* Most columns use only a subset of the texture bank.  Sharing one empty
        list saves an EndDisplayList command for every absent material. */
     *new_start = empty_column_display_list;
     return TRUE;
   }
 
-  gSPEndDisplayList(column_dlp++);
-  *new_start = texture_start;
+  if (lod == MESH_LOD_SHELL) {
+    /* The compact matrix-pair format: cheap in memory, two matrix ops a
+       quad on the RSP -- affordable precisely because a shell column has so
+       few quads. */
+    if (columnArenaFree() < (u32) n * 4 + 1) {
+      column_display_list_full = TRUE;
+      return FALSE;
+    }
+    *new_start = column_dlp;
+    for (i = 0; i < column_baked_total; i++) {
+      BakedQuad *q = &column_baked[i];
+      u32 b;
+
+      if (q->texture != texture) {
+        continue;
+      }
+      b = (u32) q->x * CHUNK_SIZE * CHUNK_SIZE +
+        (u32) (q->y & CHUNK_MASK) * CHUNK_SIZE + q->z;
+      gSPMatrix(column_dlp++,
+        OS_K0_TO_PHYSICAL(&c_models[slot][q->y >> CHUNK_SHIFT]),
+        G_MTX_MODELVIEW | G_MTX_LOAD | G_MTX_NOPUSH);
+      gSPMatrix(column_dlp++, OS_K0_TO_PHYSICAL(b_models + b),
+        G_MTX_MODELVIEW | G_MTX_MUL | G_MTX_NOPUSH);
+      gSPVertex(column_dlp++, q->water_top ?
+        WATER_TOP_QUAD_ADDR(q->width, q->height) :
+        QUAD_ADDR(q->face, q->width, q->height), 4, 0);
+      gSP1Quadrangle(column_dlp++, 3, 2, 1, 0, 0);
+    }
+    gSPEndDisplayList(column_dlp++);
+    return TRUE;
+  }
+
+  /*
+   * Baked-vertex form.  The vertex block sits first in the allocation and is
+   * never executed: the published pointer enters at the command stream after
+   * it.  Vertices are column-local (y spans all four chunks, 0..2047 units),
+   * so one matrix serves the whole column and batches cross chunk seams
+   * freely.  A Vtx is two Gfx of arena space.
+   */
+  needed = (u32) n * 8 + 1 +
+    ((u32) n + BAKED_QUADS_PER_BATCH - 1) / BAKED_QUADS_PER_BATCH +
+    (u32) n + 1;
+  if (columnArenaFree() < needed) {
+    column_display_list_full = TRUE;
+    return FALSE;
+  }
+  verts = (Vtx *) column_dlp;
+  cmds = column_dlp + (u32) n * 8;
+  emitted = 0;
+  for (i = 0; i < column_baked_total; i++) {
+    BakedQuad *q = &column_baked[i];
+    const Vtx *src;
+    u8 v;
+
+    if (q->texture != texture) {
+      continue;
+    }
+    src = q->water_top ? WATER_TOP_QUAD_ADDR(q->width, q->height) :
+      QUAD_ADDR(q->face, q->width, q->height);
+    for (v = 0; v < 4; v++) {
+      Vtx *out = &verts[(u32) emitted * 4 + v];
+
+      *out = src[v];
+      out->v.ob[0] += (s16) ((s16) q->x * BLOCK_SIZE);
+      out->v.ob[1] += (s16) ((s16) q->y * BLOCK_SIZE);
+      out->v.ob[2] += (s16) ((s16) q->z * BLOCK_SIZE);
+    }
+    emitted++;
+  }
+
+  *new_start = cmds;
+  gSPMatrix(cmds++, OS_K0_TO_PHYSICAL(&c_models[slot][0]),
+    G_MTX_MODELVIEW | G_MTX_LOAD | G_MTX_NOPUSH);
+  for (i = 0; i < n; i += BAKED_QUADS_PER_BATCH) {
+    u16 batch;
+
+    batch_n = n - i > BAKED_QUADS_PER_BATCH ? BAKED_QUADS_PER_BATCH :
+      (u16) (n - i);
+    gSPVertex(cmds++, verts + (u32) i * 4, batch_n * 4, 0);
+    for (batch = 0; batch < batch_n; batch++) {
+      gSP1Quadrangle(cmds++, batch * 4 + 3, batch * 4 + 2, batch * 4 + 1,
+        batch * 4 + 0, 0);
+    }
+  }
+  gSPEndDisplayList(cmds++);
+  column_dlp = cmds;
   return TRUE;
 }
 
@@ -1047,9 +1324,7 @@ static u8 makeColumnDisplayLists(int cx, int cz) {
   u32 slot = WINDOW_SLOT(cx, cz);
   Gfx *column_start = column_dlp;
   Gfx *new_starts[NUM_TEXTURES];
-
-  building_column_x = cx;
-  building_column_z = cz;
+  u8 lod = building_scenic ? MESH_LOD_SHELL : meshLodFor(cx, cz);
 
   /* The slot may have held a different column until now, so its translations
      are rewritten here rather than prebaked once for a fixed world.  Doing it
@@ -1062,10 +1337,7 @@ static u8 makeColumnDisplayLists(int cx, int cz) {
       (float) (cz * CHUNK_SIZE - render_origin_z) * BLOCK_SIZE);
   }
 
-  /* Do not publish any new pointer until every material in the replacement
-     column fits. Previous RSP tasks can keep reading the old immutable lists,
-     and an overflow can safely roll this unpublished append back. */
-  if (building_surface_mesh) {
+  if (lod == MESH_LOD_SHELL) {
     u8 bx, bz;
     for (bx = 0; bx < CHUNK_SIZE; bx++) {
       for (bz = 0; bz < CHUNK_SIZE; bz++) {
@@ -1090,9 +1362,20 @@ static u8 makeColumnDisplayLists(int cx, int cz) {
       }
     }
   }
+  /* Seam refinement repairs hairline cracks the near eye can see; at shell
+     distance they are sub-pixel, and skipping it removes the dominant cost
+     of compiling a freshly streamed column.  Set per column here so every
+     path -- streaming, edits, compaction, world builds -- gets the same
+     policy. */
+  geometrySetTjunctionRefinement(lod == MESH_LOD_FULL);
   makeColumnGeometry(cx, cz);
+  resolveColumnQuads(cx, cz, lod);
+
+  /* Do not publish any new pointer until every material in the replacement
+     column fits. Previous RSP tasks can keep reading the old immutable lists,
+     and an overflow can safely roll this unpublished append back. */
   for (texture = 0; texture < NUM_TEXTURES; texture++) {
-    if (!makeColumnDL(slot, texture, &new_starts[texture])) {
+    if (!makeColumnTextureDL(slot, texture, lod, &new_starts[texture])) {
       column_dlp = column_start;
       column_display_list_full = TRUE;
       return FALSE;
@@ -1102,6 +1385,7 @@ static u8 makeColumnDisplayLists(int cx, int cz) {
     column_starts[column_build_arena][texture][slot] = new_starts[texture];
   }
   column_meshed[column_build_arena][slot] = TRUE;
+  column_mesh_lod[column_build_arena][slot] = lod;
   return TRUE;
 }
 
@@ -1161,12 +1445,10 @@ u8 stepWorldMeshBuild(u16 columns) {
   }
   /* resetColumnArenaBuild left column_dlp at the target arena; nothing else
      touches it while a build is running, because the incremental gameplay
-     rebuild only runs from the GAME branch of draw(). */
-  building_surface_mesh = mesh_build_surface_only;
-  /* Seam refinement is a cosmetic fix for hairline cracks between quads.  The
-     scenic camera never gets close enough to see one, and it is the single
-     most expensive part of compiling a world. */
-  geometrySetTjunctionRefinement(!mesh_build_surface_only);
+     rebuild only runs from the GAME branch of draw().  The scenic flag
+     forces every column to the shell LOD and hides the fixed world's outer
+     wall; a gameplay build picks LOD per column from player distance. */
+  building_scenic = mesh_build_surface_only;
   while (columns > 0 && mesh_build_cursor < CHUNKS_X * CHUNKS_Z) {
     u8 cx = mesh_build_cursor / CHUNKS_Z;
     u8 cz = mesh_build_cursor % CHUNKS_Z;
@@ -1179,8 +1461,7 @@ u8 stepWorldMeshBuild(u16 columns) {
     mesh_build_cursor++;
     columns--;
   }
-  building_surface_mesh = FALSE;
-  geometrySetTjunctionRefinement(TRUE);
+  building_scenic = FALSE;
 
   if (mesh_build_cursor >= CHUNKS_X * CHUNKS_Z) {
     column_arena_ends[mesh_build_arena] = column_dlp;
@@ -1210,17 +1491,32 @@ void graphicsSetRenderOrigin(int block_x, int block_z) {
    */
   for (slot = 0; slot < WINDOW_SLOTS; slot++) {
     int cx, cz;
+    int off_x, off_z;
 
     if (!windowSlotResident(slot)) {
       continue;
     }
     cx = windowSlotChunkX(slot);
     cz = windowSlotChunkZ(slot);
+    off_x = cx * CHUNK_SIZE - render_origin_x;
+    off_z = cz * CHUNK_SIZE - render_origin_z;
+    /*
+     * Run 6 died exactly here: guTranslate's trunc.w.s of an offset past
+     * +-512 blocks overflows s15.16 and raises the VR4300's unimplemented-
+     * operation exception -- and the only way a *resident* slot gets such an
+     * offset is a corrupted key (the audit in world.c hunts the writer).  A
+     * skipped slot draws nothing for a frame and is repaired by the audit;
+     * a converted one kills the console.
+     */
+    if (off_x > 500 || off_x < -500 || off_z > 500 || off_z < -500) {
+      window_key_faults++;
+      continue;
+    }
     for (cy = 0; cy < CHUNKS_Y; cy++) {
       guTranslate(&c_models[slot][cy],
-        (float) (cx * CHUNK_SIZE - render_origin_x) * BLOCK_SIZE,
+        (float) off_x * BLOCK_SIZE,
         (float) cy * CHUNK_SIZE * BLOCK_SIZE,
-        (float) (cz * CHUNK_SIZE - render_origin_z) * BLOCK_SIZE);
+        (float) off_z * BLOCK_SIZE);
     }
   }
 }
@@ -1316,22 +1612,40 @@ static void startColumnCompaction(void) {
  * updates never get a turn.
  */
 static u8 columnInMeshRing(u32 slot) {
-  int pcx = floor(players[0].position.x / (BLOCK_SIZE * CHUNK_SIZE));
-  int pcz = floor(players[0].position.z / (BLOCK_SIZE * CHUNK_SIZE));
-  int dx = windowSlotChunkX(slot) - pcx;
-  int dz = windowSlotChunkZ(slot) - pcz;
-
-  if (dx < 0) dx = -dx;
-  if (dz < 0) dz = -dz;
-  return (dx > dz ? dx : dz) <= STREAM_TREE_RADIUS;
+  /* Nearest active player, not player one: in split-screen a compaction
+     keyed to one player would silently drop the terrain under the others. */
+  return columnPlayerDistance(windowSlotChunkX(slot),
+    windowSlotChunkZ(slot)) <= STREAM_TREE_RADIUS;
 }
 
 u8 graphicsColumnNeedsMesh(int cx, int cz) {
+  u32 slot;
+  u8 lod;
+  int distance;
+
+  if (!windowColumnResident(cx, cz)) {
+    return FALSE;
+  }
+  slot = WINDOW_SLOT(cx, cz);
   /* The active arena is the one the player is looking at, so it is the only
      authority on whether a column is visibly missing.  The build arena's
      flags are a work list mid-compaction, not the on-screen truth. */
-  return windowColumnResident(cx, cz) &&
-    !column_meshed[active_column_arena][WINDOW_SLOT(cx, cz)];
+  if (!column_meshed[active_column_arena][slot]) {
+    return TRUE;
+  }
+  /* A meshed column is still stale when the player has crossed its LOD
+     boundary: a shell they walked up to, or a full mesh they left behind.
+     The promote/demote gap is the hysteresis that keeps a boundary column
+     from re-meshing on every step. */
+  lod = column_mesh_lod[active_column_arena][slot];
+  distance = columnPlayerDistance(cx, cz);
+  if (lod == MESH_LOD_SHELL && distance <= MESH_LOD_PROMOTE_RADIUS) {
+    return TRUE;
+  }
+  if (lod == MESH_LOD_FULL && distance >= MESH_LOD_DEMOTE_RADIUS) {
+    return TRUE;
+  }
+  return FALSE;
 }
 
 static void processColumnDisplayListUpdates(int can_reclaim_mesh_arena) {
@@ -1341,9 +1655,12 @@ static void processColumnDisplayListUpdates(int can_reclaim_mesh_arena) {
     u8 rebuilt = 0;
     u16 walked = 0;
 
+    /* The deadline stops a second expensive rebuild, never the first, so a
+       compaction always makes progress and still finishes. */
     while (rebuilt < MESH_COMPACTION_REBUILDS_PER_FRAME &&
         walked < MESH_COMPACTION_SLOTS_PER_FRAME &&
-        compaction_column_cursor < WINDOW_SLOTS) {
+        compaction_column_cursor < WINDOW_SLOTS &&
+        !(rebuilt > 0 && streamWorkExpired())) {
       u32 slot = compaction_column_cursor;
       /* Walks slots, and rebuilds only the columns that are actually there and
          finished.  resetColumnArenaBuild already emptied the rest. */
@@ -1405,6 +1722,11 @@ static void processColumnDisplayListUpdates(int can_reclaim_mesh_arena) {
 
   for (budget = 0; budget < MESH_REBUILD_BUDGET; budget++) {
     int cx, cz;
+    /* Same shape as the compaction bound: the first rebuild always runs, so
+       edits are never starved; the deadline sheds only the extras. */
+    if (budget > 0 && streamWorkExpired()) {
+      break;
+    }
     if (!takeDirtyColumn(&cx, &cz)) {
       break;
     }
@@ -2984,7 +3306,19 @@ static void drawStreamingDiagnostics() {
   y = drawDiagnosticRow("A", free_percent, y);
   y = drawDiagnosticRow("C",
     compacting_columns ? 1 : (compaction_ran_short ? 2 : 0), y);
-  drawDiagnosticRow("T", pending_terrain, y);
+  y = drawDiagnosticRow("T", pending_terrain, y);
+  /* Worst frame gap and worst gated-CPU cost in the window, in tenths of a
+     millisecond: W 166 is a clean 60 Hz frame, W 1000 is 10 fps.  B close to
+     W blames the CPU work in the callback; W high with B low blames the
+     RSP/RDP.  L counts runaway-loop guard trips in player collision code. */
+  y = drawDiagnosticRow("W", diag_worst_frame_usec / 100, y);
+  y = drawDiagnosticRow("B", diag_worst_gated_usec / 100, y);
+  y = drawDiagnosticRow("L", diag_loop_clamps, y);
+  y = drawDiagnosticRow("G", diag_position_glitches, y);
+  /* Corrupt window keys caught and repaired.  Any non-zero K is the run-6
+     guTranslate fault being absorbed; the first bad key's bits are in the
+     freeze report. */
+  drawDiagnosticRow("K", window_key_faults, y);
   setHudTextColor(255, 255, 255);
 }
 
@@ -2992,7 +3326,14 @@ static void drawGameText() {
   u8 player_num;
 
   beginText();
-  if (active_player_count == 1) {
+  /* An anomaly turns the overlay on by itself: the whole point of the
+     self-healing guards is that they leave a visible confession. */
+  if (!diagnostics_visible &&
+      (diag_task_hung || diag_cpu_faulted || window_key_faults != 0 ||
+       diag_position_glitches != 0)) {
+    diagnostics_visible = TRUE;
+  }
+  if (active_player_count == 1 && diagnostics_visible) {
     drawStreamingDiagnostics();
   }
   for (player_num = 0; player_num < active_player_count; player_num++) {
@@ -3215,6 +3556,8 @@ void initGraphics() {
 
   nuGfxInit();
   nuGfxDisplayOn();
+
+  buildFaceTextureTable();
 
   /* Chunk translations are no longer prebaked here.  A slot's matrices belong
      to whichever column is bound to it, so makeColumnDisplayLists writes them

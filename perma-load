@@ -50,6 +50,11 @@ echo "Saving build/mine64.n64 to $SC64_SD_PATH..."
 "$SC64_DEPLOYER" sd upload "$PROJECT_DIR/build/mine64.n64" "$SC64_SD_PATH"
 "$SC64_DEPLOYER" sd stat "$SC64_SD_PATH"
 
+# Symbols matching exactly this deployed ROM, for resolving the addresses in
+# a freeze post-mortem (mine64/freeze.txt).  See tools/resolve_freeze.sh.
+cp "$PROJECT_DIR/mine64.out" "$PROJECT_DIR/build/mine64-deployed.out"
+echo "Symbols archived to build/mine64-deployed.out"
+
 cat <<EOF
 
 Saved successfully. Turn the N64 on to boot the SummerCart64 SD menu, then

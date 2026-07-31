@@ -9,6 +9,24 @@
 u8 window_blocks[WINDOW_SLOTS][COLUMN_BLOCK_BYTES];
 u32 window_keys[WINDOW_SLOTS];
 
+/* See world.h.  Zero -- no ceiling -- until the gameplay callback arms it. */
+OSTime stream_work_deadline;
+
+/*
+ * Window-key corruption forensics.  Run 6's SD post-mortem proved a freeze
+ * family: an FPU unimplemented-operation fault inside guTranslate, fed by a
+ * resident window key whose z field decoded hundreds of chunks away from a
+ * player who had never been there -- with the player position provably sane.
+ * Some stray store is landing inside window_keys.  The audit walks the keys
+ * every streaming step, latches the first corrupt one it sees (its bit
+ * pattern is the best clue to the writer), repairs the slot by evicting it,
+ * and counts on the K row.  The column regenerates from the seed, so the
+ * repair costs a moment of pop-in instead of a dead console.
+ */
+u32 window_key_faults;
+u32 window_key_fault_value;
+u32 window_key_fault_slot;
+
 /*
  * How far a column has been built, per window slot.  The stages themselves are
  * declared in world.h, next to the functions that advance them; the reason
@@ -73,6 +91,35 @@ u8 worldFixedExtentResident() {
     }
   }
   return TRUE;
+}
+
+/* Legit play is within a few hundred chunks of origin; the 15-bit key fields
+   reach +-16384.  Anything past this is not somewhere the player walked. */
+#define WINDOW_KEY_SANE_CHUNKS 2000
+
+void windowAuditKeys(void) {
+  u32 slot;
+
+  for (slot = 0; slot < WINDOW_SLOTS; slot++) {
+    int cx, cz;
+
+    if (!windowSlotResident(slot)) {
+      continue;
+    }
+    cx = windowSlotChunkX(slot);
+    cz = windowSlotChunkZ(slot);
+    if (cx > WINDOW_KEY_SANE_CHUNKS || cx < -WINDOW_KEY_SANE_CHUNKS ||
+        cz > WINDOW_KEY_SANE_CHUNKS || cz < -WINDOW_KEY_SANE_CHUNKS) {
+      if (window_key_faults == 0) {
+        window_key_fault_value = window_keys[slot];
+        window_key_fault_slot = slot;
+      }
+      window_key_faults++;
+      graphicsInvalidateColumnSlot(slot);
+      window_keys[slot] = COLUMN_KEY_EMPTY;
+      column_state[slot] = COLUMN_EMPTY;
+    }
+  }
 }
 
 u8 *windowClaimColumn(int cx, int cz) {
@@ -650,7 +697,24 @@ static int chebyshev(int dx, int dz) {
   return ax > az ? ax : az;
 }
 
-/* Nearest-first, so the ground under the player fills before the fringe. */
+/*
+ * Prefetch bias, in chunks.  Ring membership never moves -- it stays a disc
+ * around the player, so spinning cannot invalidate residency -- but the
+ * *order* candidates are ranked in leans toward where the player is heading.
+ * Without it the ring edge directly ahead is by definition the last thing
+ * nearest-first builds, which is exactly where a walking player is about to
+ * arrive.
+ */
+static int stream_bias_cx;
+static int stream_bias_cz;
+
+void worldSetStreamBias(int bias_cx, int bias_cz) {
+  stream_bias_cx = bias_cx;
+  stream_bias_cz = bias_cz;
+}
+
+/* Nearest-first around a point slightly ahead of the player, so the ground
+   being walked toward fills before the fringe being walked away from. */
 static u8 nearestColumnNeeding(int pcx, int pcz, int radius, u8 state,
     int *out_cx, int *out_cz) {
   int dx, dz;
@@ -659,11 +723,13 @@ static u8 nearestColumnNeeding(int pcx, int pcz, int radius, u8 state,
 
   for (dx = -radius; dx <= radius; dx++) {
     for (dz = -radius; dz <= radius; dz++) {
-      int distance = dx * dx + dz * dz;
+      int bdx = dx - stream_bias_cx;
+      int bdz = dz - stream_bias_cz;
+      int distance = bdx * bdx + bdz * bdz;
       int cx, cz;
 
-      /* Ring membership is Chebyshev; the Euclidean distance is kept only to
-         rank candidates, so the ground under the player still fills first. */
+      /* Ring membership is Chebyshev from the player; only the ranking is
+         biased.  The residency invariants never depend on order. */
       if (chebyshev(dx, dz) > radius) {
         continue;
       }
@@ -741,14 +807,28 @@ static void remeshDecoratedNeighbour(int cx, int cz) {
 void stepWorldStreaming(int pcx, int pcz, u32 terrain_budget,
     u32 decorate_budget) {
   int cx = pcx, cz = pcz;
+  u8 stage_did_one;
 
+  windowAuditKeys();
   releaseColumnsOutsideRing(pcx, pcz);
 
-  while (terrain_budget > 0 &&
+  /*
+   * Every stage gets one step per callback before the deadline can refuse
+   * it.  A walking player generates pending terrain continuously, and a
+   * terrain column alone can exhaust the whole time budget -- run that way,
+   * the deadline starved decoration for as long as the player kept moving,
+   * and meshing waits on decoration: blocks existed (mobs walked on them)
+   * while the mesh sat seconds behind.  One guaranteed step per stage keeps
+   * the whole pipeline advancing at some rate no matter how the budget is
+   * being spent.
+   */
+  stage_did_one = FALSE;
+  while (terrain_budget > 0 && (!stage_did_one || !streamWorkExpired()) &&
       nearestColumnNeeding(pcx, pcz, STREAM_TERRAIN_RADIUS, COLUMN_TERRAIN,
         &cx, &cz)) {
     worldGenerateColumnTerrain(cx, cz);
     terrain_budget--;
+    stage_did_one = TRUE;
   }
 
   /*
@@ -758,11 +838,13 @@ void stepWorldStreaming(int pcx, int pcz, u32 terrain_budget,
    * nearest column, which cannot finish until neighbours that never get a turn
    * catch up.
    */
-  while (decorate_budget > 0 &&
+  stage_did_one = FALSE;
+  while (decorate_budget > 0 && (!stage_did_one || !streamWorkExpired()) &&
       nearestColumnNeeding(pcx, pcz, STREAM_WAYSTONE_RADIUS, COLUMN_WAYSTONED,
         &cx, &cz)) {
     worldAdvanceColumnDecoration(cx, cz);
     decorate_budget--;
+    stage_did_one = TRUE;
   }
 
   /*
@@ -793,9 +875,11 @@ void stepWorldStreaming(int pcx, int pcz, u32 terrain_budget,
     }
   }
 
-  while (decorate_budget > 0 &&
+  stage_did_one = FALSE;
+  while (decorate_budget > 0 && (!stage_did_one || !streamWorkExpired()) &&
       nearestColumnNeeding(pcx, pcz, STREAM_TREE_RADIUS, COLUMN_DECORATED,
         &cx, &cz)) {
+    stage_did_one = TRUE;
     if (worldAdvanceColumnDecoration(cx, cz)) {
       /* Finished columns are the only ones worth compiling; a half-decorated
          one would have to be thrown away when its trees arrive. */

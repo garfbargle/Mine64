@@ -57,6 +57,29 @@ void diagPaintStalePhase(void);
 void diagWatchdogTick(int pendingGfx);
 extern volatile u16 diag_current_phase;
 extern volatile u32 diag_heartbeat;
+/* Run-4 forensics: which player sub-step ran last (middle band of the frozen
+   square), whether the CPU took a fault (bottom band, white = crashed rather
+   than looping), and how often a runaway-loop guard fired (the L row). */
+extern volatile u8 diag_player_step;
+extern volatile u8 diag_cpu_faulted;
+extern u32 diag_loop_clamps;
+extern u32 diag_position_glitches;
+/* Overlay visibility: Z + D-pad Up toggles; any integrity anomaly (fault,
+   hang, key corruption, position snap) switches it on automatically.  The
+   watchdog and SD post-mortem are never gated on it. */
+extern u8 diagnostics_visible;
+#define DIAG_STEP_OBJECTIVES 1
+#define DIAG_STEP_INPUT 2
+#define DIAG_STEP_VAULT 3
+#define DIAG_STEP_COLLIDE 4
+#define DIAG_STEP_TARGET 5
+#define DIAG_STEP_ACTIONS 6
+#define DIAG_STEP_POST 7
+/* Frame pacing evidence for the "quicksand" symptom: worst wall-clock gap
+   between graphics callbacks and worst CPU time spent inside the gated
+   streaming/draw block, both over a rolling ~2s window, shown as W and B. */
+void diagNoteFrameInterval(u32 usec);
+void diagNoteGatedWork(u32 usec);
 #define DIAG_PHASE_STREAMING GPACK_RGBA5551(0, 255, 0, 1)    /* green */
 #define DIAG_PHASE_REBASE GPACK_RGBA5551(255, 255, 0, 1)     /* yellow */
 #define DIAG_PHASE_DRAW GPACK_RGBA5551(0, 255, 255, 1)       /* cyan */

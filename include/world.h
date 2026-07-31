@@ -194,8 +194,36 @@ u8 worldFixedExtentResident();
 #define STREAM_WAYSTONE_RADIUS 6
 #define STREAM_TREE_RADIUS 5
 
+/*
+ * Wall-clock ceiling for the per-callback streaming and meshing work.
+ *
+ * The column budgets bound the *count* of expensive steps, but a terrain
+ * column is multi-octave noise over 2048 blocks and a full-detail mesh is a
+ * greedy pass plus seam refinement -- a callback that lands three of each
+ * spends over 100 ms of a 93 MHz CPU while physics keeps being called at
+ * retrace rate: the measured "quicksand" (W 1430 B 1419 on run 5).  Work
+ * checks this deadline between columns and stops early; whatever remains
+ * simply happens next callback.  Zero disables the ceiling, which is what
+ * the host harness and the loading screen use -- the loading screen has no
+ * gameplay to starve.
+ */
+extern OSTime stream_work_deadline;
+
+static __inline__ __attribute__((unused)) u8 streamWorkExpired() {
+  return stream_work_deadline != 0 && osGetTime() >= stream_work_deadline;
+}
+
 void stepWorldStreaming(int pcx, int pcz, u32 terrain_budget,
   u32 decorate_budget);
+/* Prefetch bias in chunks: ranking (never ring membership) leans toward the
+   player's heading so the terrain being walked toward builds first. */
+void worldSetStreamBias(int bias_cx, int bias_cz);
+/* Window-key corruption audit; see world.c.  The counters feed the K row and
+   the freeze report. */
+void windowAuditKeys(void);
+extern u32 window_key_faults;
+extern u32 window_key_fault_value;
+extern u32 window_key_fault_slot;
 void worldGenerateColumnTerrain(int cx, int cz);
 /* FALSE while the column still needs a neighbour to catch up. */
 u8 worldAdvanceColumnDecoration(int cx, int cz);

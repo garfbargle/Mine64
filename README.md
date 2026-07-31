@@ -322,6 +322,59 @@ The linked release program currently occupies about 3.1 MiB including its world,
 geometry cache, NuSystem task buffers, and doubled render state. It remains
 within the stock console's 4 MiB RDRAM; an Expansion Pak is not required.
 
+### Freeze forensics
+
+Mine64 cannot be run under a debugger: it runs on real hardware, and the
+console's only output is the screen.  The game therefore ships (in
+development builds) with a self-diagnosing freeze rig that has turned
+multi-session bisection hunts into single-command answers.  Keep it until
+the streaming work is long stable; its cost is a few counters and one
+watchdog thread.
+
+**On-screen diagnostics** (left edge, single player; off by default —
+**Z + D-pad Up** toggles it, and it switches itself on whenever an
+integrity counter ticks, so an absorbed anomaly is never silent): `X Z`
+player block position, `F` frame heartbeat (frozen F = no frames being built), `O`
+origin rebases, `M`/`V` frame-list peak and overflows, `R D Q A C T`
+streaming state (resident / decorated / queued / arena-free% / compacting /
+terrain-pending), `W`/`B` worst frame gap and worst gated-CPU cost in
+tenths of a millisecond over ~2 s (W 166 is clean 60 Hz; B tracking W
+blames callback CPU work, W high with B low blames the RSP/RDP), `L`
+runaway-loop guard trips, `G` position-sanity snaps, `K` corrupted window
+keys caught and repaired.
+
+**The phase square** (lower left) is painted into the framebuffer by the
+CPU — no RSP, no display list — and a priority-126 watchdog thread repaints
+it into *both* framebuffers once the graphics-callback heartbeat stalls for
+2 s, so it survives buffer swaps, infinite loops, and the death of the
+graphics thread.  On a frozen screen it reads in three bands: **top** =
+subsystem (green streaming, yellow rebase, cyan draw, magenta player,
+orange trees, white items, black mobs, blue clean-idle, red = RSP/RDP task
+hang); **middle** = last player sub-step; **bottom** = white if the CPU
+took an exception (crash), black if not (spin).
+
+**The SD post-mortem.**  Two seconds into a freeze the watchdog writes
+`mine64/freeze.txt` to the cartridge SD card: faulting thread, PC, CAUSE,
+BADVADDR, RA, SP, raw player-position bits, render origin, and every
+counter.  Deploy scripts archive the matching symbols
+(`build/mine64-deployed.out`) on every upload, and one command turns the
+report into named functions:
+
+```sh
+./tools/resolve_freeze.sh
+```
+
+(Console off first — it owns the SD card while running.)  This is how a
+long-standing "walks far, then dies" freeze was resolved to a single
+instruction: an FPU unimplemented-operation fault in `guTranslate`, fed by
+a corrupted window key.
+
+**Loop guards over hangs.**  Any loop whose termination rests on float
+edge-cases carries a bounded iteration guard that breaks out and increments
+an on-screen counter instead of hanging a thread that nothing preempts.  A
+rising counter with no freeze is a confession — the bug becomes observable
+and survivable while the root cause is hunted.
+
 ### Two hardware faults that emulators do not reproduce
 
 Both of these cost a long debugging session. Neither shows up under emulation,

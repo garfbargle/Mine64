@@ -27,3 +27,10 @@ echo "Live-loading build/mine64.n64 to SummerCart64 RAM..."
 "$SC64_DEPLOYER" upload "$PROJECT_DIR/build/mine64.n64"
 "$SC64_DEPLOYER" info | grep -F "Boot mode:"
 
+# Archive the symbols matching exactly this deployed ROM.  A frozen console
+# writes mine64/freeze.txt with raw PC/RA addresses; tools/resolve_freeze.sh
+# resolves them against this file.  Without the archive, the next rebuild
+# shifts every symbol and the post-mortem becomes unreadable.
+cp "$PROJECT_DIR/mine64.out" "$PROJECT_DIR/build/mine64-deployed.out"
+echo "Symbols archived to build/mine64-deployed.out"
+

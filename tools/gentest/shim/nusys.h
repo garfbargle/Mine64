@@ -34,6 +34,7 @@ float cosf(float angle);
 float sqrtf(float value);
 
 /* The harness drives this so a world can be generated from a chosen seed. */
+typedef u64 OSTime;
 u64 osGetTime(void);
 void gentestSetTime(u64 time);
 
