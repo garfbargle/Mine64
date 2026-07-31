@@ -39,6 +39,8 @@ after five wrong theories.
 - **T-junction cap** — `splitTjunctions` was O(n³) per plane and unbounded;
   capped at `MAX_TJUNCTION_REFINEMENTS`, and skipped entirely for the scenic
   preview mesh.
+- **Task 3, coordinate-hashed decoration** — see below; generation is now a
+  pure function of `(x, z, world_seed)`, checked by `tools/gentest/run.sh`.
 
 ## The cost model that drives everything
 
@@ -76,13 +78,57 @@ blocks**. Origin rebasing is forced by the hardware, not a preference.
   `initGraphics`; these become window-slot relative and must be rewritten when
   a slot is rebound.
 
-## Task 3 — Coordinate-hashed decoration
+## Task 3 — Coordinate-hashed decoration — **done**
 
-Tree scattering and `generateWaystones()` consume the global xorshift `seed`
-stream while walking the whole world in order, so a chunk's contents depend on
-generation *order* and cannot be reproduced in isolation. Convert both to
-`hash(x, z, seed)`; `coordinateHash(x, y, z)` already exists in `world.c` and
-is used for ore veins. Required before clean-chunk eviction is safe.
+The problem was worse than "decoration consumes the RNG in world order". `seed`
+was doing two jobs: it is the xorshift state `random()` advances on every call,
+*and* it was what `noise2`/`noise3` salted the Perlin field with. So the noise
+function itself changed shape partway through generating a world — the tree
+stage sampled its density field with a different seed on every column, because
+`generateWaystones()` had just advanced `seed` a few hundred times and each
+`random(1000)` advanced it again.
+
+What landed:
+
+- **`world_seed` split out from `seed`** (`math.c`). `world_seed` is written
+  once per world and never again; `seed` remains the gameplay RNG for mob AI,
+  drop velocities and tree-fall direction, which legitimately want a stream.
+  `noise.c` samples `world_seed`. Nothing in `world.c` calls `random()` now.
+- **`coordinateHash` gained a seed and a salt.** It did *not* already take the
+  seed — ore veins were identical in every world. The salt separates
+  independent questions about one coordinate (tree height vs. canopy shape),
+  which is cheaper and better behaved than slicing bit fields out of one hash.
+- **Trees** — scatter, trunk height and all eight canopy corners are hashed.
+- **Waystones** — were ten landmarks drawn from the RNG with up to 32 retries
+  each, a question no single column can answer about itself. Now a per-column
+  probability (`WAYSTONE_COLUMN_ODDS`), which is also the only formulation that
+  means anything once the world has no fixed size. Measured mean is 10.5 per
+  112×112 world against the old fixed 10, with the wider spread a density per
+  unit area necessarily has.
+
+**`tools/gentest/run.sh`** compiles `world.c`/`noise.c`/`math.c` for the host
+against small shims and asserts that slice size, one-shot vs. sliced
+generation, and arbitrary gameplay-RNG traffic during generation all leave the
+world byte-identical. Generation is pure arithmetic, so unlike the rest of
+Mine64 it *can* be checked from a dev machine — do that before trusting a
+change here.
+
+Two things this deliberately did **not** solve, both owned by later tasks:
+
+- **`world_seed` is still not saved.** Harmless today because saves carry the
+  whole block array and nothing regenerates, but a loaded world currently has
+  no seed of its own. Task 6 must persist it; see the note there.
+- **Features write across column boundaries.** A tree writes ±2 blocks in x/z
+  and a waystone places outriggers at +2. Decisions are now pure, but
+  regenerating one column in isolation still has to evaluate decoration for
+  every column within that radius, or canopies and outriggers reaching in from
+  neighbours go missing. Task 5 needs a generate-with-margin pass.
+
+One deliberate behaviour change: player-planted saplings (`tryPlantTree`) also
+go through the hashed path, so replanting at the same spot regrows the same
+tree. Planting is an edit and will be captured as a diff either way, so this is
+harmless — but it is a choice, and reverting it just means giving `spawnTree` a
+flag to draw shape from `random()` instead.
 
 ## Task 4 — Drop per-quad matrices
 
@@ -129,6 +175,14 @@ order (deliberately, so pre-window saves still load). Streaming needs seed +
 player state + diffs for modified chunks only. `SAVE_VERSION` is 10 and loading
 is already version-gated, so a bump is idiomatic. Cap or LRU the stored diffs —
 a player who modifies everything is otherwise unbounded.
+
+**`world_seed` must land here.** Task 3 made generation reproducible from
+`(x, z, world_seed)`, but nothing writes that seed to disk, so a loaded world
+cannot regenerate anything — the moment task 5 evicts a clean chunk from a
+loaded save, it comes back as a different chunk. This was left for task 6 on
+purpose: the version gate in `loadGame()` is one dense boolean covering V1–V10,
+and adding an interim V11 that task 6 immediately replaces is throwaway work
+against the one file where a mistake destroys player worlds. Do it once, here.
 
 ## Constraints to respect
 

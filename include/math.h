@@ -15,7 +15,20 @@ typedef struct {
   int z;
 } Vector3i;
 
+/*
+ * The gameplay RNG state.  Every random() call advances it, so it is a stream,
+ * not a value: nothing that has to be reproducible may read it.
+ */
 extern u32 seed;
+
+/*
+ * The world's identity.  Terrain noise and decoration are pure functions of a
+ * coordinate and this, so a chunk generates the same blocks whenever and in
+ * whatever order it is asked for -- which is what lets an unmodified chunk be
+ * evicted and regenerated later instead of stored.  It is written once when a
+ * world is created and never again.
+ */
+extern u32 world_seed;
 
 u32 random(u32 limit);
 

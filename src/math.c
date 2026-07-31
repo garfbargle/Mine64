@@ -2,6 +2,7 @@
 #include "graphics.h"
 
 u32 seed;
+u32 world_seed;
 
 u32 random(u32 limit) {
   if (limit == 0) {

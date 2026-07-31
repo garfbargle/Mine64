@@ -62,10 +62,29 @@ static int clampHeight(int height) {
   return height;
 }
 
-static u32 coordinateHash(int x, int y, int z) {
+/*
+ * Every decision generation makes about a coordinate comes from here rather
+ * than from the random() stream, so it can be re-asked in isolation and give
+ * the same answer -- the property that lets a clean chunk be dropped and
+ * regenerated instead of saved.
+ *
+ * The salt separates independent questions asked about the same block.  Two
+ * hashes of one coordinate would otherwise be the same number, so a tree's
+ * height and its canopy shape would move together; a salt per question is
+ * cheaper and better behaved than slicing bit fields out of a single value.
+ */
+#define HASH_SALT_ORE 0x00000000UL
+#define HASH_SALT_TREE 0x9E3779B9UL
+#define HASH_SALT_TREE_HEIGHT 0x7F4A7C15UL
+#define HASH_SALT_TREE_CANOPY 0x2545F491UL
+#define HASH_SALT_WAYSTONE 0x165667B1UL
+#define HASH_SALT_WAYSTONE_HEIGHT 0x27D4EB2FUL
+
+static u32 coordinateHash(int x, int y, int z, u32 salt) {
   u32 value = (u32) x * 0x8DA6B343UL;
   value ^= (u32) y * 0xD8163841UL;
   value ^= (u32) z * 0xCB1AB31FUL;
+  value ^= world_seed + salt;
   value ^= value >> 13;
   value *= 0x85EBCA6BUL;
   return value ^ (value >> 16);
@@ -79,7 +98,7 @@ static u8 oreInCell(int x, int y, int z, int cell_size, u8 rarity) {
   int cell_x = x / cell_size;
   int cell_y = y / cell_size;
   int cell_z = z / cell_size;
-  u32 hash = coordinateHash(cell_x, cell_y, cell_z);
+  u32 hash = coordinateHash(cell_x, cell_y, cell_z, HASH_SALT_ORE);
   int center_x;
   int center_y;
   int center_z;
@@ -192,7 +211,13 @@ static int isCave(int x, int y, int z, int surface_height) {
   return chambers > 0.68f && passages > 0.58f;
 }
 
-void generateLeafHeights(int *heights) {
+/* One canopy corner's draw.  The corner index rides in the hash's y slot, so a
+   single salt yields eight independent values for one tree. */
+static int canopyDraw(int tx, int corner, int tz) {
+  return (int) (coordinateHash(tx, corner, tz, HASH_SALT_TREE_CANOPY) % 3u);
+}
+
+static void generateLeafHeights(int *heights, int tx, int tz) {
   int i;
   for (i = 0; i < 25; i++) {
     heights[i] = 0;
@@ -204,15 +229,15 @@ void generateLeafHeights(int *heights) {
   heights[2 * 5 + 1] = 2;
   heights[2 * 5 + 3] = 2;
 
-  heights[1 * 5 + 1] = random(3);
-  heights[1 * 5 + 3] = random(3);
-  heights[3 * 5 + 1] = random(3);
-  heights[3 * 5 + 3] = random(3);
-  
-  heights[0 * 5 + 0] = -random(3);
-  heights[0 * 5 + 4] = -random(3);
-  heights[4 * 5 + 0] = -random(3);
-  heights[4 * 5 + 4] = -random(3);
+  heights[1 * 5 + 1] = canopyDraw(tx, 0, tz);
+  heights[1 * 5 + 3] = canopyDraw(tx, 1, tz);
+  heights[3 * 5 + 1] = canopyDraw(tx, 2, tz);
+  heights[3 * 5 + 3] = canopyDraw(tx, 3, tz);
+
+  heights[0 * 5 + 0] = -canopyDraw(tx, 4, tz);
+  heights[0 * 5 + 4] = -canopyDraw(tx, 5, tz);
+  heights[4 * 5 + 0] = -canopyDraw(tx, 6, tz);
+  heights[4 * 5 + 4] = -canopyDraw(tx, 7, tz);
 }
 
 static void spawnTree(int tx, int ty, int tz) {
@@ -223,13 +248,13 @@ static void spawnTree(int tx, int ty, int tz) {
 
   blockSet(tx, ty, tz, DIRT);
 
-  height = random(3) + 3;
+  height = 3 + (int) (coordinateHash(tx, 0, tz, HASH_SALT_TREE_HEIGHT) % 3u);
   tree_index = createTree(tx, tz, ty, height);
   for (y = ty + 1; y < min(ty + height + 1, MAX_Y); y++) {
     blockSet(tx, y, tz, WOOD);
   }
 
-  generateLeafHeights(leaf_heightmap);
+  generateLeafHeights(leaf_heightmap, tx, tz);
 
   for (x = max(tx - 2, 0); x < min(tx + 3, MAX_X); x++) {
     for (z = max(tz - 2, 0); z < min(tz + 3, MAX_Z); z++) {
@@ -292,39 +317,56 @@ static int exposedGrassY(int x, int z) {
   return -1;
 }
 
-static void generateWaystones() {
-  u8 landmark;
+/*
+ * Sparse mossy waystones give a large procedural world memorable bearings and
+ * imply history without storing a village simulation or structure map.
+ *
+ * This used to draw ten landmarks from the RNG and retry each up to 32 times
+ * until it hit suitable ground, which asks a question -- "where are the ten
+ * waystones" -- that a single column cannot answer about itself.  Density is
+ * now a property of area rather than a count, which is also the only form that
+ * means anything once the world stops having a fixed size.
+ *
+ * One candidate per this many columns.  Most candidates are rejected by the
+ * ground test below, so the surviving density is a good deal sparser: this is
+ * tuned to land near the ten-per-112x112-world the fixed size used to give.
+ */
+#define WAYSTONE_COLUMN_ODDS 500
 
-  /*
-   * Sparse mossy waystones give a large procedural world memorable bearings
-   * and imply history without storing a village simulation or structure map.
-   */
-  for (landmark = 0; landmark < 10; landmark++) {
-    u8 attempt;
-    for (attempt = 0; attempt < 32; attempt++) {
-      int x = 8 + random(MAX_X - 16);
-      int z = 8 + random(MAX_Z - 16);
-      int y = exposedGrassY(x, z);
-      int east_y = exposedGrassY(x + 2, z);
-      int south_y = exposedGrassY(x, z + 2);
-      int height;
-      int part;
+static void tryPlaceWaystone(int x, int z) {
+  int y, east_y, south_y;
+  int height, part;
 
-      if (y < SEA_LEVEL + 1 || east_y < 0 || south_y < 0 ||
-          absolute((float) (east_y - y)) > 1.f ||
-          absolute((float) (south_y - y)) > 1.f) {
-        continue;
-      }
-      height = 2 + random(4);
-      for (part = 1; part <= height && y + part < MAX_Y; part++) {
-        blockSet(x, y + part, z,
-          part == height || (part & 1) ? MOSSY_COBBLESTONE : COBBLESTONE);
-      }
-      blockSet(x + 2, east_y + 1, z, MOSSY_COBBLESTONE);
-      blockSet(x, south_y + 1, z + 2, MOSSY_COBBLESTONE);
-      break;
-    }
+  if (coordinateHash(x, 0, z, HASH_SALT_WAYSTONE) % WAYSTONE_COLUMN_ODDS != 0) {
+    return;
   }
+
+  /* exposedGrassY rejects out-of-range columns, which is what keeps a waystone
+     and its two outriggers from running off the edge of a fixed world. */
+  y = exposedGrassY(x, z);
+  east_y = exposedGrassY(x + 2, z);
+  south_y = exposedGrassY(x, z + 2);
+  if (y < SEA_LEVEL + 1 || east_y < 0 || south_y < 0 ||
+      absolute((float) (east_y - y)) > 1.f ||
+      absolute((float) (south_y - y)) > 1.f) {
+    return;
+  }
+
+  height = 2 + (int) (coordinateHash(x, 0, z, HASH_SALT_WAYSTONE_HEIGHT) % 4u);
+  for (part = 1; part <= height && y + part < MAX_Y; part++) {
+    blockSet(x, y + part, z,
+      part == height || (part & 1) ? MOSSY_COBBLESTONE : COBBLESTONE);
+  }
+  blockSet(x + 2, east_y + 1, z, MOSSY_COBBLESTONE);
+  blockSet(x, south_y + 1, z + 2, MOSSY_COBBLESTONE);
+}
+
+/* TRUE when a tree roots at this column.  The perlin field sets the local
+   density and the hash decides whether this particular column draws one. */
+static u8 treeSeededAt(int x, int z) {
+  float density = perlin2d(x, z, 0.02f, 2) * 8.f - 2.f;
+
+  return (float) (coordinateHash(x, 0, z, HASH_SALT_TREE) % 1000u) < density;
 }
 
 /*
@@ -399,7 +441,10 @@ static void generateTerrainColumn(int x, int z) {
 }
 
 void beginWorldGeneration() {
-  seed = (u32) osGetTime();
+  /* One draw of entropy fixes the world; the gameplay RNG starts from the same
+     place but is free to wander, because nothing reproducible reads it. */
+  world_seed = (u32) osGetTime();
+  seed = world_seed;
   setDayCycleWorldTicks(DAY_CYCLE_START_TICK);
   initTrees();
 
@@ -426,12 +471,15 @@ u8 worldGenerationProgress() {
     return 100;
   }
   /* Terrain dominates the cost; treat decoration as the last tenth so the bar
-     does not stall visibly at the end. */
+     does not stall visibly at the end.  Both decoration stages walk every
+     column now, so they split that tenth between them. */
   if (world_gen_stage == WORLD_GEN_TERRAIN) {
     return (u8) ((world_gen_x * 90) / MAX_X);
   }
-  return (u8) (90 + (world_gen_stage == WORLD_GEN_TREES ?
-    (world_gen_x * 10) / MAX_X : 0));
+  if (world_gen_stage == WORLD_GEN_WAYSTONES) {
+    return (u8) (90 + (world_gen_x * 5) / MAX_X);
+  }
+  return (u8) (95 + (world_gen_x * 5) / MAX_X);
 }
 
 u8 stepWorldGeneration(u32 columns) {
@@ -456,14 +504,22 @@ u8 stepWorldGeneration(u32 columns) {
         }
       }
     } else if (world_gen_stage == WORLD_GEN_WAYSTONES) {
-      /* Ten landmarks with a bounded retry each -- cheap enough to finish in
-         one slice, and it consumes the shared RNG stream in one piece. */
-      generateWaystones();
-      world_gen_x = 0;
-      world_gen_z = 0;
-      world_gen_stage = WORLD_GEN_TREES;
+      /* Both decoration stages are now per-column walks, so each one slices on
+         the same budget the terrain pass does.  Waystones still run ahead of
+         trees as a whole pass: a waystone replaces the grass a tree would have
+         rooted in, and doing them in one order everywhere is what keeps that
+         interaction reproducible. */
+      tryPlaceWaystone(world_gen_x, world_gen_z);
+      columns--;
+      if (++world_gen_z >= MAX_Z) {
+        world_gen_z = 0;
+        if (++world_gen_x >= MAX_X) {
+          world_gen_x = 0;
+          world_gen_stage = WORLD_GEN_TREES;
+        }
+      }
     } else {
-      if (random(1000) < perlin2d(world_gen_x, world_gen_z, 0.02, 2) * 8 - 2) {
+      if (treeSeededAt(world_gen_x, world_gen_z)) {
         trySpawnTree(world_gen_x, world_gen_z);
       }
       columns--;

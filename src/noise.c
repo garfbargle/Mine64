@@ -25,9 +25,12 @@ static int hashAt(int value)
     return hash[value];
 }
 
+/* These sample world_seed, never the gameplay RNG.  They used to read `seed`,
+ * which random() advances on every call -- so the noise field these describe
+ * silently became a different field partway through generating a world. */
 int noise2(int x, int y)
 {
-    int tmp = hashAt((int)((u32)y + seed));
+    int tmp = hashAt((int)((u32)y + world_seed));
     return hashAt(tmp + x);
 }
 
@@ -36,7 +39,7 @@ int noise2(int x, int y)
  * seed without adding a second random-state dependency. */
 static int noise3(int x, int y, int z)
 {
-    int tmp = hashAt((int)((u32)z + seed));
+    int tmp = hashAt((int)((u32)z + world_seed));
     tmp = hashAt(tmp + y);
     return hashAt(tmp + x);
 }
