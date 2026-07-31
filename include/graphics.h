@@ -76,11 +76,14 @@ extern u32 diag_position_glitches;
 extern u8 diagnostics_visible;
 /* Sky-matched distance fog over the gameplay terrain pass.  The start is a
    screen-depth value tuned on hardware: with the overlay up, Z + D-pad
-   Left/Right moves it (P row shows it) and Z + D-pad Down toggles fog. */
+   Left/Right moves it (P row shows it) and Z + D-pad Down toggles fog.
+   The range covers the distances that exist: see the table in graphics.c,
+   985 is ten blocks out and 999 is past the mesh ring, while the old floor
+   of 900 was a block and a half in front of the player's face. */
 extern u8 fog_enabled;
 extern u16 fog_start;
-#define FOG_START_MIN 900
-#define FOG_START_MAX 995
+#define FOG_START_MIN 985
+#define FOG_START_MAX 999
 #define DIAG_STEP_OBJECTIVES 1
 #define DIAG_STEP_INPUT 2
 #define DIAG_STEP_VAULT 3

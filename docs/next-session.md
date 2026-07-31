@@ -50,14 +50,16 @@ predates them:
 
 ## Priorities
 
-1. **Retune the fog for the new horizon.**  `fog_start` is 993, chosen for
-   the old ~44-block ring; the mesh ring is now ~80 blocks, and the
-   tunable range cannot currently reach that far.  Fog is a function of
-   *screen* depth, which the 10/14000 projection compresses savagely, so
-   this is arithmetic before it is taste — work out where the band can
-   actually be placed, then tune the rest on a CRT with Z + D-pad
-   Left/Right (P row; Z + D-pad Down toggles for an A/B).  Watch W/B for
-   the two-cycle fill cost.
+1. **Confirm the fog retune on a CRT.**  The band is now 995..999 — haze
+   from 27 blocks, 94% opaque at the ~80-block ring edge — replacing a
+   993..998 that reached full opacity at 58 blocks and so hid the frontier
+   by discarding the outer quarter of the view.  The derivation and the
+   value/distance table are in `graphics.c`; the band cannot be narrowed
+   below four units without overflowing `gSPFogPosition`.  On the console:
+   Z + D-pad Left/Right walks the start (P row), Z + D-pad Down toggles for
+   an A/B against the bare edge.  If the frontier shows, one step left
+   (994) is fully opaque at the edge and costs view distance.  Watch W/B
+   for the two-cycle fill cost.
 2. **Task 6 — persistence.**  Now the biggest hole in the game: saves still
    write the original fixed footprint, so saving away from spawn is refused,
    `world_seed` never reaches disk, and **placed torches, stairs, doors and

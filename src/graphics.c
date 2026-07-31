@@ -228,21 +228,49 @@ u8 diagnostics_visible = FALSE;
  * Distance fog, blended toward the sky color so the streaming edge sits
  * behind haze instead of arriving in visible rows of bare columns.
  *
- * Fog on this hardware is a function of *screen* depth, which perspective
- * compresses savagely toward the far plane: with near 10 / far 14000, ten
- * blocks out is already ~985 of 1000 and the mesh edge (~44 blocks) is
- * ~997.  The band is too nonlinear to compute credibly on a workstation,
- * so the start is tunable on the console: with the diagnostics overlay up,
- * Z + D-pad Left/Right moves it and Z + D-pad Down toggles fog outright
- * for an A/B against the bare edge.  The P row shows the current start.
+ * Fog is a function of *screen* depth -- gbi.h documents the start/end pair
+ * as 0 = near plane, 1000 = far plane -- and perspective compresses that
+ * savagely.  For the gameplay projection (near 10, far 14000) the value at a
+ * distance d in blocks is
+ *
+ *     v(d) = 1000 * far * (64d - near) / (64d * (far - near))
+ *
+ * which puts the entire useful range in the last five units of a thousand:
+ *
+ *     993 = 20 blocks   996 = 33 blocks   998 =  58 blocks
+ *     994 = 23 blocks   997 = 42 blocks   999 =  91 blocks
+ *     995 = 27 blocks
+ *
+ * The band cannot be narrowed below four units: gSPFogPosition packs
+ * 128000/(end-start) into a signed 16-bit field, so a band of three
+ * overflows it and inverts the fog.  Four is therefore the tightest -- and
+ * for hiding an edge the best -- band available.
+ *
+ * That fixes the choice.  The mesh ring is ~80 blocks, where v is 998.8, so
+ * a band of 995..999 hazes from 27 blocks and is 94% opaque at the ring
+ * edge, with full opacity at 91 blocks that nothing ever reaches.  Starting
+ * one unit lower (994..998) is completely opaque at the edge but reaches
+ * full fog at 58 blocks, which is what the previous 993..998 setting did:
+ * it hid the frontier by throwing away the outer quarter of the view the
+ * 32x32 window was widened to buy.  If the frontier is visible on a CRT,
+ * one D-pad-left step trades that view distance back.
+ *
+ * Split-screen has a nearer far plane (8000), so the same values fog harder
+ * there -- which suits a view already capped at ~40 blocks.
+ *
+ * Hardware remains the arbiter: with the diagnostics overlay up, Z + D-pad
+ * Left/Right moves the start and Z + D-pad Down toggles fog outright for an
+ * A/B against the bare edge.  The P row shows the current start.
  *
  * Fog also forces the terrain pass into two-cycle mode -- roughly half the
  * RDP's pixel rate -- which is why it is confined to the gameplay terrain
- * and water pass and switched back off before entities and HUD.
+ * and water pass and switched back off before entities and HUD.  Entities
+ * are therefore unfogged at any distance; they are small and near, and the
+ * alternative is a second two-cycle pass.
  */
 u8 fog_enabled = TRUE;
-u16 fog_start = 993;
-#define FOG_BAND 5
+u16 fog_start = 995;
+#define FOG_BAND 4
 
 /* Times a runaway loop guard fired in player collision code.  A rising L row
    with no freeze means a guard is eating what used to be the hang. */
