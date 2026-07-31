@@ -352,8 +352,9 @@ u8 loadingPreviewProgress() {
   return loading_preview_frame * 100 / LOADING_PREVIEW_FRAMES;
 }
 
-void loadCameraMatrices(u8 player_num) {
+static u8 cameraProjectionMode() {
   u8 projection = CAMERA_VIEW_SOLO;
+
   /* The menu can launch its already-loaded preview directly into gameplay.
      Screen state is therefore the projection authority: a sticky preview
      flag would leave the 34-degree cinematic lens active in the game. */
@@ -364,9 +365,19 @@ void loadCameraMatrices(u8 player_num) {
     projection = active_player_count >= 3 ? CAMERA_VIEW_FOUR_PLAYER :
       (active_player_count == 2 ? CAMERA_VIEW_TWO_PLAYER : CAMERA_VIEW_SOLO);
   }
+  return projection;
+}
+
+void loadCameraProjection() {
+  u8 projection = cameraProjectionMode();
+
   gSPMatrix(dlp++, OS_K0_TO_PHYSICAL(&projection_matrix[dl_no][projection]),
     G_MTX_PROJECTION | G_MTX_LOAD | G_MTX_NOPUSH);
   gSPPerspNormalize(dlp++, perspective_norm[dl_no][projection]);
+}
+
+void loadCameraMatrices(u8 player_num) {
+  loadCameraProjection();
   gSPMatrix(dlp++, OS_K0_TO_PHYSICAL(&cam_rotate2[dl_no][player_num]),
     G_MTX_PROJECTION | G_MTX_MUL | G_MTX_NOPUSH);
   gSPMatrix(dlp++, OS_K0_TO_PHYSICAL(&cam_rotate[dl_no][player_num]),

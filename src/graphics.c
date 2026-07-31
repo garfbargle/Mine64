@@ -1309,28 +1309,19 @@ static void drawSteve(u8 player_num) {
 static void drawFirstPersonHand(u8 player_num) {
   Player *player = &players[player_num];
   u8 item = playerHeldItem(player);
-  Vector3 forward = {0, 0, -1};
-  Vector3 right = {1, 0, 0};
-  Vector3 position;
   float swing;
 
   if (player->camera_mode != CAMERA_FIRST_PERSON) {
     return;
   }
-  forward = rotateX(forward, player->pitch);
-  forward = rotateY(forward, -player->yaw);
-  right = rotateY(right, -player->yaw);
-  /* Vaulting eases the camera independently of the collision body. Anchor
-     the held model to that same camera point so the hand never appears to
-     detach during the climb. */
-  position = add(playerCameraPosition(player_num), mul(forward, 72.f));
-  position = add(position, mul(right, 34.f));
-  position.y -= 36.f;
   swing = punchSwingAngle(player) + miningSwingAngle(player);
-  guTranslate(&first_person_sword_translate[dl_no][player_num], position.x,
-    position.y, position.z);
+  /* Draw in camera space so looking around cannot rotate or displace the
+     first-person model. Only the deliberate attack/mining swing changes it. */
+  loadCameraProjection();
+  guTranslate(&first_person_sword_translate[dl_no][player_num], 34.f, -36.f,
+    -72.f);
   guRotateRPY(&first_person_sword_rotate[dl_no][player_num],
-    20.f - player->pitch + swing, -player->yaw, -18.f);
+    20.f + swing, 0.f, -18.f);
   gSPClearGeometryMode(dlp++, G_CULL_BACK);
   gSPMatrix(dlp++, OS_K0_TO_PHYSICAL(&first_person_sword_translate[dl_no][player_num]),
     G_MTX_MODELVIEW | G_MTX_LOAD | G_MTX_NOPUSH);

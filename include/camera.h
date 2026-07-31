@@ -12,6 +12,7 @@ void initCamera();
 Vector3 playerCameraPosition(u8 player_num);
 void updateVisibleColumns(u8 player_num);
 void updateCameraMatrices(u8 player_num);
+void loadCameraProjection();
 void loadCameraMatrices(u8 player_num);
 
 /* A title-card camera used while a freshly prepared world is coming online. */
