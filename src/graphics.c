@@ -119,11 +119,99 @@ float render_origin_units_z;
  * Freeze-bisection instrumentation (see the hardware checklist in the
  * streaming plan).  The console froze after long walks with every streaming
  * counter healthy, so the diagnostics carry a rebase count and an alive
- * counter, and rebasing can be switched off from the controller to rule it
- * in or out without a rebuild.
+ * counter.
  */
 u8 stream_rebase_enabled = TRUE;
 u32 render_rebase_count = 0;
+
+/*
+ * Freeze forensics.  A small square painted straight into the displayed
+ * framebuffer by the CPU -- no RSP, no RDP, no display list -- so it keeps
+ * reporting after the graphics pipeline is dead.  While the game runs the
+ * RDP repaints over it every frame and it reads as a flicker; the moment
+ * everything stops, whatever was painted last persists on screen:
+ *
+ *   RED     a graphics task has been in flight for ~2s -- the RSP or RDP
+ *           hung executing it (watchdog latches; nothing else paints after)
+ *   GREEN   CPU died inside stepWorldStreaming (generation/decoration)
+ *   YELLOW  CPU died inside the origin rebase
+ *   CYAN    CPU died inside draw() -- mesh compile, culling, or submission
+ *   MAGENTA CPU died inside updatePlayers -- physics or input
+ *   BLUE    callbackGfx completed normally (painted last on the way out)
+ *
+ * A frozen screen with a BLUE square and no RED means callbacks stopped
+ * arriving at all, which would point at the scheduler rather than this code.
+ */
+#define DIAG_SQUARE_X 12
+#define DIAG_SQUARE_Y 200
+#define DIAG_SQUARE_SIZE 16
+
+static u8 diag_task_hung = FALSE;
+static u32 diag_pending_streak = 0;
+/* Most Gfx commands one frame has ever used, HUD and diagnostics included. */
+static u32 frame_command_peak = 0;
+
+/*
+ * Run 2 taught us the square must outlive the graphics thread: the fatal
+ * phase was painted into the displayed buffer, then the already-submitted
+ * RSP/RDP task finished, repainted the other buffer completely and swapped
+ * to it -- the evidence vanished with the swap.  Anything painted only by
+ * the dying thread can be erased the same way.
+ *
+ * So the phase is now *recorded* (diag_current_phase) and painted lightly
+ * for the alive-flicker, while a separate high-priority watchdog thread
+ * (main.c) repaints the recorded color into BOTH framebuffers once the
+ * heartbeat goes stale.  The N64 scheduler is strictly priority-based and
+ * timer interrupts keep firing while a lower-priority thread spins, so the
+ * watchdog reports through an infinite loop or a dead graphics thread.
+ */
+volatile u16 diag_current_phase;
+volatile u32 diag_heartbeat;
+
+static void diagPaintBuffer(u16 *frame_buffer, u16 color) {
+  int x, y;
+
+  if (frame_buffer == NULL) {
+    return;
+  }
+  for (y = 0; y < DIAG_SQUARE_SIZE; y++) {
+    u16 *row = frame_buffer + (DIAG_SQUARE_Y + y) * SCREEN_WD + DIAG_SQUARE_X;
+    for (x = 0; x < DIAG_SQUARE_SIZE; x++) {
+      row[x] = color;
+    }
+    /* The VI scans RDRAM; flush each painted row out of the data cache. */
+    osWritebackDCache(row, DIAG_SQUARE_SIZE * sizeof (u16));
+  }
+}
+
+void diagPaintPhase(u16 color) {
+  diag_current_phase = color;
+  if (diag_task_hung) {
+    return;
+  }
+  diagPaintBuffer((u16 *) osViGetCurrentFramebuffer(), color);
+}
+
+/* Called by the watchdog thread after the heartbeat stops: keep the fatal
+   phase colour on screen no matter which buffer the VI ends up scanning. */
+void diagPaintStalePhase(void) {
+  u16 color = diag_task_hung ? GPACK_RGBA5551(255, 0, 0, 1)
+    : diag_current_phase;
+
+  diagPaintBuffer((u16 *) osViGetCurrentFramebuffer(), color);
+  diagPaintBuffer((u16 *) osViGetNextFramebuffer(), color);
+}
+
+void diagWatchdogTick(int pendingGfx) {
+  if (pendingGfx == 0) {
+    diag_pending_streak = 0;
+    return;
+  }
+  if (++diag_pending_streak > 120 && !diag_task_hung) {
+    diag_task_hung = TRUE;
+    diagPaintStalePhase();
+  }
+}
 
 #define BLOCKS_PER_CHUNK (CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE)
 
@@ -2807,7 +2895,6 @@ static u32 hudStringWidth(const char *text) {
  *      built at all; a ticking F over a stalled world means the pipeline is
  *      alive and the fault is in streaming logic
  *   O  times the render origin has rebased
- *   B  1 while rebasing is enabled (hold Z+L+R, press C-right to toggle)
  *   R  columns resident in the window
  *   D  of those, fully decorated and therefore eligible to be meshed
  *   Q  columns queued for mesh compilation
@@ -2876,7 +2963,9 @@ static void drawStreamingDiagnostics() {
   }
   y = drawDiagnosticRow("F", diag_frame_heartbeat % 1000, y);
   y = drawDiagnosticRow("O", render_rebase_count, y);
-  y = drawDiagnosticRow("B", stream_rebase_enabled, y);
+  /* M near 6656 or V above 0 means the frame list overran its buffer. */
+  y = drawDiagnosticRow("M", frame_command_peak, y);
+  y = drawDiagnosticRow("V", frame_overflows, y);
   y = drawDiagnosticRow("R", resident, y);
   y = drawDiagnosticRow("D", decorated, y);
   y = drawDiagnosticRow("Q", queued, y);
@@ -3077,6 +3166,16 @@ void draw(int can_reclaim_mesh_arena) {
     drawWorld();
   }
   drawHUD();
+
+  /* High-water mark for the M diagnostics row.  drawTextured sheds terrain
+     at frame_dlp_limit, but everything after it -- wireframes, entities, the
+     whole HUD, these diagnostics -- writes into the tail reserve unchecked.
+     If M ever approaches FRAME_DISPLAY_LIST_SIZE (6656), commands have been
+     written past the buffer into adjacent memory: silent corruption that
+     would surface as exactly the kind of wandering freeze being hunted. */
+  if ((u32) (dlp - frame_start) > frame_command_peak) {
+    frame_command_peak = (u32) (dlp - frame_start);
+  }
 
   if (dlp > frame_start + FRAME_DISPLAY_LIST_SIZE - 2) {
     /*

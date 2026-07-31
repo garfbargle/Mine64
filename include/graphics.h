@@ -52,11 +52,29 @@ extern float render_origin_units_z;
    draw(): a frame must never mix origins between its camera and its terrain,
    and draw() rebuilds the camera and entity matrices itself each frame. */
 void graphicsSetRenderOrigin(int block_x, int block_z);
-/* Freeze-bisection switches: rebasing can be toggled from the controller
-   (hold Z+L+R, press C-right) and the diagnostics HUD shows how many times
-   the origin has moved.  Temporary, until the far-walk freeze is found. */
+/* Freeze-bisection instrumentation; temporary, until the far-walk freeze is
+   found.  The diagnostics HUD shows how many times the origin has moved, and
+   the phase square (see graphics.c) reports where the console died. */
 extern u8 stream_rebase_enabled;
 extern u32 render_rebase_count;
+/* CPU-painted phase square, alive after the graphics pipeline dies.  The
+   phase is recorded in diag_current_phase; a high-priority watchdog thread
+   in main.c repaints it into both framebuffers once diag_heartbeat stops
+   advancing, so the fatal phase survives task completion, buffer swaps, and
+   the death of the graphics thread itself. */
+void diagPaintPhase(u16 color);
+void diagPaintStalePhase(void);
+void diagWatchdogTick(int pendingGfx);
+extern volatile u16 diag_current_phase;
+extern volatile u32 diag_heartbeat;
+#define DIAG_PHASE_STREAMING GPACK_RGBA5551(0, 255, 0, 1)    /* green */
+#define DIAG_PHASE_REBASE GPACK_RGBA5551(255, 255, 0, 1)     /* yellow */
+#define DIAG_PHASE_DRAW GPACK_RGBA5551(0, 255, 255, 1)       /* cyan */
+#define DIAG_PHASE_PLAYERS GPACK_RGBA5551(255, 0, 255, 1)    /* magenta */
+#define DIAG_PHASE_TREES GPACK_RGBA5551(255, 140, 0, 1)      /* orange */
+#define DIAG_PHASE_ITEMS GPACK_RGBA5551(255, 255, 255, 1)    /* white */
+#define DIAG_PHASE_MOBS GPACK_RGBA5551(0, 0, 0, 1)           /* black */
+#define DIAG_PHASE_DONE GPACK_RGBA5551(0, 0, 255, 1)         /* blue */
 /* Stop drawing a slot and drop any pending rebuild for it.  Called when the
    residency window rebinds the slot to a different column. */
 void graphicsInvalidateColumnSlot(u32 slot);

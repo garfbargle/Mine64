@@ -55,16 +55,17 @@
 
 /*
  * How far (in blocks, per axis) the player may wander from the render origin
- * before it is re-centred on them.  Anything up to ~400 keeps origin-relative
- * translations -- terrain out to the mesh ring, entities near the players --
- * inside the s15.16 Mtx integer range.
+ * before it is re-centred on them.  Far enough that rebasing is rare, near
+ * enough that origin-relative translations -- terrain out to the mesh ring,
+ * entities near the players -- stay well inside the s15.16 Mtx integer
+ * range: 256 + a ~64-block ring is ~20500 units of a possible 32767.
  *
- * TEMPORARILY 64, down from 256, for the far-walk freeze bisection: the
- * first rebase now fires a few blocks east of spawn instead of 200+ out, so
- * if rebasing is the fault it reproduces immediately (watch O flip 0 to 1 on
- * the diagnostics stack).  Restore 256 once the freeze is found.
+ * The far-walk freeze reproduced with rebasing switched off (O=0, B=0 on the
+ * frozen screen), so rebasing is not the fault and the bisection threshold
+ * of 64 is restored to 256 -- which also means any freeze within ~250 blocks
+ * of spawn is automatically rebase-free.
  */
-#define REBASE_DISTANCE 64
+#define REBASE_DISTANCE 256
 
 static u8 world_job_stage = WORLD_JOB_IDLE;
 static u8 world_job_kind;
@@ -186,6 +187,12 @@ static void stepWorldJob() {
 }
 
 void callbackGfx(int pendingGfx) {
+  /* Freeze forensics: the heartbeat tells the watchdog thread this callback
+     is still arriving and completing; the tick latches red if a graphics
+     task has been in flight for ~2 seconds (RSP/RDP hang). */
+  diag_heartbeat++;
+  diagWatchdogTick(pendingGfx);
+
   /*
    * One cinematic task can outlive a video retrace.  Queuing a second in that
    * case lets NuSystem rotate framebuffers while the RDP is still writing the
@@ -217,6 +224,7 @@ void callbackGfx(int pendingGfx) {
            render_origin_x - player_block_x > REBASE_DISTANCE ||
            player_block_z - render_origin_z > REBASE_DISTANCE ||
            render_origin_z - player_block_z > REBASE_DISTANCE)) {
+        diagPaintPhase(DIAG_PHASE_REBASE);
         graphicsSetRenderOrigin(player_block_x & ~CHUNK_MASK,
           player_block_z & ~CHUNK_MASK);
         render_rebase_count++;
@@ -232,12 +240,14 @@ void callbackGfx(int pendingGfx) {
        * fixed world from outside, and pulling columns around under it would
        * only fight the camera.
        */
+      diagPaintPhase(DIAG_PHASE_STREAMING);
       stepWorldStreaming(player_block_x >> CHUNK_SHIFT,
         player_block_z >> CHUNK_SHIFT,
         STREAM_TERRAIN_PER_STEP, STREAM_DECORATE_PER_STEP);
     }
     /* A mesh arena can only be recycled when no submitted task can still
        reference its display lists. */
+    diagPaintPhase(DIAG_PHASE_DRAW);
     draw(TRUE);
   }
 
@@ -250,10 +260,12 @@ void callbackGfx(int pendingGfx) {
   } else {
     pauseDayCycle();
   }
+  diagPaintPhase(DIAG_PHASE_PLAYERS);
   updatePlayers();
 #ifdef ENABLE_AUDIO
   updateAudio(current_screen);
 #endif
+  diagPaintPhase(DIAG_PHASE_DONE);
 }
 
 void callbackPreNMI() {
@@ -278,6 +290,46 @@ void initVideo() {
   nuPreNMIFuncSet((NUScPreNMIFunc) callbackPreNMI);
 }
 
+/*
+ * The freeze-forensics watchdog.  Runs above every game and NuSystem
+ * application thread, woken by a hardware timer, so it keeps executing when
+ * the graphics thread is stuck in a loop (the N64 scheduler never preempts
+ * by time slice, but timer interrupts still fire) and when that thread has
+ * been stopped by a CPU exception.  Once the callback heartbeat goes stale
+ * for two consecutive seconds it repaints the last recorded phase colour
+ * into both framebuffers, every second, forever -- the colour on the frozen
+ * screen names the subsystem that died.
+ */
+#define DIAG_WATCHDOG_THREAD_ID 200
+#define DIAG_WATCHDOG_PRIORITY 126
+
+static OSThread diag_watchdog_thread;
+static u64 diag_watchdog_stack[0x800 / sizeof (u64)];
+static OSMesgQueue diag_watchdog_queue;
+static OSMesg diag_watchdog_messages[1];
+static OSTimer diag_watchdog_timer;
+
+static void diagWatchdogThread(void *arg) {
+  u32 last_heartbeat = 0;
+  u32 stale_seconds = 0;
+
+  (void) arg;
+  osCreateMesgQueue(&diag_watchdog_queue, diag_watchdog_messages, 1);
+  osSetTimer(&diag_watchdog_timer, 0, OS_USEC_TO_CYCLES(1000000),
+    &diag_watchdog_queue, NULL);
+  while (1) {
+    (void) osRecvMesg(&diag_watchdog_queue, NULL, OS_MESG_BLOCK);
+    if (diag_heartbeat != last_heartbeat) {
+      last_heartbeat = diag_heartbeat;
+      stale_seconds = 0;
+      continue;
+    }
+    if (++stale_seconds >= 2) {
+      diagPaintStalePhase();
+    }
+  }
+}
+
 void mainproc(void) {
   initVideo();
   initCamera();
@@ -285,6 +337,11 @@ void mainproc(void) {
   initGraphics();
   initStorage();
   nuContInit();
+  osCreateThread(&diag_watchdog_thread, DIAG_WATCHDOG_THREAD_ID,
+    diagWatchdogThread, NULL,
+    diag_watchdog_stack + sizeof (diag_watchdog_stack) / sizeof (u64),
+    DIAG_WATCHDOG_PRIORITY);
+  osStartThread(&diag_watchdog_thread);
 #ifdef ENABLE_AUDIO
   /*
    * Storage owns the flashcart/PI during startup. Start audio only after cart

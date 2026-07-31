@@ -239,30 +239,88 @@ up and the fault is in something the host harness cannot run — meshing,
 rendering, or the origin rebase.  The generation/streaming path also passed
 ASan+UBSan on the host, including the 100-chunk walk test.
 
-**The bisection build** (current tree) instruments for exactly this, per the
-debug-on-device doctrine:
+**Bisection run 1 verdict: the origin rebase is innocent.** The freeze
+reproduced at (x 69, z 15) with the frozen screen reading `O 0` — the rebase
+had never once run (a controller toggle in that build had also disabled it).
+Other frozen-screen values: `F 485` (frozen — no frames being built),
+`R 225 D 157 Q 5 A 42 C 0 T 0` — streaming completely healthy to the last
+frame.  Notable: the walk was north-east, so the residency ring spanned
+negative z chunks (pcz 1 → ring to cz −6), and the freeze came after only
+~43 blocks of walking — the trigger is not raw distance from spawn.
+`REBASE_DISTANCE` is restored to 256 (so any repro under ~250 blocks is
+rebase-free by construction) and the toggle is removed — its Z+L+R combo
+collided with sprint/look/jump and self-toggled during normal play.
 
-- The diagnostics are now a vertical stack on the left edge (clear of the
-  compass): `X Z` player block position (magnitude only), `F` frame
-  heartbeat mod 1000, `O` rebase count, `B` rebasing enabled, then the
-  original `R D Q A C T`.
-- `REBASE_DISTANCE` is **temporarily 64** (from 256), so the first rebase
-  fires a few blocks east of spawn.  If rebasing is the fault, the freeze
-  now reproduces seconds from spawn, exactly as `O` flips 0→1.
-- Hold **Z+L+R and press C-right** to toggle rebasing off (`B` shows 0; the
-  hotbar also cycles, harmless).  With it off, translations degrade past
-  ±512 blocks (world geometry garbles progressively) instead of rebasing —
-  ugly but expected, and it cleanly separates "rebase freezes" from
-  "distance freezes".
+**The current build adds the phase square**: a 16×16 square near the lower
+left, painted directly into the displayed framebuffer by the CPU — no RSP,
+no RDP — so it keeps reporting after the graphics pipeline dies.  While the
+game runs it flickers as frames paint over it.  On a freeze, its color is
+the finding:
 
-Protocol: walk east from spawn watching `O` and `X`.  (1) Freeze right as
-`O` first ticks → rebase implicated; repeat with `B 0` to confirm the freeze
-moves far out.  (2) No freeze near `O` ticks but the far freeze still
-happens → note `X`, `F`, and whether `F` was still ticking at the moment of
-freeze; a frozen `F` means no frames were being built (RDP/RSP hang or a
-graphics-thread loop), a ticking `F` over frozen terrain means the streaming
-logic stalled.  Restore `REBASE_DISTANCE 256` and remove the toggle once the
-cause is found.
+| color | meaning |
+|---|---|
+| red | a graphics task sat unfinished for ~2s: the RSP/RDP hung executing it |
+| green | CPU died inside `stepWorldStreaming` (generation/decoration) |
+| yellow | CPU died inside the origin rebase |
+| cyan | CPU died inside `draw()` — mesh compile, culling, or submission |
+| magenta | CPU died inside `updatePlayers` — physics or input |
+| blue | callbacks stopped arriving with the last one completing normally |
+
+Red means chasing the *content* of a display list (a column mesh the RDP
+cannot digest); green/cyan/magenta mean a CPU loop in that subsystem; blue
+would implicate the scheduler.  Report the color together with the `X Z`
+rows off the frozen diagnostics stack.
+
+**Bisection run 2: the square VANISHED at the freeze** (at x 100, z 169;
+in life it read solid blue idle, green/blue flicker walking, mostly cyan at
+speed — draw() dominating, as expected).  The vanishing is itself evidence:
+the phase was painted only into the displayed buffer, and the draw task
+already submitted that callback completes on the RSP/RDP *regardless of the
+CPU*, repaints the other buffer entirely and swaps to it.  So the CPU died
+**after draw() submitted the frame** — in the update path (player physics /
+input, trees, items, mobs) — and the swap erased the painted evidence.
+`detectCollision` and `updateTargetBlock` were re-audited on this suspicion
+and both provably terminate (`max_t <= 1`; `t` grows monotonically to
+`ray_limit`), so it is not the obvious ray-marches.
+
+**Run-3 build** makes the evidence survive anything short of a power cycle:
+
+- The phase is *recorded* (`diag_current_phase`) and a dedicated **watchdog
+  thread at priority 126** — woken by a hardware timer, immune to a spinning
+  or dead graphics thread — repaints it into **both** framebuffers every
+  second once the `diag_heartbeat` callback counter stalls for 2s.  The
+  colour on a frozen screen is now trustworthy.
+- The update path is split: **magenta** = player input/physics, **orange** =
+  trees, **white** = items, **black** = mobs.  Green streaming, cyan draw,
+  yellow rebase, blue clean-idle, red RSP/RDP-hang as before.
+- New diagnostics rows `M` (peak Gfx commands one frame has used) and `V`
+  (frame overflow count).  Everything after the terrain shed limit — HUD,
+  entities, these diagnostics — writes into the 2048-command tail reserve
+  *unguarded*; if `M` approaches 6656 or `V` ticks, frames have been writing
+  past the buffer into adjacent BSS, which is exactly the kind of silent
+  corruption that produces wandering, healthy-looking freezes.
+
+Report on the next freeze: the (now persistent) square colour, plus `X Z M
+V` from the stack.
+
+**Bisection run 3: no freeze — and the milestone.**  The player reached
+**x 572** (z 70) on real hardware: past the ±512 s15.16 limit, with `O 2`
+rebases fired and no visible seam, jump, or garbling.  Origin rebasing is
+hardware-verified; the world is walkably unbounded for the first time.
+Streaming stayed textbook throughout (R 225, T 0, Q 0, A 59, C 0), and the
+frame list peaked at `M 2433` of 6656 with `V 0` — the tail-overflow theory
+is dead.
+
+That leaves the run-1/run-2 freezes **unexplained**: no game logic changed
+between the freezing build and this one, only instrumentation (a watchdog
+thread, its stack, counters), which shifted BSS layout and timing.  Treat
+the fault as latent and masked, not fixed.  The forensics harness therefore
+**stays in the build** until the freeze recurs (the watchdog-painted square
+now survives swaps, loops and thread death, so it will name the subsystem)
+or until long sessions justify calling it gone.  Still unwalked from the
+hardware checklist: standing in negative coordinates, far-out block edits
+and tree felling, the far-save refusal message, and re-walking evicted
+terrain.
 
 **Hardware checklist for the next session** (nothing else above has been on
 the console yet):
