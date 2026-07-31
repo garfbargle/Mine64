@@ -588,6 +588,11 @@ u8 saveGame() {
   if (!worldFixedExtentResident()) {
     return FALSE;
   }
+  /* The residency ring is wider than the world, so live tree records can sit
+     in columns past the extent -- coordinates treesValid rejects on load.
+     Retire them before the checksum sees them, or this save reads as corrupt
+     on the next boot and silently falls back to the backup. */
+  treesDropOutsideFixedExtent();
   slot = game_file_num - 1;
   had_previous_file = files_present[slot];
   result = f_open(&file, temporary_file_names[slot],

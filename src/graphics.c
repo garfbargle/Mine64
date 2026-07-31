@@ -57,8 +57,29 @@ Gfx frame_display_lists[NUM_DISPLAY_LISTS][FRAME_DISPLAY_LIST_SIZE];
  * finished columns and cost nothing to skip.
  */
 #define MESH_REBUILD_BUDGET 3
-#define MESH_COMPACTION_BUDGET 6
+/*
+ * Compaction budgets count what they cost, not slots.  The old single budget
+ * of six charged empty slots and full column rebuilds alike, so a frame that
+ * happened upon six finished ring columns did six greedy meshes plus seam
+ * refinement in one callback -- tens of milliseconds of hitch -- while frames
+ * over empty window space did nothing and still only advanced six slots.
+ * Charging rebuilds and slot walking separately bounds the worst frame at two
+ * rebuilds without making the pass take longer over the empty stretches.
+ */
+#define MESH_COMPACTION_REBUILDS_PER_FRAME 2
+#define MESH_COMPACTION_SLOTS_PER_FRAME 64
 #define MESH_COMPACTION_RESERVE (DISPLAY_LIST_SIZE / 10)
+/*
+ * Frames to wait after a compaction publishes before another may start.  A
+ * pass that ran short proved the resident working set does not fit, and a
+ * pass that completed with the arena still under reserve proved the same
+ * thing; recompacting either immediately reclaims nothing and costs the whole
+ * pass again, forever -- the game keeps running but new terrain never gets a
+ * turn to compile.  The pause gives the ring time to move on and the failure
+ * a shape the player survives: some far columns arrive late instead of the
+ * console silently spending every frame remeshing.
+ */
+#define MESH_COMPACTION_COOLDOWN_FRAMES 120
 /* Headroom the terrain passes leave for the HUD, menu text and trailing sync. */
 #define FRAME_COMMAND_TAIL_RESERVE 2048
 static Gfx column_display_lists[NUM_COLUMN_ARENAS][DISPLAY_LIST_SIZE];
@@ -99,10 +120,21 @@ static u8 compacting_columns;
 static u16 compaction_column_cursor;
 /* Set when a compaction pass could not fit every resident column. */
 static u8 compaction_ran_short;
-/* Whether a slot currently has compiled geometry.  A column can be finished
-   generating yet have no mesh -- it drifted out of the mesh ring and was
-   dropped by a compaction, or its slot was invalidated. */
-static u8 column_meshed[WINDOW_SLOTS];
+/* Frames remaining before another compaction may start; see the cooldown
+   constant above for why publishing one always arms this. */
+static u8 compaction_cooldown;
+/* Whether a slot has compiled geometry, tracked per arena.  A column can be
+   finished generating yet have no mesh -- it drifted out of the mesh ring and
+   was dropped by a compaction, or its slot was invalidated.
+
+   Per arena is load-bearing: a compaction builds into the arena that is off
+   screen, and while it runs the on-screen arena still has every mesh it ever
+   had.  A single shared array cleared at compaction start told the streaming
+   ring scan that every column had lost its mesh, so it queued the whole ring
+   dirty; those rebuilds then re-orphaned most of the freshly compacted arena,
+   dragging it straight back under its reserve -- a compaction that feeds
+   itself forever, on the exact long walks streaming exists to serve. */
+static u8 column_meshed[NUM_COLUMN_ARENAS][WINDOW_SLOTS];
 
 static Gfx empty_column_display_list[] = {
   gsSPEndDisplayList()
@@ -873,8 +905,11 @@ static void resetColumnArenaBuild(u8 arena) {
       column_starts[arena][texture][slot] = empty_column_display_list;
     }
   }
+  /* Only this arena's meshes are discarded; the other arena -- usually the
+     one on screen -- keeps every mesh it had, and its flags must keep saying
+     so or the streaming ring scan re-queues the entire ring. */
   for (slot = 0; slot < WINDOW_SLOTS; slot++) {
-    column_meshed[slot] = FALSE;
+    column_meshed[arena][slot] = FALSE;
   }
 }
 
@@ -1066,22 +1101,10 @@ static u8 makeColumnDisplayLists(int cx, int cz) {
   for (texture = 0; texture < NUM_TEXTURES; texture++) {
     column_starts[column_build_arena][texture][slot] = new_starts[texture];
   }
-  column_meshed[slot] = TRUE;
+  column_meshed[column_build_arena][slot] = TRUE;
   return TRUE;
 }
 
-/*
- * A complete mesh rebuild rewrites the arena the RSP executes terrain from,
- * so it may only run while no graphics task is in flight.  callbackGfx
- * guarantees that by calling it only when NuSystem reports pendingGfx == 0,
- * and by submitting the next frame afterwards rather than before.
- *
- * Do not wait for the RSP here.  nuGfxTaskAllEndWait() busy-spins on
- * nuGfxTaskSpool, and this runs on the NuSystem graphics thread at priority
- * 50.  The completion that clears that counter is posted by the scheduler's
- * own graphics thread at priority 17, which can never preempt a busy-wait at
- * 50, so the wait deadlocks the console instead of ending.
- */
 static u8 mesh_build_active;
 static u16 mesh_build_cursor;
 static u8 mesh_build_arena;
@@ -1107,6 +1130,7 @@ void beginWorldMeshBuild(u8 surface_only) {
   u16 slot;
 
   compacting_columns = FALSE;
+  compaction_cooldown = 0;
   dirty_column_cursor = 0;
   for (slot = 0; slot < WINDOW_SLOTS; slot++) {
     dirty_columns[slot] = FALSE;
@@ -1117,10 +1141,6 @@ void beginWorldMeshBuild(u8 surface_only) {
   mesh_build_complete = TRUE;
   mesh_build_active = TRUE;
   resetColumnArenaBuild(mesh_build_arena);
-}
-
-u8 worldMeshBuildActive() {
-  return mesh_build_active;
 }
 
 u8 worldMeshBuildProgress() {
@@ -1169,24 +1189,6 @@ u8 stepWorldMeshBuild(u16 columns) {
     return TRUE;
   }
   return FALSE;
-}
-
-static u8 buildAllColumns(u8 surface_only) {
-  beginWorldMeshBuild(surface_only);
-  while (!stepWorldMeshBuild(CHUNKS_X * CHUNKS_Z)) {
-  }
-  return mesh_build_complete;
-}
-
-u8 makeWorldDisplayLists() {
-  /* World selection compiles only the surface shell the fixed camera can
-     actually see.  It is roughly an order of magnitude less geometry than the
-     cave-riddled gameplay mesh, which is what the orbit was choking on. */
-  return buildAllColumns(TRUE);
-}
-
-u8 makeGameWorldDisplayLists() {
-  return buildAllColumns(FALSE);
 }
 
 void graphicsSetRenderOrigin(int block_x, int block_z) {
@@ -1240,16 +1242,10 @@ void graphicsInvalidateColumnSlot(u32 slot) {
     for (texture = 0; texture < NUM_TEXTURES; texture++) {
       column_starts[arena][texture][slot] = empty_column_display_list;
     }
+    column_meshed[arena][slot] = FALSE;
   }
   /* Any pending rebuild referred to the departed column. */
   dirty_columns[slot] = FALSE;
-  column_meshed[slot] = FALSE;
-}
-
-void graphicsMarkColumnDirty(int cx, int cz) {
-  if (windowColumnResident(cx, cz)) {
-    dirty_columns[WINDOW_SLOT(cx, cz)] = TRUE;
-  }
 }
 
 static void markColumnDirty(int cx, int cz) {
@@ -1258,6 +1254,10 @@ static void markColumnDirty(int cx, int cz) {
   if (windowColumnResident(cx, cz)) {
     dirty_columns[WINDOW_SLOT(cx, cz)] = TRUE;
   }
+}
+
+void graphicsMarkColumnDirty(int cx, int cz) {
+  markColumnDirty(cx, cz);
 }
 
 void makeDisplayListsAt(int x, int z) {
@@ -1327,51 +1327,68 @@ static u8 columnInMeshRing(u32 slot) {
 }
 
 u8 graphicsColumnNeedsMesh(int cx, int cz) {
-  return windowColumnResident(cx, cz) && !column_meshed[WINDOW_SLOT(cx, cz)];
+  /* The active arena is the one the player is looking at, so it is the only
+     authority on whether a column is visibly missing.  The build arena's
+     flags are a work list mid-compaction, not the on-screen truth. */
+  return windowColumnResident(cx, cz) &&
+    !column_meshed[active_column_arena][WINDOW_SLOT(cx, cz)];
 }
 
 static void processColumnDisplayListUpdates(int can_reclaim_mesh_arena) {
   u8 budget;
 
   if (compacting_columns) {
-    for (budget = 0; budget < MESH_COMPACTION_BUDGET &&
-        compaction_column_cursor < WINDOW_SLOTS; budget++) {
+    u8 rebuilt = 0;
+    u16 walked = 0;
+
+    while (rebuilt < MESH_COMPACTION_REBUILDS_PER_FRAME &&
+        walked < MESH_COMPACTION_SLOTS_PER_FRAME &&
+        compaction_column_cursor < WINDOW_SLOTS) {
       u32 slot = compaction_column_cursor;
       /* Walks slots, and rebuilds only the columns that are actually there and
          finished.  resetColumnArenaBuild already emptied the rest. */
       if (windowSlotResident(slot) && columnInMeshRing(slot)) {
         int cx = windowSlotChunkX(slot);
         int cz = windowSlotChunkZ(slot);
-        if (worldColumnState(cx, cz) == COLUMN_DECORATED &&
-            !makeColumnDisplayLists(cx, cz)) {
-          /*
-           * Out of room part way through.  Publish what fits rather than
-           * discarding the pass: every slot in this arena is valid, either
-           * freshly built or pointing at the shared empty list, so the world
-           * renders with its last columns missing.
-           *
-           * Discarding instead was a trap.  The arena is still below its
-           * reserve next frame, so compaction restarts, fails at the same
-           * column, and discards again -- terrain stops updating for good,
-           * and no amount of waiting recovers it.  Missing far columns that
-           * fill in once the ring moves is a far better failure.
-           */
-          column_arena_ends[column_build_arena] = column_dlp;
-          active_column_arena = column_build_arena;
-          compacting_columns = FALSE;
-          compaction_ran_short = TRUE;
-          return;
+        if (worldColumnState(cx, cz) == COLUMN_DECORATED) {
+          if (!makeColumnDisplayLists(cx, cz)) {
+            /*
+             * Out of room part way through.  Publish what fits rather than
+             * discarding the pass: every slot in this arena is valid, either
+             * freshly built or pointing at the shared empty list, so the world
+             * renders with its last columns missing.
+             *
+             * Discarding instead was a trap.  The arena is still below its
+             * reserve next frame, so compaction restarts, fails at the same
+             * column, and discards again -- terrain stops updating for good,
+             * and no amount of waiting recovers it.  Missing far columns that
+             * fill in once the ring moves is a far better failure.
+             */
+            column_arena_ends[column_build_arena] = column_dlp;
+            active_column_arena = column_build_arena;
+            compacting_columns = FALSE;
+            compaction_ran_short = TRUE;
+            compaction_cooldown = MESH_COMPACTION_COOLDOWN_FRAMES;
+            return;
+          }
+          rebuilt++;
         }
       }
       compaction_column_cursor++;
+      walked++;
     }
     if (compaction_column_cursor == WINDOW_SLOTS) {
       compaction_ran_short = FALSE;
       column_arena_ends[column_build_arena] = column_dlp;
       active_column_arena = column_build_arena;
       compacting_columns = FALSE;
+      compaction_cooldown = MESH_COMPACTION_COOLDOWN_FRAMES;
     }
     return;
+  }
+
+  if (compaction_cooldown > 0) {
+    compaction_cooldown--;
   }
 
   column_build_arena = active_column_arena;
@@ -1380,7 +1397,7 @@ static void processColumnDisplayListUpdates(int can_reclaim_mesh_arena) {
   if (columnArenaFree() < MESH_COMPACTION_RESERVE) {
     /* The old arena can become the inactive build target only after every
      * submitted RSP task has finished reading it. */
-    if (can_reclaim_mesh_arena) {
+    if (can_reclaim_mesh_arena && compaction_cooldown == 0) {
       startColumnCompaction();
     }
     return;
@@ -1395,7 +1412,7 @@ static void processColumnDisplayListUpdates(int can_reclaim_mesh_arena) {
       /* takeDirtyColumn clears the mark; restore it because the live column
          pointers were deliberately left unchanged on failure. */
       markColumnDirty(cx, cz);
-      if (can_reclaim_mesh_arena) {
+      if (can_reclaim_mesh_arena && compaction_cooldown == 0) {
         startColumnCompaction();
       }
       break;
@@ -1926,43 +1943,38 @@ static void drawFallingTree(TreeRecord *tree, u8 slot, int abs_x, int abs_z) {
     canopy_y + BLOCK_SIZE * 1.5f, 0, 1, 1, 3);
 }
 
+/* One pass: the state test comes first so the common frame with nothing
+   falling costs a 96-entry byte scan and no coordinate unwrapping, and the
+   cull-mode commands are only emitted around trees actually drawn. */
 static void drawFallingTrees(u8 viewer_num) {
   u8 tree_index;
   u8 slot = 0;
 
-  for (tree_index = 0; tree_index < MAX_TREES; tree_index++) {
-    int ax = unwrapTreeCoord(trees[tree_index].x,
-      players[viewer_num].position.x);
-    int az = unwrapTreeCoord(trees[tree_index].z,
-      players[viewer_num].position.z);
-    Vector3 position = {(ax + .5f) * BLOCK_SIZE,
-      (trees[tree_index].base_y + 1) * BLOCK_SIZE,
-      (az + .5f) * BLOCK_SIZE};
-    if (trees[tree_index].state == TREE_STATE_FALLING &&
-        pointVisibleToPlayer(viewer_num, position, DROPPED_ITEM_RENDER_DISTANCE)) {
-      break;
-    }
-  }
-  if (tree_index == MAX_TREES) {
-    return;
-  }
-
-  gSPClearGeometryMode(dlp++, G_CULL_BACK);
-  for (; tree_index < MAX_TREES &&
+  for (tree_index = 0; tree_index < MAX_TREES &&
       slot < FALLING_TREE_RENDER_SLOTS; tree_index++) {
-    int ax = unwrapTreeCoord(trees[tree_index].x,
-      players[viewer_num].position.x);
-    int az = unwrapTreeCoord(trees[tree_index].z,
-      players[viewer_num].position.z);
-    Vector3 position = {(ax + .5f) * BLOCK_SIZE,
-      (trees[tree_index].base_y + 1) * BLOCK_SIZE,
-      (az + .5f) * BLOCK_SIZE};
-    if (trees[tree_index].state == TREE_STATE_FALLING &&
-        pointVisibleToPlayer(viewer_num, position, DROPPED_ITEM_RENDER_DISTANCE)) {
-      drawFallingTree(&trees[tree_index], slot++, ax, az);
+    int ax, az;
+    Vector3 position;
+
+    if (trees[tree_index].state != TREE_STATE_FALLING) {
+      continue;
     }
+    ax = unwrapTreeCoord(trees[tree_index].x, players[viewer_num].position.x);
+    az = unwrapTreeCoord(trees[tree_index].z, players[viewer_num].position.z);
+    position.x = (ax + .5f) * BLOCK_SIZE;
+    position.y = (trees[tree_index].base_y + 1) * BLOCK_SIZE;
+    position.z = (az + .5f) * BLOCK_SIZE;
+    if (!pointVisibleToPlayer(viewer_num, position,
+        DROPPED_ITEM_RENDER_DISTANCE)) {
+      continue;
+    }
+    if (slot == 0) {
+      gSPClearGeometryMode(dlp++, G_CULL_BACK);
+    }
+    drawFallingTree(&trees[tree_index], slot++, ax, az);
   }
-  gSPSetGeometryMode(dlp++, G_CULL_BACK);
+  if (slot > 0) {
+    gSPSetGeometryMode(dlp++, G_CULL_BACK);
+  }
 }
 
 void drawWorld() {

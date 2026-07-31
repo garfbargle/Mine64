@@ -322,8 +322,46 @@ hardware checklist: standing in negative coordinates, far-out block edits
 and tree felling, the far-save refusal message, and re-walking evicted
 terrain.
 
+**Post-run-3 audit: two latent far-coordinate faults found and fixed, plus
+the compaction feedback loop.**  A source audit after run 3 found concrete
+faults consistent with "latent and masked", all now fixed and
+gentest-verified, none yet on hardware:
+
+- **`removeTreeBlocks` stack overflow (trees.c).**  Its changed-column array
+  was 196 entries indexed by raw u8 record coordinates — up to index 465, a
+  ~270-byte write past a stack array, for any felling with a wrapped
+  coordinate past 111.  Worse, every tree function that touched blocks
+  (`discardMissingParts`, `removeTreeBlocks`, `emitDebris`) read and wrote
+  through the wrapped u8 directly; past the first 256 blocks those
+  coordinates fail residency, so far fellings silently did nothing and far
+  debris spawned up to 256 blocks away.  All three now recover absolute
+  coordinates via `treeAbsoluteRoot()`: the u8 wrap is a whole multiple of
+  the window span, so the record's own slot key holds the exact absolute
+  chunk.  The changed-column array is gone outright — per-block
+  `makeDisplayListsAt` marking replaced it.
+- **Compaction fed itself.**  `column_meshed` was one array shared by both
+  arenas; compaction start cleared it for all 256 slots, the streaming ring
+  scan then re-marked the whole ring dirty every frame, and after the pass
+  published those rebuilds re-orphaned the fresh arena straight back under
+  its reserve — permanent compaction, CPU-bound, with every counter reading
+  healthy.  `column_meshed` is now per-arena, `graphicsColumnNeedsMesh`
+  reads only the active arena, a publish arms a 120-frame cooldown before
+  the next compaction may start, and the per-frame budget charges rebuilds
+  (2) and slot walking (64) separately instead of six of whatever comes.
+- **Saves could carry poison tree records.**  With the ring wider than the
+  world, a save at spawn can include live trees at chunk −1/14 whose wrapped
+  coordinates are ≥112 — which `treesValid` rejects on the *next load*,
+  reading the whole file as corrupt and falling back to the backup.
+  `treesDropOutsideFixedExtent()` now retires them before the checksum.
+- Dead blocking builds (`buildAllColumns`, `makeWorldDisplayLists`,
+  `makeGameWorldDisplayLists`, `worldMeshBuildActive`) deleted;
+  `drawFallingTrees` no longer double-scans 96 records with four `floor()`
+  calls each when nothing is falling.
+
 **Hardware checklist for the next session** (nothing else above has been on
-the console yet):
+the console yet; checklist items 4 and 5 specifically exercise the tree and
+save fixes described above — the far felling in item 4 would previously have
+smashed the stack):
 
 1. Walk east past block 112 — terrain must appear ahead, mesh and all, and
    the old edge must not stop you.

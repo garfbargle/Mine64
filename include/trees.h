@@ -36,6 +36,10 @@ void initTrees();
    record pool is small and fixed, so a walk that never gave trees back would
    exhaust it and quietly stop growing new ones. */
 void treesEvictColumn(int cx, int cz);
+/* Retire records rooted outside the fixed save extent before writing the pool
+   to disk; treesValid rejects their coordinates on load, so keeping one would
+   make the whole save read as corrupt on the next boot. */
+void treesDropOutsideFixedExtent();
 void recoverTreesFromWorld();
 u8 createTree(u8 x, u8 z, u8 base_y, u8 height);
 void treeAddLeaf(u8 tree_index, u8 x, u8 y, u8 z);

@@ -54,6 +54,32 @@ static u8 treeIndexAtRoot(int x, int z) {
   return index == 0 ? TREE_NONE : index - 1;
 }
 
+/*
+ * Recover a live tree's absolute root coordinates from its wrapped u8 record.
+ *
+ * The 256-block u8 wrap is a whole multiple of the 128-block window span, so
+ * a wrapped coordinate still selects the tree's own window slot -- and the
+ * slot's key stores the full absolute chunk coordinate.  Eviction retires
+ * every tree in a column before its slot rebinds, so a live record's slot is
+ * its column and the recovery is exact, with no viewer anchor needed.
+ *
+ * This matters because blockGet/blockSet check residency against absolute
+ * coordinates: past the first 256 blocks the wrapped u8 no longer names a
+ * resident column, and every read through it comes back BLOCK_NOT_RESIDENT
+ * while every write silently misses.
+ */
+static u8 treeAbsoluteRoot(const TreeRecord *tree, int *abs_x, int *abs_z) {
+  u32 slot = WINDOW_SLOT((u32) tree->x >> CHUNK_SHIFT,
+    (u32) tree->z >> CHUNK_SHIFT);
+
+  if (!windowSlotResident(slot)) {
+    return FALSE;
+  }
+  *abs_x = windowSlotChunkX(slot) * CHUNK_SIZE + (tree->x & CHUNK_MASK);
+  *abs_z = windowSlotChunkZ(slot) * CHUNK_SIZE + (tree->z & CHUNK_MASK);
+  return TRUE;
+}
+
 static void retireTree(u8 index) {
   TreeRecord *tree = &trees[index];
   tree_at_root[TREE_ROOT_INDEX(tree->x, tree->z)] = 0;
@@ -89,6 +115,36 @@ void treesEvictColumn(int cx, int cz) {
           ((u32) cx & WINDOW_MASK) &&
         (((u32) tree->z & (TREE_ROOT_SPAN - 1)) >> CHUNK_SHIFT) ==
           ((u32) cz & WINDOW_MASK)) {
+      retireTree(i);
+    }
+  }
+}
+
+/*
+ * Retire every record whose root lies outside the fixed 0..MAX extent.
+ *
+ * Saving requires the whole fixed extent resident, but the residency ring is
+ * wider than the world: columns at chunk -1 or 14 can be live at save time,
+ * and their trees carry wrapped coordinates of 112 and up.  The v10 format
+ * writes the pool raw, and loadGame validates it with treesValid, which
+ * rejects any root at or past MAX_X -- so one such record makes the whole
+ * save read as corrupt on the next boot and quietly falls back to the backup
+ * world.  The records themselves are expendable: the save cannot carry their
+ * columns' blocks anyway, and streaming regenerates tree and record together
+ * when the column next arrives.
+ */
+void treesDropOutsideFixedExtent() {
+  u8 i;
+
+  for (i = 0; i < MAX_TREES; i++) {
+    TreeRecord *tree = &trees[i];
+    int abs_x, abs_z;
+
+    if (tree->base_y == TREE_INACTIVE_Y) {
+      continue;
+    }
+    if (!treeAbsoluteRoot(tree, &abs_x, &abs_z) ||
+        abs_x < 0 || abs_x >= MAX_X || abs_z < 0 || abs_z >= MAX_Z) {
       retireTree(i);
     }
   }
@@ -278,11 +334,16 @@ void recoverTreesFromWorld() {
 
 static void discardMissingParts(TreeRecord *tree) {
   u8 part, bit;
+  int root_x, root_z;
 
+  if (!treeAbsoluteRoot(tree, &root_x, &root_z)) {
+    /* No column, no blocks: nothing this record describes still exists. */
+    tree->trunk_mask = 0;
+    return;
+  }
   for (part = 0; part < TREE_TRUNK_PARTS; part++) {
     if ((tree->trunk_mask & (1 << part)) &&
-        blockGet(tree->x, tree->base_y + 1 + part,
-          tree->z) != WOOD) {
+        blockGet(root_x, tree->base_y + 1 + part, root_z) != WOOD) {
       tree->trunk_mask &= ~(1 << part);
     }
   }
@@ -291,9 +352,9 @@ static void discardMissingParts(TreeRecord *tree) {
       u8 local_x = (bit % 25) / 5;
       u8 local_z = bit % 5;
       u8 local_y = bit / 25;
-      u8 x = tree->x + local_x - 2;
+      int x = root_x + local_x - 2;
       u8 y = tree->canopy_y + local_y;
-      u8 z = tree->z + local_z - 2;
+      int z = root_z + local_z - 2;
       if (blockGet(x, y, z) != LEAVES) {
         setLeafBit(tree, bit, FALSE);
       }
@@ -311,20 +372,26 @@ static u8 treeHasLogAbove(TreeRecord *tree, u8 part) {
   return above_mask != 0;
 }
 
+/*
+ * The fixed-extent changed-column array this used to fill was indexed with
+ * the record's raw u8 coordinates -- 0..255 against 196 entries, a stack
+ * overflow for any root past block 111, and its remesh loop then walked the
+ * old 14x14 world.  Per-block dirty marking replaces the array outright:
+ * makeDisplayListsAt is a couple of flag stores, is idempotent, and already
+ * knows which neighbouring column shares each seam.
+ */
 static void removeTreeBlocks(TreeRecord *tree) {
-  u8 changed_columns[CHUNKS_X * CHUNKS_Z];
-  u8 part, bit, cx, cz;
-  u16 column;
+  u8 part, bit;
+  int root_x, root_z;
 
-  for (column = 0; column < CHUNKS_X * CHUNKS_Z; column++) {
-    changed_columns[column] = FALSE;
+  if (!treeAbsoluteRoot(tree, &root_x, &root_z)) {
+    return;
   }
-
   for (part = 0; part < TREE_TRUNK_PARTS; part++) {
     if (tree->trunk_mask & (1 << part)) {
       u8 y = tree->base_y + 1 + part;
-      blockSet(tree->x, y, tree->z, AIR);
-      changed_columns[(tree->x / CHUNK_SIZE) * CHUNKS_Z + tree->z / CHUNK_SIZE] = TRUE;
+      blockSet(root_x, y, root_z, AIR);
+      makeDisplayListsAt(root_x, root_z);
     }
   }
   for (bit = 0; bit < TREE_LEAF_BITS; bit++) {
@@ -332,18 +399,11 @@ static void removeTreeBlocks(TreeRecord *tree) {
       u8 local_x = (bit % 25) / 5;
       u8 local_z = bit % 5;
       u8 local_y = bit / 25;
-      u8 x = tree->x + local_x - 2;
+      int x = root_x + local_x - 2;
       u8 y = tree->canopy_y + local_y;
-      u8 z = tree->z + local_z - 2;
+      int z = root_z + local_z - 2;
       blockSet(x, y, z, AIR);
-      changed_columns[(x / CHUNK_SIZE) * CHUNKS_Z + z / CHUNK_SIZE] = TRUE;
-    }
-  }
-  for (cx = 0; cx < CHUNKS_X; cx++) {
-    for (cz = 0; cz < CHUNKS_Z; cz++) {
-      if (changed_columns[cx * CHUNKS_Z + cz]) {
-        makeDisplayListsAt(cx * CHUNK_SIZE, cz * CHUNK_SIZE);
-      }
+      makeDisplayListsAt(x, z);
     }
   }
 }
@@ -412,17 +472,26 @@ void treeBlockDestroyed(u8 x, u8 y, u8 z) {
 }
 
 static u8 emitDebris(TreeRecord *tree) {
+  int root_x, root_z;
+
+  /* Absolute coordinates, or the pickups spawn at the wrapped u8 position --
+     which past the first 256 blocks is somewhere else entirely. */
+  if (!treeAbsoluteRoot(tree, &root_x, &root_z)) {
+    tree->debris_cursor = TREE_DEBRIS_PARTS;
+    return FALSE;
+  }
   while (tree->debris_cursor < TREE_DEBRIS_PARTS) {
     u8 cursor = tree->debris_cursor++;
-    u8 x, y, z, item;
+    int x, z;
+    u8 y, item;
 
     if (cursor < TREE_TRUNK_PARTS) {
       if (!(tree->trunk_mask & (1 << cursor))) {
         continue;
       }
-      x = tree->x;
+      x = root_x;
       y = tree->base_y + 1 + cursor;
-      z = tree->z;
+      z = root_z;
       item = WOOD;
     } else {
       u8 bit = cursor - TREE_TRUNK_PARTS;
@@ -433,9 +502,9 @@ static u8 emitDebris(TreeRecord *tree) {
       local_x = (bit % 25) / 5;
       local_z = bit % 5;
       local_y = bit / 25;
-      x = tree->x + local_x - 2;
+      x = root_x + local_x - 2;
       y = tree->canopy_y + local_y;
-      z = tree->z + local_z - 2;
+      z = root_z + local_z - 2;
       if (!rollLeafDrop(&item)) {
         continue;
       }
