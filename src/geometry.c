@@ -115,34 +115,60 @@ static u8 mesh_cache[CHUNK_SIZE + 1][MAX_Y + 1][CHUNK_SIZE + 1];
 static int mesh_cache_base_x;
 static int mesh_cache_base_z;
 
-/* The sampling rule blockAt always applied to one world cell: a detail
-   proxy meshes as AIR (its box is drawn by the detail pass), everything
-   else is the terrain nibble -- including BLOCK_NOT_RESIDENT, which the
-   scanline logic needs to tell "no block" from "face against unloaded
-   terrain".  The CRAFTING_TABLE gate keeps the record-pool scan off the
-   overwhelmingly common cell, exactly as detailAt's own fast path does. */
-static u8 meshSourceBlock(int x, int y, int z) {
-  u8 block = blockGet(x, y, z);
-
-  if (block == CRAFTING_TABLE && detailIsCustomAt(x, y, z)) {
-    return AIR;
-  }
-  return block;
-}
-
+/*
+ * The sampling rule applied to every cell: a detail proxy meshes as AIR (its
+ * box is drawn by the detail pass), everything else is the terrain nibble --
+ * including BLOCK_NOT_RESIDENT, which the scanline logic needs to tell "no
+ * block" from "face against unloaded terrain".  The CRAFTING_TABLE gate keeps
+ * the record-pool scan off the overwhelmingly common cell, exactly as
+ * detailAt's own fast path does.
+ *
+ * Filled a vertical run at a time rather than by per-cell blockGet.  All
+ * 2,592 cells live in at most four window columns, so the residency check is
+ * paid 81 times (once per x/z pair) instead of per cell -- and within one
+ * pair, BLOCK_LOCAL_INDEX steps by exactly CHUNK_SIZE per block of height,
+ * so the packed bytes are a stride-4 walk whose nibble half never changes.
+ */
 static void fillMeshCache(int cx, int cz) {
   int bx, y, bz;
 
   mesh_cache_base_x = cx * CHUNK_SIZE;
   mesh_cache_base_z = cz * CHUNK_SIZE;
   for (bx = 0; bx <= CHUNK_SIZE; bx++) {
-    for (y = 0; y < MAX_Y; y++) {
-      for (bz = 0; bz <= CHUNK_SIZE; bz++) {
-        mesh_cache[bx][y][bz] = meshSourceBlock(mesh_cache_base_x + bx, y,
-          mesh_cache_base_z + bz);
-      }
-    }
+    int world_x = mesh_cache_base_x + bx;
+
     for (bz = 0; bz <= CHUNK_SIZE; bz++) {
+      int world_z = mesh_cache_base_z + bz;
+      /* The bx/bz == CHUNK_SIZE halo rows cross into the +x/+z neighbours;
+         every other cell is the compiled column itself. */
+      const u8 *column = columnSlotData(world_x >> CHUNK_SHIFT,
+        world_z >> CHUNK_SHIFT);
+      u8 *out = &mesh_cache[bx][0][bz];
+
+      if (column == (u8 *) 0) {
+        for (y = 0; y < MAX_Y; y++) {
+          *out = BLOCK_NOT_RESIDENT;
+          out += CHUNK_SIZE + 1;
+        }
+      } else {
+        const u8 *packed =
+          column + (BLOCK_LOCAL_INDEX(world_x, 0, world_z) >> 1);
+        u8 low_nibble = (u8) (world_z & 1);
+
+        for (y = 0; y < MAX_Y; y++) {
+          u8 block = low_nibble ? (u8) (*packed & 0x0F) : (u8) (*packed >> 4);
+
+          if (block == CRAFTING_TABLE && detailIsCustomAt(world_x, y,
+              world_z)) {
+            block = AIR;
+          }
+          *out = block;
+          out += CHUNK_SIZE + 1;
+          packed += CHUNK_SIZE / 2;
+        }
+      }
+      /* The y == MAX_Y plane stays AIR: the answer the YXZ axis's r + 1
+         boundary sample always read. */
       mesh_cache[bx][MAX_Y][bz] = AIR;
     }
   }
