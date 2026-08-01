@@ -2043,6 +2043,7 @@ void updatePlayers() {
       return;
     }
   }
+  worldEditTickMessage();
   diagPaintPhase(DIAG_PHASE_TREES);
   updateTrees(delta);
   diagPaintPhase(DIAG_PHASE_ITEMS);

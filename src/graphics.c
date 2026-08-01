@@ -14,6 +14,7 @@
 #include "textures.h"
 #include "day_cycle.h"
 #include "details.h"
+#include "edits.h"
 
 #define CROSSHAIR_SIZE 10
 #define HOTBAR_SLOT_COUNT INVENTORY_COLUMNS
@@ -4608,6 +4609,16 @@ static void drawGameText() {
         drawStackCount(stack, bar_x + slot * slot_size, bar_y, slot_size);
       }
     }
+  }
+  /* A refused edit is otherwise indistinguishable from a dropped controller
+     input: the block simply does not appear.  Say which of the two it was.
+     Drawn once rather than per viewport -- the pool is shared, so in co-op it
+     is one world's limit and not one player's. */
+  if (world_edit_full_message > 0) {
+    static const char *full_text = "BUILD LIMIT REACHED";
+
+    setHudTextColor(238, 120, 96);
+    drawString(full_text, (SCREEN_WD - hudStringWidth(full_text)) / 2, 178);
   }
   setHudTextColor(255, 255, 255);
 }
