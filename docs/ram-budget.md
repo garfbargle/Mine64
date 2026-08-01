@@ -4,7 +4,7 @@ Where Mine64's 4 MiB goes, in plain terms, and what can be got back.
 
 Measured by parsing the linked ELFs (`mine64.out`, `mine64-audio.out`) directly
 — section headers and symbol tables, no toolchain needed. Figures are from
-2026-08-01, at `cc5dd2d`, and the treemap in *Visualising it* comes out of the
+2026-08-01, at `d953a71`, and the treemap in *Visualising it* comes out of the
 same pass: `tools/ram_report.py` prints every number quoted below and rewrites
 the treemap's data from the same two files. Re-measure after anything large
 moves — one command, both builds:
@@ -27,7 +27,7 @@ Three chunks are spoken for before a single line of game code loads:
 |---|---|---|
 | Z buffer | 150 KiB | Depth-per-pixel, so near things draw over far things. One screen's worth. |
 | Framebuffers | 450 KiB | Three screens of pixels: one being shown, one being drawn, one spare. |
-| Audio heap | 88 KiB | *Audio builds only.* Working space for the sound engine. The SDK's default is 320 KiB; `src/audio.c` sizes it. |
+| Audio heap | 70 KiB | *Audio builds only.* Working space for the sound engine. The SDK's default is 320 KiB; `src/audio.c` sizes it, from a hardware reading. |
 
 NuSystem pins these at fixed addresses at the **top** of RDRAM and does not
 allocate them from the linked program. The program is laid out from the bottom
@@ -39,24 +39,25 @@ boots; on real hardware the picture or the sound quietly corrupts, because two
 things are writing the same bytes. `tools/check_ram.py` runs after every link
 precisely because the linker will not tell you.
 
-Current state, at `cc5dd2d`:
+Current state, at `d953a71`:
 
-- `make` — the program ends at `0x80372030`, **117 KiB** (120,784 bytes) below
+- `make` — the program ends at `0x803720B0`, **117 KiB** (120,656 bytes) below
   the framebuffers. Comfortable: the guard warns under 64 KiB.
-- `make audio` — **fails the guard.** The image ends at `0x803798D0` and the
-  heap begins at `0x80379800`: it is **208 bytes over**. See *What was spent
-  since the last measurement*.
+- `make audio` — the image ends at `0x80379950` and the heap begins at
+  `0x8037E000`: **17 KiB free** (18,096 bytes). It passes, and still trips the
+  warning, which is correct — see *Where this leaves each build*.
 
-Note what failing the guard does and does not do: `make audio` exits non-zero,
-but `build/mine64-audio.n64` has already been written and masked by then, and
-the Makefile has no `.DELETE_ON_ERROR`, so **the bad ROM is left sitting on
-disk**. Do not deploy it because the file is there. It is the one the guard
-just refused.
+The audio figure is newer than it looks. Two commits ago, at `cc5dd2d`, that
+build was 208 bytes *over*; sizing the heap from a hardware reading rather than
+the SDK's formula (`5aee62a`) returned 18 KiB and is what put it back under.
+The story is in *An audio heap sized for this game* and *What was spent since
+the last measurement*.
 
-Two hundred and eight bytes is a rounding error, and that is exactly the
-problem — the audio build has no margin at all, so any commit can take it out
-without the author touching anything audio-related. The five commits that did
-it are all ordinary gameplay work.
+One thing worth knowing about the failure mode, since the audio build has now
+hit it twice: when the guard fails, `make audio` exits non-zero, but
+`build/mine64-audio.n64` has already been written and masked by then, and the
+Makefile has no `.DELETE_ON_ERROR`, so **the bad ROM is left sitting on disk**.
+Do not deploy it because the file is there. It is the one the guard refused.
 
 ## What every big piece actually does
 
@@ -229,9 +230,10 @@ after.
 **Measured:** `nuRDPOutputBuf` is 65,536 bytes in the linked image, down from
 131,072. `make` reached 128 KiB free.
 
-### 3. An audio heap sized for this game — 232 KiB, audio build · `d972dcb`, `823fdfe`
+### 3. An audio heap sized for this game — 250 KiB, audio build · `d972dcb`, `823fdfe`, `5aee62a`
 
-This is the whole reason `make audio` was broken.
+This is the whole reason `make audio` was broken, and — twice now — the thing
+that unbroke it.
 
 The 320 KiB audio heap is **not** a NuSystem reservation we have to live with —
 `src/audio.c` passes the address and the size to `nuAuMgrInit` itself. 320 KiB
@@ -240,10 +242,14 @@ MIDI sequence player.
 
 Mine64 asks for 4 voices, 64 parameter updates, 32 × 1 KiB streaming buffers and
 a 2048-entry command list. Running the SDK's own `NU_AU_HEAP_MIN_SIZE` formula
-over those numbers gives roughly **73 KiB**. The reserve went in at 96 KiB and
-was tightened to **88 KiB** in `823fdfe` — the SDK estimate plus a fifth.
+over those numbers gives roughly **73 KiB**. The reserve went in at 96 KiB,
+was tightened to **88 KiB** in `823fdfe`, and is now **70 KiB** — and only the
+last of those three is worth anything, because only the last one is a
+measurement.
 
-Do it in this order:
+96 and 88 were both the formula plus a margin, and a margin on an estimate is
+just a larger estimate. The procedure the earlier revisions of this document
+kept prescribing was:
 
 1. Print `nuAuHeapGetUsed()` on the diagnostic HUD, next to the `A` row, and
    read it on hardware. That is the real number, not an estimate.
@@ -253,22 +259,31 @@ Do it in this order:
 4. Update `AUDIO_HEAP_SIZE` in `tools/check_ram.py` so the guard checks the new
    ceiling.
 
-**Measured:** with a 96 KiB heap, and with items 1 and 2 also in, `make audio`
-linked and passed the guard for the first time — but with only **2 KiB free**.
-Trimming the reserve to 88 KiB later bought another 8 KiB.
+**That reading has now been taken. The `U` row peaks at 64 KiB in game.**
+`MINE64_AU_HEAP_SIZE` is 70 KiB (`0x11800`, base `0x8037E000`), so the reserve
+is 6 KiB over a measurement instead of ~15 KiB over a guess — a smaller number
+and a better founded one. It returned 18 KiB, which is what took `make audio`
+from 208 bytes over to 17 KiB free.
 
-Two KiB was a link-time fact, not a runtime margin: the image and the heap did
-not overlap, so the ROM was correct and could go on hardware. What it was not is
-something to build on — and the next 19 KiB of code duly broke it, as the
-section after next records.
+**Why one reading settles it.** `alHeap` never frees, so `nuAuHeapGetUsed()` is
+monotonic and any reading is a high-water mark. More than that, every
+allocation of consequence happens in `initAudio`: `nuAuMgrInit` takes the
+voices, the 32 × 1 KiB DMA buffers and the command list, and
+`nuAuSndPlayerInit` takes `maxSounds` worth of sound state. `alSndpAllocate` at
+play time hands back one of those already-allocated slots rather than growing
+the heap. The peak is therefore reached before the first note plays, which is
+why it does not matter which sounds happened to fire during the reading.
 
-The way out is still to stop guessing at the heap. 88 KiB is the SDK formula's
-~73 KiB plus a fifth; the real figure is whatever `nuAuHeapGetUsed()` returns,
-and the `U` row on the diagnostic overlay reports it (audio builds only, **Z +
-D-pad Up**). Read `U` on hardware, set `MINE64_AU_HEAP_SIZE` from it with a
-sensible reserve, and the difference comes straight back as headroom. That
-reading has still not been taken, and it is now the cheapest headroom on the
-table.
+**What would invalidate it.** `maxVVoices`, `maxPVoices`, `maxUpdates`,
+`nuAuDmaBufNum`, `nuAuDmaBufSize`, `nuAuAcmdLen`, `maxSounds`. Those are the
+inputs to the number; touching any of them means re-reading `U` (audio builds
+only, **Z + D-pad Up**) rather than trusting the 70. An undersized heap still
+fails only on hardware and only as silence or corruption — no emulator
+reproduces it — so this is not a thing to adjust by reasoning.
+
+**Measured:** 96 KiB was the first heap that let `make audio` link at all, with
+2 KiB free. 88 KiB bought 8 KiB more. 70 KiB, from the reading, bought 18 KiB
+more and is where the build's first real margin came from.
 
 ### 4. One matrix per part instead of two — 24 KiB, both builds
 
@@ -360,6 +375,10 @@ entirely the five commits in between, and none of them is a memory change:
 | `make` headroom | 138 KiB | 117 KiB | −21 KiB |
 | `make audio` headroom | 12 KiB free | 208 B **over** | −20 KiB, +8 back from the heap |
 
+(`d953a71`, the moon-phase monster counts, landed after that and cost 128 bytes
+of code and no BSS at all — too small to move either headroom figure. The
+current numbers at the top of this document are from that commit.)
+
 **Nineteen KiB of it is code.** Only seven BSS symbols changed at all, and
 `special_flash_verts` (1,152 B, the sword specials) is the only one over 100
 bytes. The growth is in functions:
@@ -386,19 +405,24 @@ and 12 KiB of headroom is not headroom.** Five ordinary gameplay commits came
 to ~20 KiB of code. Anything under about 32 KiB free on `make audio` should be
 read as "one feature away from broken".
 
-The cheapest way back is item 3 above: read `U` on hardware and size
-`MINE64_AU_HEAP_SIZE` from the reading instead of the SDK's formula. The heap
-is currently 88 KiB against an estimate of 73; if the real peak is where the
-formula says, there is 8–16 KiB sitting there. Failing that, *Narrow the index*
-below is 64 KiB for a frame-time cost.
+The way back was item 3 above, and it is worth noting *why* that was the right
+lever rather than the two 64 KiB structural savings further down. Those cost
+frame time, on a game that has none to spare. Sizing the heap cost a hardware
+session and no frame time at all, because the 18 KiB was never doing anything —
+it was the difference between a formula's guess and what the allocator actually
+takes. The cheapest headroom is usually a number nobody has measured yet, not a
+structure nobody has rewritten yet.
+
+That lever is now spent. The heap is 6 KiB over a reading; there is nothing
+left in it. The next 17 KiB of features puts `make audio` back where it was,
+and the options at that point are the frame-time ones.
 
 ## What is still on the table
 
-Neither of these is free — both trade frame time for memory. That was an easy
-call to defer when `make audio` had 12 KiB free; with it 208 bytes over, the
-first one below is a real option again. Take the `U` reading first, though: the
-heap costs nothing but a hardware session, and these cost frame time on a game
-that has none to spare.
+Neither of these is free — both trade frame time for memory, on a game that has
+none to spare. The `U` reading was the cheap option and it has been taken, so
+these are what is left: they are no longer "listed because the analysis found
+them" but genuinely next, whenever `make audio` next runs out.
 
 There is also a correctness debt in the same neighbourhood as the matrix work,
 which is not a saving but will cost one. `detail_*`, `creature_*` and
@@ -474,22 +498,26 @@ exactly where the Z buffer ends. Nothing is wasted between them.
 
 Measured, not projected — every column is a real build in the container.
 
-| | before | + microcodes | + fifo & heap | + one matrix per part | now (`cc5dd2d`) |
-|---|---|---|---|---|---|
-| `make` | 35 KiB free ⚠ | 64 KiB free ✓ | 128 KiB free ✓ | 138 KiB free ✓ | **117 KiB free** ✓ |
-| `make audio` | 310 KiB over ✗ | 285 KiB over ✗ | 2 KiB free ⚠ | 12 KiB free ⚠ | **208 B over** ✗ |
+| | before | + microcodes | + fifo & heap | + matrix | `cc5dd2d` | now (`d953a71`) |
+|---|---|---|---|---|---|---|
+| `make` | 35 KiB free ⚠ | 64 KiB free ✓ | 128 KiB free ✓ | 138 KiB free ✓ | 117 KiB free ✓ | **117 KiB free** ✓ |
+| `make audio` | 310 KiB over ✗ | 285 KiB over ✗ | 2 KiB free ⚠ | 12 KiB free ⚠ | 208 B over ✗ | **17 KiB free** ⚠ |
 
 The default build went from tripping the headroom warning to nearly twice the
-margin the guard asks for, and it has 21 KiB of ordinary feature growth on top
-of that without complaint.
+margin the guard asks for, and it has absorbed 21 KiB of ordinary feature
+growth on top of that without complaint. It is not the build to worry about.
 
-The audio build has been the tight one throughout: it reached 2 KiB free,
-drifted to zero on ordinary feature growth, went 12 KiB over when the people
-work landed, came back to 12 KiB free on the matrix collapse that work turned
-up, gained 8 KiB when the heap reserve went to 88 KiB — and has now gone 208
-bytes over on five gameplay commits. It has never had real margin, and that is
-the actual finding of this measurement. It still wants the hardware pass for
-the heap's real size, and that pass is now blocking rather than nice to have.
+The audio build is. It reached 2 KiB free, drifted to zero on ordinary feature
+growth, went 12 KiB over when the people work landed, came back to 12 KiB free
+on the matrix collapse that work turned up, gained 8 KiB when the reserve went
+to 88 KiB, went 208 bytes over on five gameplay commits, and is at 17 KiB free
+now that the heap is sized from a hardware reading instead of a formula.
+
+Seventeen KiB is the most real margin it has ever had — the earlier figures
+were headroom against a heap reserve that was itself padded guesswork, and this
+one is not. It is still under the guard's warning threshold, and the warning
+should stay. Five gameplay commits cost 19 KiB. This buys about one more round
+of features, and the levers left after that all cost frame time.
 
 ## How to measure it yourself
 
@@ -508,8 +536,10 @@ the heap's real size, and that pass is now blocking rather than nice to have.
   the 6,656 limit, and `V` counts frames that had to shed terrain or were
   dropped.
 - **On hardware, audio heap** — the `U` row is `nuAuHeapGetUsed()` in KiB,
-  against the 88 KiB `MINE64_AU_HEAP_SIZE` reserves. Audio builds only, and
-  currently unbuildable — the guard has to be got under first.
+  against the 70 KiB `MINE64_AU_HEAP_SIZE` reserves. Audio builds only. It
+  reads 64, and the reserve is sized from that, so `U` above about 66 means
+  something new is allocating and the reserve has to move. Re-read it after
+  changing any voice, buffer or command-list count.
 - **Per-symbol breakdown** — `mips-n64-nm -S --size-sort mine64.out | tail -40`
   inside the build container, or parse the ELF symbol table directly if you have
   no toolchain to hand.
