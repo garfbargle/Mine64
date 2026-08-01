@@ -93,26 +93,80 @@ void appendQuad(QuadList *list, u8 bs, u8 bt, u8 width, u8 height, u8 block) {
 }
 
 /*
+ * One column's blocks, unpacked once per mesh compile.
+ *
+ * The greedy mesher samples every cell of every plane from three axes, and
+ * the dropping and creation phases each sample the pair again -- roughly
+ * 24,000 blockAt calls per column against its 2,048 blocks.  Every one of
+ * those calls repeated the window-key residency check, the nibble unpack,
+ * and (once any detail record existed) a second full blockGet inside the
+ * detail probe.  A mesh compile is the single largest unit of work the
+ * gameplay callback pays, and it is paid for every column a chunk crossing
+ * streams in, promotes, demotes, or re-seams -- so the redundancy here was
+ * most of the cost of walking.
+ *
+ * Resolve each cell exactly once instead: the column's own 8x32x8, plus the
+ * one-block halo the phases' r + 1 samples read across the +x and +z
+ * boundaries, with the detail override already applied.  The y == MAX_Y
+ * plane stays AIR, which is the answer the YXZ axis's old r >= MAX_Y
+ * special case gave.  ~2,600 resolved cells replace ~48,000 block reads.
+ */
+static u8 mesh_cache[CHUNK_SIZE + 1][MAX_Y + 1][CHUNK_SIZE + 1];
+static int mesh_cache_base_x;
+static int mesh_cache_base_z;
+
+/* The sampling rule blockAt always applied to one world cell: a detail
+   proxy meshes as AIR (its box is drawn by the detail pass), everything
+   else is the terrain nibble -- including BLOCK_NOT_RESIDENT, which the
+   scanline logic needs to tell "no block" from "face against unloaded
+   terrain".  The CRAFTING_TABLE gate keeps the record-pool scan off the
+   overwhelmingly common cell, exactly as detailAt's own fast path does. */
+static u8 meshSourceBlock(int x, int y, int z) {
+  u8 block = blockGet(x, y, z);
+
+  if (block == CRAFTING_TABLE && detailIsCustomAt(x, y, z)) {
+    return AIR;
+  }
+  return block;
+}
+
+static void fillMeshCache(int cx, int cz) {
+  int bx, y, bz;
+
+  mesh_cache_base_x = cx * CHUNK_SIZE;
+  mesh_cache_base_z = cz * CHUNK_SIZE;
+  for (bx = 0; bx <= CHUNK_SIZE; bx++) {
+    for (y = 0; y < MAX_Y; y++) {
+      for (bz = 0; bz <= CHUNK_SIZE; bz++) {
+        mesh_cache[bx][y][bz] = meshSourceBlock(mesh_cache_base_x + bx, y,
+          mesh_cache_base_z + bz);
+      }
+    }
+    for (bz = 0; bz <= CHUNK_SIZE; bz++) {
+      mesh_cache[bx][MAX_Y][bz] = AIR;
+    }
+  }
+}
+
+/*
  * World coordinates, not block-local ones: r, s and t are int because two of
  * them are world x/z in some permutation, and a streaming world walks both
  * negative and past 255 -- the u8 these used to be silently wrapped there,
  * which meshed every column outside blocks 0..255 as empty.
+ *
+ * Only valid between makeColumnGeometry filling the cache and the end of
+ * that column's compile: every caller is one of the two scanline phases,
+ * whose coordinates stay inside the cached column and its +1 halo.
  */
 u8 blockAt(int r, int s, int t, u8 axes) {
   if (axes == ZXY) {
-    if (detailIsCustomAt(s, t, r)) return AIR;
-    return blockGet(s, t, r);
+    return mesh_cache[s - mesh_cache_base_x][t][r - mesh_cache_base_z];
   } else if (axes == XZY) {
-    if (detailIsCustomAt(r, t, s)) return AIR;
-    return blockGet(r, t, s);
-  } else if (axes == YXZ) {
-    if (r >= MAX_Y) {
-      return 0;
-    }
-    if (detailIsCustomAt(s, r, t)) return AIR;
-    return blockGet(s, r, t);
+    return mesh_cache[r - mesh_cache_base_x][t][s - mesh_cache_base_z];
   }
-  return AIR;
+  /* YXZ: r is y and reaches MAX_Y through the r + 1 sample; the cache's
+     top plane holds the AIR that boundary always read. */
+  return mesh_cache[s - mesh_cache_base_x][r][t - mesh_cache_base_z];
 }
 
 void dropFront(Scanline *scan, QuadList *quads, u8 bs) {
@@ -432,6 +486,8 @@ void initGeometry() {
 void makeColumnGeometry(int cx, int cz) {
   u8 cy;
   ChunkQuads *cq;
+
+  fillMeshCache(cx, cz);
   for (cy = 0; cy < CHUNKS_Y; cy++) {
     cq = &column_quads[cy];
     makeChunkAxisQuads(cq->x_quads, cx, cz, cy, XZY, TRUE);
