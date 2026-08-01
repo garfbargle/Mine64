@@ -11,12 +11,19 @@
  *   wait N               neutral controller for N frames
  *   press BTN [N]        hold BTN for N frames (default 4), then release
  *   hold BTN N           same as press, explicit duration
- *   stick X Y N          analog stick at (X,Y), each in -80..80, for N frames
+ *   stick X Y N [BTN]    analog stick at (X,Y), each in -80..80, for N frames,
+ *                        optionally with BTN held for the same span
  *   shot [label]         capture a screenshot into --sshotdir
  *   stop                 end emulation
  *
  * BTN is one of A B Z START L R and the C/D pads as CUP CDOWN CLEFT CRIGHT /
  * DUP DDOWN DLEFT DRIGHT.  Several may be joined with '+' (e.g. "press A+Z").
+ *
+ * The optional button list on `stick` is what makes the chorded controls
+ * reachable at all: sprinting is L with a deflection, looking around is Z with
+ * a deflection, and mining while closing on a block is B with one.  None of
+ * them can be expressed as a button step and a stick step in sequence, because
+ * the game reads them from the same frame.
  *
  * Durations count rendered frames, not GetKeys calls: the game polls the pad
  * many times per frame while it is generating a world, so a poll-based timeline
@@ -155,9 +162,9 @@ static void loadScript(const char *path)
         if (hash != NULL)
             *hash = '\0';
 
-        char verb[64], arg[64];
+        char verb[64], arg[64], chord[64];
         long a = 0, b = 0, c = 0;
-        int fields = sscanf(line, "%63s %63s %ld %ld", verb, arg, &b, &c);
+        int fields = sscanf(line, "%63s %63s %ld %ld %63s", verb, arg, &b, &c, chord);
         if (fields < 1)
             continue;
 
@@ -175,6 +182,8 @@ static void loadScript(const char *path)
             step->frames = (fields >= 3) ? (int)b : 4;
         } else if (strcasecmp(verb, "stick") == 0 && fields >= 4) {
             a = strtol(arg, NULL, 10);
+            if (fields >= 5 && !applyButtonList(&step->keys, chord))
+                logf_(M64MSG_WARNING, "line %d: unknown button '%s'", lineNumber, chord);
             step->keys.X_AXIS = clampAxis(a);
             step->keys.Y_AXIS = clampAxis(b);
             step->frames = (int)c;

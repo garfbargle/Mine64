@@ -1,0 +1,63 @@
+# The first-person arm through one attack swing, sword in hand.
+#
+#   tools/emu/run.sh tools/emu/scripts/first-person-sword.txt build/shots-sword
+#
+# BONUS KIT is the tenth row of the setup card and starts the player holding a
+# wood pickaxe, axe and sword, so the swing can be filmed without scripting a
+# craft.  C-right cycles the hotbar, and two of them reach the sword.
+
+wait 960                # title preview: menuAct will not launch before it
+press A 8
+wait 40                 # create-world card, cursor on CLASSIC
+
+press DDOWN 8
+wait 5
+press DDOWN 8
+wait 5
+press DDOWN 8
+wait 5
+press DDOWN 8
+wait 5
+press DDOWN 8
+wait 5
+press DDOWN 8
+wait 5
+press DDOWN 8
+wait 5
+press DDOWN 8
+wait 5
+press DDOWN 8
+wait 5
+press DDOWN 8
+wait 10
+shot kit-row            # cursor on BONUS KIT
+press A 8               # switch it on -- a kit costs no rebuild
+wait 20
+shot kit-on
+
+press START 8
+wait 60                 # name keyboard
+press START 8
+wait 300                # dropped into the world
+
+stick -14 0 57          # come about onto the open meadow
+wait 10
+press CRIGHT 8
+wait 6
+press CRIGHT 8
+wait 10
+shot rest               # sword selected, arm at rest
+
+press B 2               # tap: the swing arc
+shot swing-0
+shot swing-1
+shot swing-2
+shot swing-3
+shot swing-4
+shot swing-5
+shot swing-6
+shot swing-7
+shot swing-8
+shot swing-9
+
+stop
