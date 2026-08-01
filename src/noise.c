@@ -3,7 +3,14 @@
 
 // From https://gist.github.com/nowl/828013
 
-static int hash[] = {208,34,231,213,32,248,233,56,161,78,24,140,71,48,140,254,245,255,247,247,40,
+/*
+ * const u8, not int: every value fits a byte, so the table is 256 bytes of
+ * read-only data instead of 1 KiB of writable .data.  hashAt is the innermost
+ * operation of all terrain generation and the accesses are effectively
+ * random, so the smaller footprint is a quarter of the D-cache pressure of
+ * the wider table it replaces.
+ */
+static const u8 hash[] = {208,34,231,213,32,248,233,56,161,78,24,140,71,48,140,254,245,255,247,247,40,
                      185,248,251,245,28,124,204,204,76,36,1,107,28,234,163,202,224,245,128,167,204,
                      9,92,217,54,239,174,173,102,193,189,190,121,100,108,167,44,43,77,180,204,8,81,
                      70,223,11,38,24,254,210,210,177,32,81,195,243,125,8,169,112,32,97,53,195,13,
@@ -18,30 +25,9 @@ static int hash[] = {208,34,231,213,32,248,233,56,161,78,24,140,71,48,140,254,24
 
 static int hashAt(int value)
 {
-    value %= 256;
-    if (value < 0) {
-        value += 256;
-    }
-    return hash[value];
-}
-
-/* These sample world_seed, never the gameplay RNG.  They used to read `seed`,
- * which random() advances on every call -- so the noise field these describe
- * silently became a different field partway through generating a world. */
-int noise2(int x, int y)
-{
-    int tmp = hashAt((int)((u32)y + world_seed));
-    return hashAt(tmp + x);
-}
-
-/* A small value-noise variant for volumetric terrain features.  Keeping the
- * same hash table as the 2D sampler makes caves deterministic for a world
- * seed without adding a second random-state dependency. */
-static int noise3(int x, int y, int z)
-{
-    int tmp = hashAt((int)((u32)z + world_seed));
-    tmp = hashAt(tmp + y);
-    return hashAt(tmp + x);
+    /* Two's complement makes the mask exactly the old "modulo, then fix the
+       sign" pair: both reduce to the value's low eight bits. */
+    return hash[value & 255];
 }
 
 /*
@@ -70,18 +56,33 @@ float smooth_inter(float x, float y, float s)
     return lin_inter(x, y, s * s * (3-2*s));
 }
 
+/*
+ * These sample world_seed, never the gameplay RNG.  They used to read `seed`,
+ * which random() advances on every call -- so the noise field these describe
+ * silently became a different field partway through generating a world.
+ *
+ * The corner hashes share their outer links: the four corners of a 2D cell
+ * lie on two rows, so the row hash `hashAt(y + seed)` is computed once per
+ * row rather than once per corner, and the x cubic is shared between the two
+ * lerps it feeds.  Algebraically identical to hashing every corner from
+ * scratch -- the host harness checks worlds are byte-identical -- but six
+ * table lookups per sample instead of eight.
+ */
 float noise2d(float x, float y)
 {
     int x_int = floorToInt(x);
     int y_int = floorToInt(y);
     float x_frac = x - x_int;
     float y_frac = y - y_int;
-    int s = noise2(x_int, y_int);
-    int t = noise2(x_int+1, y_int);
-    int u = noise2(x_int, y_int+1);
-    int v = noise2(x_int+1, y_int+1);
-    float low = smooth_inter(s, t, x_frac);
-    float high = smooth_inter(u, v, x_frac);
+    int row0 = hashAt((int)((u32)y_int + world_seed));
+    int row1 = hashAt((int)((u32)(y_int + 1) + world_seed));
+    int s = hashAt(row0 + x_int);
+    int t = hashAt(row0 + x_int + 1);
+    int u = hashAt(row1 + x_int);
+    int v = hashAt(row1 + x_int + 1);
+    float x_s = x_frac * x_frac * (3 - 2 * x_frac);
+    float low = lin_inter(s, t, x_s);
+    float high = lin_inter(u, v, x_s);
     return smooth_inter(low, high, y_frac);
 }
 
@@ -106,6 +107,13 @@ float perlin2d(float x, float y, float freq, int depth)
     return fin/div;
 }
 
+/*
+ * The 3D sampler chains hashes z, then y, then x -- the same links the old
+ * per-corner noise3 walked, kept so caves stay deterministic for a world
+ * seed.  Its eight corners share two z hashes and four (z, y) prefixes, so
+ * hoisting each level computes fourteen lookups where hashing every corner
+ * independently cost twenty-four.  Same values, same field.
+ */
 static float noise3d(float x, float y, float z)
 {
     int x_int = floorToInt(x);
@@ -114,16 +122,20 @@ static float noise3d(float x, float y, float z)
     float x_frac = x - x_int;
     float y_frac = y - y_int;
     float z_frac = z - z_int;
-    float x00 = smooth_inter(noise3(x_int,     y_int,     z_int),
-                             noise3(x_int + 1, y_int,     z_int), x_frac);
-    float x10 = smooth_inter(noise3(x_int,     y_int + 1, z_int),
-                             noise3(x_int + 1, y_int + 1, z_int), x_frac);
-    float x01 = smooth_inter(noise3(x_int,     y_int,     z_int + 1),
-                             noise3(x_int + 1, y_int,     z_int + 1), x_frac);
-    float x11 = smooth_inter(noise3(x_int,     y_int + 1, z_int + 1),
-                             noise3(x_int + 1, y_int + 1, z_int + 1), x_frac);
-    float low = smooth_inter(x00, x10, y_frac);
-    float high = smooth_inter(x01, x11, y_frac);
+    int plane0 = hashAt((int)((u32)z_int + world_seed));
+    int plane1 = hashAt((int)((u32)(z_int + 1) + world_seed));
+    int row00 = hashAt(plane0 + y_int);
+    int row01 = hashAt(plane0 + y_int + 1);
+    int row10 = hashAt(plane1 + y_int);
+    int row11 = hashAt(plane1 + y_int + 1);
+    float x_s = x_frac * x_frac * (3 - 2 * x_frac);
+    float y_s = y_frac * y_frac * (3 - 2 * y_frac);
+    float x00 = lin_inter(hashAt(row00 + x_int), hashAt(row00 + x_int + 1), x_s);
+    float x10 = lin_inter(hashAt(row01 + x_int), hashAt(row01 + x_int + 1), x_s);
+    float x01 = lin_inter(hashAt(row10 + x_int), hashAt(row10 + x_int + 1), x_s);
+    float x11 = lin_inter(hashAt(row11 + x_int), hashAt(row11 + x_int + 1), x_s);
+    float low = lin_inter(x00, x10, y_s);
+    float high = lin_inter(x01, x11, y_s);
 
     return smooth_inter(low, high, z_frac);
 }
