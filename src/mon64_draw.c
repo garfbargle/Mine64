@@ -796,11 +796,15 @@ void mon64DrawBattleInterface(void) {
 /*
  * The overworld prompt.
  *
- * One line, above the hotbar, naming what is in front of the player and what
- * A would do with it.  This is the entire encounter interface: the game never
- * takes the player out of what they were doing, so the prompt has to carry
- * both the invitation and the species, or walking past a creature you wanted
- * becomes a thing that happens.
+ * One line, above the hotbar, naming what is in front of the player.  This is
+ * the entire encounter interface: the game never takes the player out of what
+ * they were doing, so the badge appearing at all has to be the invitation, or
+ * walking past a creature you wanted becomes a thing that happens.
+ *
+ * A engages, but the badge does not say so.  The button glyph sat directly in
+ * front of the species name, where it read as an article rather than a button
+ * -- "A EMBEAR LV 8" -- and A is the only thing the player has ever pressed
+ * to act on what is in front of them.
  */
 void mon64DrawPrompt(u8 player_num, u32 center_x, u32 bottom_y) {
   u8 target;
@@ -827,7 +831,7 @@ void mon64DrawPrompt(u8 player_num, u32 center_x, u32 bottom_y) {
 
   /* Sized to its contents rather than fixed, so a four-player viewport gets
      a badge that fits inside it and a nine-letter species still does. */
-  width = 30;
+  width = 20;
   for (x = 0; label[x]; x++) {
     width += charWidth(label[x]);
   }
@@ -850,8 +854,6 @@ void mon64DrawPrompt(u8 player_num, u32 center_x, u32 bottom_y) {
   beginText();
   textColor(240, 226, 198);
   x = left + 16;
-  drawChar('A', x, top + 4);
-  x += charWidth('A') + 3;
   drawString(label, x, top + 4);
   if (roamer->kind != MON_ROAMER_TRAINER) {
     x += 4;
