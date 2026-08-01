@@ -1,190 +1,247 @@
 # Mine64 for Nintendo 64
 
-Mine64 is a compact block-building game for original Nintendo 64 hardware.
-The world is no longer a fixed map: terrain streams around the player in a
-residency window, so it can be walked in any direction without end, on an
-unmodified 4 MiB console.
+**A block-building game with no edges, on a stock 4 MiB console.**
+
+Pick a direction and start walking. There is no map boundary to hit, no
+loading screen to wait through, and no Expansion Pak in the slot — just
+terrain that keeps arriving as you go, forever, on the same grey box that
+shipped in 1996.
 
 ![Mine64 box art](mine64.png)
 
 ![Mine64 in-game screenshot](game.png)
 
-## The streaming world
+---
 
-* **Walkably unbounded.** Terrain is generated on demand from
-  `(x, z, world_seed)` into a 32×32-column residency window, and released
-  again behind the player. Because generation is a pure function, an
-  unmodified column costs nothing to evict: it comes back identical.
-* **View distance ~80 blocks**, twice the original fixed world, and view
-  distance deliberately outranks near detail: full-detail terrain is a
-  small bubble around the player and everything beyond it is a surface
-  shell of roughly 20–35 quads per column instead of ~170. Every column
-  renders from baked vertex buffers with no per-quad matrices — hardware
-  measurement put the two per-quad matrix operations of the shells' former
-  compact format, across a hundred visible far columns, at the bulk of the
-  RSP's standing frame.
-* **One 1.25 MiB mesh arena**, managed as first-fit blocks with an
-  incremental relocation defrag that slides a single block per frame. This
-  replaced a double-buffered pair plus a stop-the-world compaction pass,
-  and later absorbed the 128 KiB per-block matrix table whose retirement
-  let every column bake its vertices.
-* **Distance fog hugs the streaming frontier.** While the view is fully
-  meshed the band parks past the mesh ring, where it costs nothing (its
-  old fixed placement measured 5 fps on hardware). The moment culling sees
-  a frustum cell with no geometry behind it — a player outrunning the
-  mesher — the band slides in so terrain pops in behind full haze instead
-  of out of the void, then relaxes back out as meshing catches up. Only
-  the columns that actually reach the band pay fog's two-cycle rate, and
-  Z + D-pad Left/Right bias where it rests relative to the hole.
-* **Deferred underground.** Far columns generate surface-only; the cave and
-  ore carve runs within five chunks of the player. Caves never breach their
-  three-block roof, so the surface is identical either way and the frontier
-  is invisible — verified byte-identical by `tools/gentest`.
-* **Landmarks worth walking to.** Hamlets (cottages, a well, connecting
-  paths) and ruins are placed on a coarse 64×64 macrocell grid, hashed from
-  the coordinate like everything else, so they need no stored map.
-* **Torches, stairs, doors, and windows** live in a small sparse record pool
-  rather than in the packed terrain, which has exactly sixteen block IDs and
-  no room for shape or state. Player edits outside the original footprint
-  are likewise kept as a sparse journal, so an effectively infinite world
-  does not imply effectively infinite RDRAM.
-* **Survival pressure**: a hunger bar that movement drains and food refills,
-  zombies and spiders alongside the original night slimes, and a mob pool
-  that retreats at sunrise.
+## An endless world
 
-## v0.4 highlights
+Mine64 doesn't store a world. It *grows* one, out of your seed and your
+coordinates, in the moment you walk up to it — and lets it go again once you
+walk away. Come back later and it's the same hill you left, because the same
+arithmetic gives the same answer twice.
 
-* Coal and iron form compact underground veins above an unbreakable bedrock
-  floor. Mossy waystones provide sparse landmarks, placed by a per-column
-  probability so they mean something in a world with no fixed size.
-* Wooden, stone, and iron swords, pickaxes, and axes have distinct held,
-  pickup, hotbar, and inventory silhouettes.
-* Sprint toward a one-block obstacle while holding **L + R** to vault it.
-  Long falls hurt, while slime gel can automatically cushion one landing.
-* A bounded eight-slot mob pool supports sheep, pigs, night slimes, zombies,
-  and spiders, budgeted at five passive and three hostile so adding species
-  never becomes an unbounded AI or matrix cost. Animals flee attackers and
-  drop species-specific resources; hostiles telegraph a strike before it
-  lands, and leave at sunrise rather than lingering.
-* Apples and raw meat restore health and food. The HUD includes half-hearts,
-  a food bar, a compass, progressive opening objectives, and a compact
-  C-button guide.
-* Runtime terrain is nibble-packed, halving the live world-array cost — which
-  is what makes a 32×32-column window affordable at 1 MiB.
+What that buys you:
 
-* Up to four players: Controller 2 joins with horizontal split-screen; adding
-  Player 3 or 4 switches to a 2x2 split-screen. Players join a running world
-  in controller order with **START** on their controller.
-* All players have independent movement, camera control, targeting, block
-  selection, placement, breaking, inventory management, and crafting.
-* Split-screen render commands and every camera/entity matrix are
-  double-buffered. This prevents the RSP from reading a camera transform while
-  the CPU prepares the following frame, an important difference on real N64
-  hardware.
-* Each player sees the other as a lightweight Steve-style character, with a
-  walking swing and head/eye direction that follows their camera.
-* Co-op saves both player positions and inventories; older single-player saves
-  still load safely.
-* Save v10 preserves exact hotbar, inventory, crafting, carried-item,
-  objective, hunger, world clock, tree, and packed-terrain state.
-  It validates player/world data with a checksum and uses temporary plus backup
-  files so an interrupted cartridge write can recover the previous world.
-  It still writes the original fixed footprint, so saving is refused away
-  from spawn until per-chunk diff saves land, and torches, stairs, doors and
-  windows are not yet carried — see *Known gaps* below.
-* Gatherable terrain becomes a protected physical pickup. Rock requires a
-  pickaxe to yield resources; coal accepts any pickaxe, while iron requires
-  stone or better. Axes accelerate wood and preserve whole-tree felling.
-* New worlds combine oceans, lakes, winding river channels, lowlands, rolling
-  grasslands, ridge-shaped mountain regions, beaches/deserts, variable soil
-  depths, exposed stone cliffs, and underground cave networks.
-* Every gatherable block becomes a physical pickup, which pops out, settles,
-  and then pulls into the nearby player. Tools are non-stackable, pickups are
-  protected when the entity pool is full, and partial inventory transfers can
-  no longer duplicate items.
-* Long frame hitches are clamped before physics simulation, preventing world
-  generation or storage delays from pushing players through terrain.
-* Co-op deliberately uses a narrower view and no more than 24 visible columns
-  per player in two-player mode, or 8 in four-player mode. This keeps the RSP
-  and display-list workload within the limits of an unmodified N64.
-* Original, generated 16-colour block tiles and UI font replace the former
-  external Minecraft-art build dependency.
+* **Walk in any direction, without end.** No borders, no invisible walls, no
+  "you have reached the edge of the world."
+* **A view about 80 blocks deep** — twice the old fixed map — with distance fog
+  sitting out past the horizon where it belongs.
+* **Six biomes** that you find by travelling: plains, forest, desert, jungle,
+  highland and bare scree, each with its own palette of stone, soil and sand.
+* **Six kinds of tree.** An open-grown plains oak spreads wide; the same tree
+  in dense forest grows tall and narrow. Jungle trunks run bare for six blocks
+  before bursting into a crown, conifers climb in a spire, deserts get bleached
+  snags and cactus.
+* **Oceans, lakes and winding rivers**, rolling grassland, ridge-shaped
+  mountains, beaches, cliffs of exposed stone, and cave networks underneath all
+  of it.
+* **Landmarks worth walking to.** Hamlets with cottages, a well and connecting
+  paths, ruins to pick over, and mossy waystones scattered thinly enough that
+  finding one means something.
+
+All of it is drawn with original 16-colour art — the block tiles and the UI
+font are generated by the build, so nothing here needs Minecraft's assets.
+
+None of it is placed by hand and none of it is stored on the cartridge. The
+[full mechanism is written up below](#how-the-world-goes-on-forever) if you
+want to know how it fits in four megabytes.
+
+## Make the world yours
+
+New worlds start on a setup card, with the world itself turning slowly beside
+it — rebuilt live as you change your mind. Pick a shape:
+
+| Shape | What you get |
+| --- | --- |
+| **Classic** | Hills, lakes, and winding rivers |
+| **Islands** | An ocean scattered with islands |
+| **Skylands** | Islands adrift above the sea, open air underneath |
+| **Flat** | A level canvas to build on |
+
+Then flip whatever you like: **Caves**, **Ruins**, **Forests**, **Critters**
+(more animals, and they follow you around), **Peaceful** (nothing hostile after
+dark), **Bonus kit** (start with wooden tools, torches, planks and apples), and
+**64MON**. Caves and Ruins sit out a Skylands world — the islands are a few
+blocks thick, with nothing to tunnel through and nowhere to found a hamlet.
+
+**L** or **R** rerolls the seed until you see something you like, **A** flips
+the highlighted row, and **START** takes you to naming it. Your choices are
+locked in when the world is created and stored in the save, so a world always
+regenerates as the world you made.
+
+## Dig, build, craft
+
+Mine with **B** and place with **A**. Break a block and it pops out as a real
+object that settles on the ground and then flies to you — nothing vanishes into
+an invisible inventory.
+
+* **Tools matter.** Stone needs a pickaxe before it gives you anything. Coal
+  takes any pickaxe; iron wants stone or better. Axes chew through wood and
+  fell a whole tree in one go. Bedrock doesn't break, ever.
+* **Wood, stone and iron** swords, pickaxes and axes, each with its own
+  silhouette in your hand, on the ground, in the hotbar and in the pack.
+* **Crafting with no puzzle grid.** Pocket recipes give you planks, sticks, a
+  crafting table and torches anywhere. Put a table down and look at it for the
+  full list — tools, stairs, doors and glass windows. Ingredients come straight
+  out of your pack; you never arrange a hidden 2×2 or 3×3.
+* **Torches light the room** around them. Doors open and close. Stairs and
+  windows go up like any other block.
+* **Build as much as you want.** Everywhere inside your saved home region,
+  every single cell can be whatever you put there — there's no edit budget to
+  run out of and no point where building quietly stops working.
+
+## Survive
+
+Ten hearts and a food bar. Movement drains food and food refills it; sprinting
+only works while there's something left in the bar. A full bar slowly heals
+you, and an empty one wears you down to a last half-heart rather than killing
+you outright.
+
+* **Apples, mutton, pork and chicken** restore health and hunger.
+* **Long falls hurt** — but slime gel in your pack will cushion one landing for
+  you, automatically.
+* **Vault obstacles.** Sprint at a one-block ledge holding **L + R** and you'll
+  hop it without breaking stride.
+* **Water** slows you down and cancels fall damage. Hold **R** to swim up, let
+  go to sink gently.
+* **Nights are dangerous.** Slimes, zombies and spiders come out after dark.
+  The hostile ones wind up visibly before they hit you, so a strike is
+  something you can see coming — and they clear out at sunrise instead of
+  hanging around forever.
+* **The HUD stays out of the way**: half-hearts, food, a compass that scrolls
+  like a ribbon rather than snapping between letters, a short list of opening
+  objectives, and a compact reminder of what the C buttons do.
+
+## The animals
+
+Sheep, pigs and chickens wander the world, and they notice you.
+
+Heads turn to follow you as you walk past. Bodies swing round to a new heading
+at a believable rate, so an animal changing its mind is something you watch
+happen. Hit one and it bolts.
+
+Hold out an apple and the nearest ones come over, stopping a polite couple of
+blocks away to watch it. Feed two grown animals of the same kind and they'll go
+find each other, and a baby turns up — a perfect miniature of its parents at
+half scale, trotting after them. Feed the baby and it grows up sooner. Feed an
+animal you just punched and it forgives you.
+
+Babies don't drop meat, so a herd is worth keeping alive rather than farming
+down.
+
+## Sun, moon, and dark
+
+The sun rises in the east on a tilted orbit, which means it lights all four
+faces of a block over the course of a day and throws shadows on the diagonal
+instead of straight down one axis.
+
+The moon runs the other half of the same clock, and it has phases. The lit
+sliver you can see in the sky is exactly the light you're standing in, so a
+full moon overhead is genuinely brighter — bright enough to cast a real, faint
+shadow on the ground — and a new moon leaves you in the dark with a torch and
+whatever is out there with you.
 
 ## 64MON
 
-A creature-collecting mod, chosen on the create-world card and locked in with
-the rest of a world's mods. Eighteen species across six type families wander
-the world; the first one you walk up to joins you, the rest are caught with
-slime gel once they are weak enough. Battles are turn-based and happen *in
-the world* — your own view, your own terrain, the pair squaring up a few
-blocks in front of you — against wild creatures, wandering trainers whose
-teams are a pure function of where they were found, or another player.
+A creature-collecting mod you can switch on when you make a world.
 
-It is built to cost the console nothing it was not already spending: the four
-roamers come out of the passive mob budget rather than adding a pool beside
-it, a battle is a pause inside the game rather than a screen of its own, and
-every rule in it is integer arithmetic. Full design notes, the type chart and
-the roster are in [64MON](docs/64mon.md).
+Eighteen species across six type families wander the land. The first one you
+walk up to joins you; the rest you catch with slime gel once they're worn down.
+Battles are turn-based and happen **right where you're standing** — your view,
+your terrain, the two of them squaring up a few blocks in front of you. No
+battle screen, no transition. You'll fight wild creatures, wandering trainers
+whose teams depend on where you found them, and — with **Z + A** — each other.
+
+Full design notes, the type chart and the roster are in
+[64MON](docs/64mon.md).
+
+## Four players, one console
+
+Plug in a second controller and press **START** to drop into a running world;
+the screen splits horizontally. A third or fourth player switches it to
+quarters.
+
+Everyone gets their own everything — movement, camera, targeting, hotbar,
+mining, building, pack and crafting. You see each other as blocky little
+characters whose arms swing as they walk and whose heads turn to follow where
+they're actually looking. Face a friend and tap **B** to swing at them. Lose
+all ten hearts and you respawn at full health with your inventory intact.
 
 ## Controls
 
 | Control | Action |
 | --- | --- |
-| Analog stick | Walk |
+| Analog stick | Left/right steers, up/down walks |
+| Z + C-up | Switch the stick between steering and strafing |
 | Hold L + analog stick | Sprint |
-| Hold Z + analog stick | Look around |
+| Hold Z + analog stick | Look around without turning the body |
 | C-up | Toggle first-person / third-person camera |
 | C-down | Open the pack or the targeted crafting table |
 | C-left / C-right | Cycle the selected hotbar block |
-| A | Open a door, use a crafting table, place a block or torch, or eat held food |
+| A | Open a door, use a crafting table, place a block or torch, feed an apple to the animal in front of you, or eat held food |
 | Hold B / tap B | Mine / punch a nearby mob; swords deal more damage |
 | START | Open / close that player's inventory |
-| R | Jump |
+| R | Jump; hold to swim up |
 | Hold L + R while moving | Vault a one-block obstacle |
-| D-pad (either player) | Save, when cartridge storage is available |
+| D-pad | Save, when cartridge storage is available |
 | Z + D-pad Up | Toggle the developer diagnostics overlay |
 | Controller 2-4 START | Join co-op during a running world |
 | A facing a creature | Battle it (64MON worlds) |
 | Z + A facing a player | Challenge them to a creature battle |
 
-Sprinting costs food, so **L** only sprints while the food bar has something
-left in it. A full bar slowly restores health; an empty one drains health
-down to a last half-heart rather than killing outright.
+**About the stick.** The N64 has one of them, and by default Mine64 treats it
+as a rudder rather than a strafe: push sideways and you turn, so the camera is
+always pointing where you're going and you never have to fight it. Only forward
+and back walk you — if sideways moved you too, lining up on the block in front
+of you would mean shuffling away from it. If you'd rather strafe, **Z + C-up**
+swaps the modes and tells you which one you landed in.
 
-The bottom hotbar starts empty. Its bright slot and the enlarged block at the
-lower right show what each player is holding; that is the block placed with
-**A**. Hold B to mine—releasing B or looking away resets the breaking progress.
-Gatherable terrain pops out before flying into the player. Rock requires a
-pickaxe to yield resources; coal accepts any pickaxe, while iron requires
-stone or better. Axes speed up logs and planks, and bedrock does not break.
-In co-op, face a nearby player and tap **B** to swing. A player who loses all
-ten hearts respawns at full health with their inventory intact. Sheep and pigs
-flee attacks; hostile slimes pursue players at night.
+**Mining and picking up.** Hold **B** to mine; letting go or looking away
+resets the progress. What you break pops out, settles, and then pulls toward
+you. Tools don't stack, and a full pickup pool protects what's already on the
+ground instead of dropping it.
 
-Either player can press **START** or **C-down** to open their pack. The analog
-stick alone moves the cursor: the left pane contains three storage rows plus
-the nine-slot hotbar, and moving right from the last column enters the recipe
-browser. Press **A** to move a stack or craft one recipe and **B** to return to
-the game. In the pack, **C-left** takes or places one item, **C-right**
-quick-moves a stack between storage and the hotbar, **C-down** drops one, and
-**C-up** drops the full selected stack. In the recipe browser, **C-up** crafts
-the maximum amount that both ingredients and free space allow.
+**The pack.** **START** or **C-down** opens it. The stick alone moves the
+cursor: three storage rows plus your nine hotbar slots on the left, and moving
+right off the last column takes you into the recipe browser. **A** moves a
+stack or crafts one, **B** goes back to the game. **C-left** takes or places a
+single item, **C-right** shoves a stack between storage and hotbar, **C-down**
+drops one, **C-up** drops the lot. In the recipe browser **C-up** crafts as
+many as your ingredients and free space allow.
 
-Pocket crafting offers planks, sticks, a crafting table, and torches. Place a
-crafting table, look at it, then press **A**, **C-down**, or **START** to open
-the full workbench recipe list. Planks make wooden tools, cobblestone makes
-stone tools, and iron chunks make iron tools. The workbench also builds
-stairs, doors, and glass windows. Ingredients are consumed directly from the
-pack, so crafting never requires manually arranging a hidden 2×2 or 3×3 grid.
+**Feeding.** Hold an apple, face an animal, and an **A FEED** prompt appears —
+press **A** and the animal eats it instead of you.
 
-Torches, stairs, doors, and windows are *details*: their shape or state
-cannot be expressed by the sixteen block IDs the packed world allows, so each
-one keeps a small record beside the terrain and occupies its cell with a
-crafting-table proxy. A torch brightens the light around it; a door is
-opened and closed with **A**. Because an old ID-10 cell with no record is
-still an ordinary crafting table, existing saves are unaffected.
+## Saving your world
 
-## SummerCart64
+Press the **D-pad** to save, any time, anywhere — including a long walk from
+where you started.
+
+Three slots, each with a name you type on an on-screen keyboard. A save keeps
+your exact hotbar, pack, crafting state, carried item, objectives, hunger, the
+world clock, every tree, and the terrain of your home region — plus the seed
+and the settings the world was made with, so everything beyond the saved region
+regenerates as the same world it always was. Co-op saves everyone's position
+and inventory, and old single-player saves still load fine.
+
+Writes are checksummed and go through a temporary file with a backup, so a
+cartridge write interrupted halfway can fall back to the previous world instead
+of losing it.
+
+Saves live on your flash cartridge's SD card. See
+[Loading it onto a console](#loading-it-onto-a-console).
+
+---
+
+# Under the hood
+
+Everything below is for people working on Mine64 rather than playing it:
+building the ROM, getting it onto a console, the tooling, and how the thing
+actually works.
+
+## Loading it onto a console
+
+### SummerCart64
 
 For the normal SummerCart64 menu workflow, upload the built ROM to the
 cartridge SD card, then select it in the menu. This is the persistent,
@@ -343,6 +400,9 @@ each tile to its own N64 palette. Coal ore, iron ore, bedrock, and mossy
 cobblestone are generated as companion tiles, keeping the editable atlas at
 its compact 4×3 size.
 
+For the complete art-to-cartridge walkthrough, see
+[Custom texture workflow](docs/custom-textures.md).
+
 ### Music asset pipeline
 
 The audio ROM consumes versioned, N64-ready assets in `assets/audio/`; it does
@@ -394,10 +454,9 @@ there are ignored. The effects are generated deterministically by
 `tools/generate_sfx.py`; review and commit the PCM inputs and metadata header
 after regenerating them.
 
-For the complete art-to-cartridge walkthrough, see
-[Custom texture workflow](docs/custom-textures.md).
+## Tooling
 
-## Offline model preview
+### Offline model preview
 
 Every model in the game is untextured boxes and quads run through
 `guRotateRPY` and `guPerspective`, and none of that needs an N64 to evaluate.
@@ -415,7 +474,7 @@ game. It answers where a part ends up, what occludes what, and whether the
 framing works -- not how fast it runs. See
 [Offline model preview](docs/offline-preview.md).
 
-## Emulator screenshots
+### Emulator screenshots
 
 `tools/emu` captures the GUI without a flashcart. It drives mupen64plus
 (`brew install mupen64plus`) through a replacement input plugin that replays a
@@ -436,15 +495,232 @@ not reproduce, so legibility, performance, and RDP work still belong on
 hardware. For the script grammar and the frame-timing rules, see
 [Emulator screenshots](docs/emulator-screenshots.md).
 
+## How the world goes on forever
+
+The short version: **the world is not stored anywhere, so there is nothing to
+run out of.** Terrain is a pure function of `(x, z, world_seed, world_mods)` —
+a few octaves of Perlin noise and a pile of integer hashes — and what the
+console holds is not a map but a small patch of that function, evaluated
+around wherever the player happens to be standing. Walk north and the patch
+follows; the ground behind you is discarded, and it is safe to discard because
+walking back re-evaluates the same function at the same coordinates and gets
+the same blocks. On a 4 MiB console the size of the world is not a memory
+question at all. It is a question of how fast the patch can be moved.
+
+### The window
+
+Live terrain is a **32×32-column wrapping window**, 1 MiB nibble-packed. A
+column is 8×8 blocks across and the full 32 tall, split into four vertical
+8×8×8 chunks; height is fixed, so this is 2D streaming with no vertical
+paging.
+
+A column's slot is simply the low five bits of each of its chunk coordinates,
+so the window does not scroll — walking just starts addressing different
+slots, and the columns that fall out of range are overwritten in place. Block
+data is never moved. Whether a slot is live is folded into bit 31 of the key
+it stores, so the residency test costs one load and one compare, which matters
+because `blockGet` sits in the mesher's inner loop.
+
+The window is 256 blocks across and the outermost ring below reaches 200, and
+that slack is deliberate: it cushions the wrap so a column arriving on one
+side cannot land on a slot the other side is still using.
+
+### Three rings and five stages
+
+Residency is three concentric **square** rings, measured in chunks
+(Chebyshev):
+
+| Ring | Radius | What has happened inside it |
+| --- | --- | --- |
+| Terrain | 12 chunks | Blocks exist: surface, soil, stone, water |
+| Structures | 11 chunks | Hamlets, ruins and waystones stamped |
+| Decoration / meshing | 10 chunks (~80 blocks) | Trees grown, column compiled to geometry |
+
+Each stage is one ring wider than the next because decoration writes *across*
+column boundaries — a tree canopy reaches two blocks into its neighbours — so
+a column may only advance when everything it can write into is already
+claimed. They are rings rather than view cones because walking exposes one new
+row at a time, while turning around would invalidate a whole cone at once.
+
+A sixth radius sits well inside them: the **deferred underground** carve runs
+only within 5 chunks. Far columns generate surface-only, which is most of the
+cost of a column avoided for terrain the player is nowhere near. Caves never
+breach their three-block roof, so the surface is identical either way and the
+frontier is invisible — `tools/gentest` verifies the two paths byte-identical.
+
+Each frame advances five stages in order — terrain, deepen, structures, trees,
+mesh — **stage-major**: every column in reach is structured before any column
+grows a tree. Advancing one column as far as it can go instead would spend the
+whole budget retrying the nearest column, which cannot finish until neighbours
+that never get a turn catch up. Within a stage the scan is nearest-first.
+
+### Building toward where you are running
+
+Nearest-first alone builds the ring edge *directly ahead* — the exact ground
+about to be stepped on — dead last. So the ranking is biased by a smoothed
+per-frame displacement: a steady walk settles near 0.12 blocks a frame and a
+sprint near 0.18, and the lead scales with speed, up to five chunks. The
+faster you run, the further ahead of you the ring builds first. The bias moves
+ranking only, never ring membership.
+
+Streaming also has to share a 16.7 ms field with physics, so it runs against a
+wall-clock deadline and stops between columns; whatever is left simply happens
+next callback. Two things keep that from turning into a wait:
+
+* **Most of it is free.** The bulk of the work runs from callbacks that found
+  an RSP task still in flight — pure CPU work against the block window that
+  touches nothing the RSP reads. At 20 fps two of every three callbacks were
+  previously idle while the RSP ground through the frame. Overlapping there
+  means walking no longer pays for generation and rendering in series.
+* **A hole under your feet is an emergency.** When anything within two chunks
+  is unbuilt or unmeshed, the budget nearly doubles and trades a brief hitch
+  for closing the gap. A merely pending LOD upgrade is not urgent — treating
+  it as urgent made every chunk crossing hitch.
+
+Exactly one stage per frame may take a single step past the deadline, and the
+turn rotates. Every stage used to hold that exemption every frame, which kept
+any one stage from starving but let the exemptions stack: the worst walking
+frame paid one large unit of *every* stage at once. Rotating it keeps the
+liveness — each stage still advances at least once every five frames however
+oversubscribed the deadline is — while bounding the overrun to one unit.
+
+### Seams, and what happens at the back
+
+Meshing reads one block across each horizontal boundary to decide whether a
+face is hidden. When a column is compiled, its neighbours may not exist yet,
+so they culled against "not resident" and left a hole at the seam. A column
+that finishes decorating therefore re-meshes its four already-decorated
+neighbours — and only those, since a neighbour not yet compiled will read this
+column correctly whenever it does get compiled. Marking all four
+unconditionally re-meshes most columns several times over as the ring
+advances, and every rebuild orphans its predecessor in the arena.
+
+Behind the player, a column leaving the terrain ring is released in one pass:
+its home-store snapshot is flushed (so anything built there survives, if it is
+inside the save extent), its tree records and generated detail records are
+returned to their pools, its mesh block is returned to the arena, and its
+window key is cleared. The record pools are small and fixed, so a walk that
+never gave trees back would exhaust the pool and quietly stop growing new
+ones.
+
+### Coordinates that survive the walk
+
+Block coordinates are absolute `s32`, but the N64 `Mtx` is s15.16 fixed point
+and loses sub-block precision past roughly ±512 blocks. So a **render origin**
+is subtracted at the handful of places a world position becomes a matrix, and
+re-centred on the player every 256 blocks. The rebase rewrites every resident
+column's chunk matrices, which is why it runs only with no RSP task in flight.
+
+A player position far enough out to be impossible is treated as corruption and
+skipped rather than converted: a long-standing far-walk freeze was an FPU
+unimplemented-operation fault raised by pushing exactly such a value through
+`guTranslate`. The window's keys are audited every frame for the same reason,
+and a repaired key ticks the `K` counter on the diagnostics overlay.
+
+### When you outrun it anyway
+
+You can still sprint faster than the mesher on a bad frame, and two things
+cover it rather than showing the void. The fog band, which normally parks past
+the mesh ring where it costs nothing, slides in the moment culling sees a
+frustum cell with no geometry behind it, so terrain pops in behind full haze
+instead of out of nothing — then relaxes back out as meshing catches up. And
+movement into a column that is not yet decorated and meshed is simply
+cancelled, per axis, so the player slides along the frontier instead of
+sticking to it. The stick keeps being read every frame, so a held run resumes
+on its own the instant the ground ahead exists. Movement *out* of an unready
+column is never blocked, so a slot repaired under someone's feet cannot trap
+them.
+
+### What is actually remembered
+
+Nothing that can be recomputed. Biome, tree species and ore veins are all
+derived on the spot, and hamlets and ruins are hashed from a coarse 64×64
+macrocell grid, so a world full of landmarks needs no stored map. That is what
+makes evicting an unmodified column free. What cannot be recomputed is what the player did, and
+that lives in the 196 KiB **home store** covering the fixed 112×112 save
+extent — a dense second copy, independent of residency, so a column's edits
+are there whether or not it is currently in the window. This replaced a pool
+of deviation records whose ceiling was low enough to hit by building a house.
+Outside that extent a change stands until the column is recycled and is then
+gone; the save format packs exactly the extent, so it could never have crossed
+a save anyway.
+
+A column's snapshot is copied back over it *after* decoration, not before:
+tree canopies write two blocks into their neighbours, so an earlier restore
+would be overwritten by a neighbour's leaves. Anything that writes past its
+own column brackets the pass with a flush of dirty neighbours and a resync
+afterwards — restoring without flushing first would push a stale snapshot over
+a column the player has been building in.
+
+The home store is also what a save reads, which is what retired the old "too
+far from spawn to save" refusal: the format still writes the whole fixed
+extent, but it no longer needs all of it resident to do it.
+
+## Rendering
+
+* **View distance deliberately outranks near detail.** Full-detail terrain is a
+  small bubble around the player; everything beyond it is a surface shell of
+  roughly 20–35 quads per column instead of ~170, with no T-junction
+  refinement. The hysteresis between the promote and demote radii keeps a
+  boundary column from re-meshing on every step.
+* **Every column compiles to baked vertex buffers** — quads copied out of the
+  shared table and pre-translated into column-local space, batched eight per
+  `gSPVertex` under a single matrix, with no per-quad matrices at all. Hardware
+  measurement put the two per-quad matrix operations of the shells' former
+  compact format, across a hundred visible far columns, at the bulk of the
+  RSP's standing frame.
+* For each chunk a greedy scanning algorithm merges adjacent block faces with
+  the same texture, to reduce the number of quads that need to be rendered.
+  Greedy geometry is held only for the column currently being compiled; the
+  scratch is reused for the next one. `quads.h` contains the vertex data for
+  all possible shapes and orientations of merged quad.
+* **One 1.125 MiB mesh arena**, first-fit blocks, one per column, vertex data
+  first and command segments after. An incremental relocation defrag slides a
+  single block per frame into the lowest gap, patching that block's own vertex
+  addresses and the per-texture start pointers. This is only safe because every
+  arena mutation runs from the graphics callback with no task in flight and
+  completes before the next frame is submitted. It replaced a double-buffered
+  pair plus a stop-the-world compaction pass, and later absorbed the 128 KiB
+  per-block matrix table whose retirement let every column bake its vertices.
+* Display lists for a column are recomputed when a block in it changes, when it
+  crosses an LOD boundary, or when a newly arrived neighbour means its seam was
+  compiled against terrain that had not streamed in yet.
+* Columns outside the camera view are culled by excluding their display lists
+  from the main display list, with a per-frame cap on visible columns and a
+  hard command budget that sheds the most distant terrain rather than
+  overrunning the frame buffer.
+* **Distance fog hugs the streaming frontier.** While the view is fully meshed
+  the band parks past the mesh ring, where it costs nothing — its old fixed
+  placement measured 5 fps on hardware. Only the columns that actually reach
+  the band pay fog's two-cycle rate, and Z + D-pad Left/Right bias where it
+  rests relative to the hole.
+* **Torches, stairs, doors, and windows** live in a small sparse record pool
+  rather than in the packed terrain, which has exactly sixteen block IDs and no
+  room for shape or state. Each occupies its cell with a crafting-table proxy,
+  so an old ID-10 cell with no record is still an ordinary crafting table and
+  existing saves are unaffected.
+* Runtime terrain is nibble-packed, halving the live world-array cost — which
+  is what makes a 32×32-column window affordable at 1 MiB.
+* A bounded eight-slot mob pool covers every species, budgeted at five passive
+  and three hostile, so adding a species never becomes an unbounded AI or
+  matrix cost. 64MON's four roamers come out of that same passive budget rather
+  than adding a pool beside it, and a battle is a pause inside the game rather
+  than a screen of its own — every rule in it is integer arithmetic.
+* Long frame hitches are clamped before physics simulation, preventing world
+  generation or storage delays from pushing players through terrain.
+
 ## Hardware notes
 
 Mine64 renders the same world mesh for every camera rather than duplicating the
 world. In co-op it also submits one small, untextured Steve-style model per
 viewport. The split-screen viewports share the original framebuffer, and the
-explicit co-op visibility cap keeps the main per-frame display list inside its
-fixed hardware budget, including third-person avatars and pickups. All
-per-frame display lists and referenced matrices are double-buffered so their
-memory stays immutable until the RSP finishes.
+explicit co-op visibility cap — no more than 24 visible columns per player in
+two-player mode, or 8 in four-player mode — keeps the main per-frame display
+list inside its fixed hardware budget, including third-person avatars and
+pickups. All per-frame display lists and referenced matrices are
+double-buffered, so the RSP can never read a camera transform while the CPU
+prepares the following frame. That is an important difference on real N64
+hardware.
 
 The linked release program leaves roughly 36 KiB free below NuSystem's fixed
 framebuffer reservation, including the 1 MiB block window, the 1.125 MiB mesh
@@ -555,74 +831,49 @@ serialise against the RSP, gate on the `pendingGfx` argument NuSystem already
 passes to `callbackGfx` and do arena-rewriting work *before* the next `draw()`
 submits a task — never wait.
 
-## Technical Details
+## Save format
 
-* The world is built from "columns": 8×8 blocks across, the full 32 blocks
-  tall, split into four vertical 8×8×8 chunks. Height is fixed, so this is 2D
-  streaming — there is no vertical paging.
-* Live terrain occupies a **32×32-column wrapping window** (1 MiB, nibble
-  packed). A column's slot is the low five bits of each chunk coordinate, and
-  residency is folded into bit 31 of the slot's key, so `blockGet` is one load
-  and one compare. Walking scrolls the window by recycling slots; block data
-  is never moved, only overwritten.
-* Residency is maintained as three concentric **square** rings — terrain 12,
-  structures 11, decoration and meshing 10 (Chebyshev, in chunks). Each stage
-  is one ring wider than the next because decoration writes across column
-  boundaries, and a column may only advance when everything it can write into
-  is already claimed. They are rings rather than view cones because walking
-  exposes one new row, but turning around would invalidate a whole cone at
-  once.
-* Block coordinates are absolute `s32`. The N64 `Mtx` is s15.16 fixed point,
-  which loses sub-block precision past about ±512 blocks, so a **render
-  origin** is subtracted at the handful of places a world position becomes a
-  matrix, and re-centred on the player every 256 blocks.
-* For each chunk a greedy scanning algorithm merges adjacent block faces with
-  the same texture, to reduce the number of quads that need to be rendered.
-  Greedy geometry is held only for the column currently being compiled; the
-  scratch is reused for the next one.
-* Every column compiles to **baked vertex buffers** — quads copied out of
-  the shared table and pre-translated into column-local space, batched eight
-  per `gSPVertex` under a single matrix. Distant columns are additionally a
-  **surface shell**: ~20–35 quads instead of ~170, and no T-junction
-  refinement. The hysteresis between the promote and demote radii keeps a
-  boundary column from re-meshing on every step.
-* `quads.h` contains the vertex data for all possible shapes and orientations
-  of merged quad.
-* Meshes live in a single 1.25 MiB arena as first-fit blocks, one per column,
-  vertex data first and command segments after. A defrag slides one block per
-  frame into the lowest gap, patching that block's own vertex addresses and
-  the per-texture start pointers. This is only safe because every arena
-  mutation runs from the graphics callback with no task in flight and
-  completes before the next frame is submitted.
-* Display lists for a column are recomputed when a block in it changes, when
-  it crosses an LOD boundary, or when a newly arrived neighbour means its seam
-  was compiled against terrain that had not streamed in yet.
-* Columns outside the camera view are culled by excluding their display lists
-  from the main display list, with a per-frame cap on visible columns and a
-  hard command budget that sheds the most distant terrain rather than
-  overrunning the frame buffer.
+Save v12. It preserves exact hotbar, inventory, crafting, carried-item,
+objective, hunger, world clock, tree, and packed-terrain state, plus the world
+seed (v11) and the mod mask (v12).
+
+Without those last two, everything past the saved extent was regenerated from
+whatever seed the session happened to be carrying — the title screen's last
+preview, or nothing at all on a cold boot straight into Load. The saved
+112×112 extent was never affected, because it arrives as blocks; everything the
+player streamed in by walking out of it was a different world on every load.
+Biomes are what made that impossible to miss: a desert became a forest between
+one session and the next.
+
+Both fields were appended into space the fixed 512-byte header page already
+zero-filled, so every v10 offset is untouched and one struct serves all three
+versions. A pre-v12 file reads as mask zero, which resolves to the classic
+default — the only world those versions could have made.
+
+Player and world data are checksummed, and writes go through a temporary file
+plus a backup so an interrupted cartridge write can recover the previous world.
 
 ## Known gaps
 
-* **Saves still write the original fixed footprint**, so saving away from
-  spawn is refused with "Too far from spawn to save". Per-chunk diff saves
-  plus `world_seed` persistence are the fix; until then a loaded world cannot
-  regenerate anything it evicts.
-* **Details and edits are not persisted.** Torches, stairs, doors and windows
-  live in a record pool that no save format carries, so they reload as the
-  crafting tables that proxy them in the terrain; the sparse edit journal is
-  likewise in-memory only.
-* **Audio does not fit.** The audio variant overruns NuSystem's audio heap;
-  it needs roughly another 384 KiB, which arrives with a pooled block window
-  or with post-diff-save trimming. 64MON spent about 55 KiB of the
-  remaining headroom, leaving ~96 KiB free — it does not change the size of
-  the problem, but it is no longer part of the answer.
-* **64MON teams are not saved.** `mon64SaveBlob` and
-  `mon64LoadBlob` produce and consume the party as a flat 144-byte blob
-  and nothing calls them, deliberately: the per-chunk diff format will move
-  every offset in the file, and the party belongs in that version bump rather
-  than in one of its own. See *Not wired yet* in
-  [64MON](docs/64mon.md).
+* **Only the fixed extent is persisted.** Saves still write exactly the
+  original 112×112 footprint, which is now written from the home store rather
+  than from residency — so saving works anywhere, but building outside the
+  extent is transient by design: those columns are regenerated from the seed
+  and mod mask on the next visit and any changes to them are gone. Per-chunk
+  diff saves are the fix.
+* **Details are not persisted.** Torches, stairs, doors and windows live in a
+  record pool that no save format carries, so they reload as the crafting
+  tables that proxy them in the terrain.
+* **Audio does not fit.** The audio variant overruns NuSystem's audio heap by
+  about 310 KiB, which arrives with a pooled block window or with
+  post-diff-save trimming. 64MON spent about 55 KiB of the remaining headroom
+  — it does not change the size of the problem, but it is no longer part of
+  the answer. See [RAM budget](docs/ram-budget.md).
+* **64MON teams are not saved.** `mon64SaveBlob` and `mon64LoadBlob` produce
+  and consume the party as a flat 144-byte blob and nothing calls them,
+  deliberately: the per-chunk diff format will move every offset in the file,
+  and the party belongs in that version bump rather than in one of its own.
+  See *Not wired yet* in [64MON](docs/64mon.md).
 * **Sword tier specials are implemented but unreachable.** `useMobWeaponSpecial`
   and its effect rendering exist and are simulated, but nothing is bound to
   trigger them yet.
