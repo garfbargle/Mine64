@@ -4550,6 +4550,20 @@ static void updateAutoFog(void) {
       nearest = visible_hole_sq[i];
     }
   }
+  /*
+   * A distant hole does not summon the fog.  Screen depth is so compressed
+   * that "fully opaque at 60 blocks" drags the haze onset into the
+   * mid-view at ~23 -- which read as fog rolling over a fully built,
+   * beautiful area because somewhere far ahead the ring's leading edge had
+   * not meshed yet.  A far hole is a few indistinct pixels on a CRT, and
+   * the frontier wall in player.c keeps anyone from standing next to raw
+   * void; only a hole close enough to actually read as one engages the
+   * band.
+   */
+#define FOG_ENGAGE_BLOCKS 44.f
+  if (nearest > FOG_ENGAGE_BLOCKS * FOG_ENGAGE_BLOCKS) {
+    nearest = VISIBLE_HOLE_NONE;
+  }
   if (nearest < VISIBLE_HOLE_NONE) {
     /* v(d), the screen-depth mapping documented over fog_start, at the
        co-op or solo far plane; minus the band, so the band *ends* at the

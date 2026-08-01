@@ -1433,6 +1433,17 @@ static u8 playerInWater(Player *player) {
   return FALSE;
 }
 
+/* Lookahead past the player's edge before the frontier wall engages, in
+   world units -- half a block, roughly the collision box's reach. */
+#define EDGE_WALL_MARGIN 32.f
+
+/* Ground the frontier wall lets a player onto: generated, decorated, and
+   visibly meshed.  Anything less is either void or invisible floor. */
+static u8 playerColumnReady(int cx, int cz) {
+  return worldColumnState(cx, cz) == COLUMN_DECORATED &&
+    !graphicsColumnMissingMesh(cx, cz);
+}
+
 static u8 updatePlayer(u8 player_num, float delta) {
   Player *player = &players[player_num];
   NUContData *cont = &cont_data[player_num];
@@ -1572,6 +1583,59 @@ static u8 updatePlayer(u8 player_num, float delta) {
   velocity = add(velocity, player->knockback_velocity);
   player->knockback_velocity = mul(player->knockback_velocity,
     max(0, 1.f - delta * .16f));
+
+  /*
+   * The streaming frontier is a soft wall, not a hazard.  A sprinting
+   * player can outrun the mesher, and the old outcome was standing in the
+   * void watching chunks arrive; now movement into a column that is not
+   * yet decorated and meshed is simply cancelled.  Each axis is tested
+   * separately so the player slides along the edge instead of sticking to
+   * it, and because the stick keeps being read every frame, a held run
+   * resumes on its own the instant the ground ahead exists.  Movement out
+   * of an unready column is never blocked -- the current column is exempt,
+   * so a slot the key audit repaired under someone's feet cannot trap them.
+   */
+  {
+    float column_units = BLOCK_SIZE * CHUNK_SIZE;
+    int current_cx = floor(player->position.x / column_units);
+    int current_cz = floor(player->position.z / column_units);
+
+    if (velocity.x != 0) {
+      int ahead_cx = floor((player->position.x + velocity.x * delta +
+        (velocity.x > 0 ? EDGE_WALL_MARGIN : -EDGE_WALL_MARGIN)) /
+        column_units);
+
+      if (ahead_cx != current_cx &&
+          !playerColumnReady(ahead_cx, current_cz)) {
+        velocity.x = 0;
+      }
+    }
+    if (velocity.z != 0) {
+      int ahead_cz = floor((player->position.z + velocity.z * delta +
+        (velocity.z > 0 ? EDGE_WALL_MARGIN : -EDGE_WALL_MARGIN)) /
+        column_units);
+
+      if (ahead_cz != current_cz &&
+          !playerColumnReady(current_cx, ahead_cz)) {
+        velocity.z = 0;
+      }
+    }
+    /* The diagonal into an unready corner column passes both single-axis
+       tests; catch it, dropping one axis so the result is a slide. */
+    if (velocity.x != 0 && velocity.z != 0) {
+      int ahead_cx = floor((player->position.x + velocity.x * delta +
+        (velocity.x > 0 ? EDGE_WALL_MARGIN : -EDGE_WALL_MARGIN)) /
+        column_units);
+      int ahead_cz = floor((player->position.z + velocity.z * delta +
+        (velocity.z > 0 ? EDGE_WALL_MARGIN : -EDGE_WALL_MARGIN)) /
+        column_units);
+
+      if (ahead_cx != current_cx && ahead_cz != current_cz &&
+          !playerColumnReady(ahead_cx, ahead_cz)) {
+        velocity.z = 0;
+      }
+    }
+  }
 
   if (cont->button & L_CBUTTONS) {
     /* With the overlay up, Z + C-left is the LOD/visibility preset chord
