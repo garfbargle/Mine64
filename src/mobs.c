@@ -125,6 +125,23 @@ static u8 mobTypeIsFarmAnimal(u8 type) {
   return type == MOB_SHEEP || type == MOB_PIG || type == MOB_CHICKEN;
 }
 
+/*
+ * The ground a player is standing on, which is the quantity a mob's own
+ * position already holds.  See PLAYER_EYE_HEIGHT: subtracting nothing reads
+ * as a block and a half of separation between a player and an animal sharing
+ * one block of ground, which is enough to fail a one-block gate every time.
+ */
+static float playerFootY(Player *player) {
+  return player->position.y - PLAYER_EYE_HEIGHT * BLOCK_SIZE;
+}
+
+/* How far apart, vertically, a mob and a player are actually standing. */
+static float mobVerticalDistance(Mob *mob, Player *player) {
+  float difference = playerFootY(player) - mob->position.y;
+
+  return difference < 0 ? -difference : difference;
+}
+
 static u8 playerHoldsApple(Player *player) {
   ItemStack *held = &player->inventory[INVENTORY_HOTBAR_START +
     player->selected_hotbar_slot];
@@ -496,10 +513,7 @@ static Player *windupTarget(Mob *mob, float *distance_squared,
   dx = target->position.x - mob->position.x;
   dz = target->position.z - mob->position.z;
   *distance_squared = dx * dx + dz * dz;
-  *vertical_distance = target->position.y - mob->position.y;
-  if (*vertical_distance < 0) {
-    *vertical_distance = -*vertical_distance;
-  }
+  *vertical_distance = mobVerticalDistance(mob, target);
   return target;
 }
 
@@ -665,14 +679,11 @@ static void updateFeedTargets(void) {
         continue;
       }
       dx = mob->position.x - player->position.x;
-      /* A player's position is their eye, a block and a half above their
-         feet, while an animal's is the ground it stands on.  Measuring from
-         the animal's middle against the same asymmetric window punchMob uses
-         is what keeps "in front of me" from meaning "floating at my head". */
-      dy = mob->position.y + BLOCK_SIZE * .55f - player->position.y;
+      dy = mobVerticalDistance(mob, player);
       dz = mob->position.z - player->position.z;
       distance_squared = dx * dx + dz * dz;
-      if (distance_squared >= nearest || dy < -104.f || dy > 48.f) {
+      /* An arm's reach up or down a step, not across a cliff edge. */
+      if (distance_squared >= nearest || dy > BLOCK_SIZE * 1.5f) {
         continue;
       }
       /* Held out in front, not handed over the shoulder.  Comparing the
@@ -919,10 +930,7 @@ void updateMobs(float delta) {
     nearest = nearestPlayer(mob->position.x, mob->position.z,
       &player_distance);
     vertical_distance = nearest == NULL ? 999999.f :
-      nearest->position.y - mob->position.y;
-    if (vertical_distance < 0) {
-      vertical_distance = -vertical_distance;
-    }
+      mobVerticalDistance(mob, nearest);
     if (nearest == NULL ||
         player_distance > MOB_DESPAWN_DISTANCE * MOB_DESPAWN_DISTANCE) {
       mob->active = FALSE;
@@ -1101,6 +1109,9 @@ static u8 mobAttackCandidate(Player *attacker, Mob *candidate,
     return FALSE;
   }
   dx = candidate->position.x - attacker->position.x;
+  /* Mob middle against the attacker's eye, so the window below already has
+     PLAYER_EYE_HEIGHT folded into it -- which is why it is not centred on
+     zero and must not be "tidied" into a symmetric one. */
   dy = candidate->position.y + BLOCK_SIZE * .55f - attacker->position.y;
   dz = candidate->position.z - attacker->position.z;
   *distance_squared = dx * dx + dz * dz;

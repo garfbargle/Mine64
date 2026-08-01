@@ -7,6 +7,15 @@
 /* The Nintendo 64 has four controller ports.  Keep player state indexed by
    port so a joining controller always owns the matching local player. */
 #define MAX_PLAYERS 4
+
+/*
+ * A player's position marks the eye, this many blocks above the feet, while
+ * every other entity's marks the ground it stands on.  Anything comparing the
+ * two -- a mob deciding whether the player is on its level, a hit test --
+ * has to subtract this first, or it is wrong by a block and a half on flat
+ * ground and quietly never fires at all.
+ */
+#define PLAYER_EYE_HEIGHT 1.5f
 #define INVENTORY_COLUMNS 9
 #define INVENTORY_STORAGE_ROWS 3
 #define INVENTORY_HOTBAR_ROWS 1

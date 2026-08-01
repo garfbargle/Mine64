@@ -634,8 +634,9 @@ static Mtx first_person_tool_rotate[NUM_DISPLAY_LISTS][MAX_PLAYERS];
 #define MOB_ROT_HEAD 1
 #define MOB_ROT_LIMB_A 2 /* Front left with back right. */
 #define MOB_ROT_LIMB_B 3 /* Front right with back left. */
-#define MOB_ROT_WING_LEFT 4
-#define MOB_ROT_WING_RIGHT 5
+/* The upper pair: a bird's wings, a zombie's outstretched arms. */
+#define MOB_ROT_UPPER_LEFT 4
+#define MOB_ROT_UPPER_RIGHT 5
 #define MOB_ROT_COUNT 6
 
 static Mtx mob_translate[NUM_DISPLAY_LISTS][MAX_MOBS][MOB_PART_COUNT];
@@ -836,6 +837,80 @@ static Vtx chicken_face_verts[] = {
   STEVE_VERTEX(-2, -1, -8, 28, 24, 22), STEVE_VERTEX(-6, -1, -8, 28, 24, 22),
   STEVE_VERTEX(2, 3, -8, 28, 24, 22), STEVE_VERTEX(6, 3, -8, 28, 24, 22),
   STEVE_VERTEX(6, -1, -8, 28, 24, 22), STEVE_VERTEX(2, -1, -8, 28, 24, 22)
+};
+
+/*
+ * The zombie is the one biped here, so it borrows Steve's proportions rather
+ * than the herd's: legs from the hip, a torso, a head at eye height, and arms
+ * held out in front on the same pair of spare rotations a bird uses for its
+ * wings.
+ */
+MOB_BOX(zombie_leg_verts, -7, -54, -7, 7, 0, 7,
+  40, 46, 96, 58, 66, 126);
+MOB_BOX(zombie_body_verts, -16, 54, -9, 16, 96, 9,
+  40, 74, 88, 58, 104, 120);
+MOB_BOX(zombie_head_verts, -14, 0, -14, 14, 28, 14,
+  74, 108, 60, 104, 148, 86);
+MOB_BOX(zombie_arm_verts, -6, -40, -6, 6, 0, 6,
+  70, 102, 58, 98, 140, 82);
+
+/* Brow, two sunken eyes, a mouth -- four quads standing off the face. */
+static Vtx zombie_face_verts[] = {
+  STEVE_VERTEX(-12, 22, -15, 56, 82, 46), STEVE_VERTEX(12, 22, -15, 56, 82, 46),
+  STEVE_VERTEX(12, 19, -15, 56, 82, 46), STEVE_VERTEX(-12, 19, -15, 56, 82, 46),
+  STEVE_VERTEX(-10, 18, -15, 26, 32, 24), STEVE_VERTEX(-4, 18, -15, 26, 32, 24),
+  STEVE_VERTEX(-4, 12, -15, 26, 32, 24), STEVE_VERTEX(-10, 12, -15, 26, 32, 24),
+  STEVE_VERTEX(4, 18, -15, 26, 32, 24), STEVE_VERTEX(10, 18, -15, 26, 32, 24),
+  STEVE_VERTEX(10, 12, -15, 26, 32, 24), STEVE_VERTEX(4, 12, -15, 26, 32, 24),
+  STEVE_VERTEX(-7, 7, -15, 38, 44, 34), STEVE_VERTEX(7, 7, -15, 38, 44, 34),
+  STEVE_VERTEX(7, 3, -15, 38, 44, 34), STEVE_VERTEX(-7, 3, -15, 38, 44, 34)
+};
+
+/*
+ * The spider is low, wide and eight-legged.  Its legs come in pairs sharing
+ * one transform -- see mob_double_box_display_list -- and each is a flat
+ * quadrilateral in XY extruded along Z, which is how an axis-aligned box
+ * layout still produces a limb that rakes out and down to the ground.
+ */
+MOB_BOX(spider_body_verts, -20, 14, 4, 20, 48, 44,
+  40, 34, 44, 60, 52, 66);
+MOB_BOX(spider_head_verts, -14, -12, -20, 14, 12, 8,
+  36, 31, 40, 54, 47, 60);
+
+/* Two big eyes and two small ones, the only bright thing on it. */
+static Vtx spider_face_verts[] = {
+  STEVE_VERTEX(-11, 5, -21, 196, 54, 46), STEVE_VERTEX(-5, 5, -21, 196, 54, 46),
+  STEVE_VERTEX(-5, 0, -21, 196, 54, 46), STEVE_VERTEX(-11, 0, -21, 196, 54, 46),
+  STEVE_VERTEX(5, 5, -21, 196, 54, 46), STEVE_VERTEX(11, 5, -21, 196, 54, 46),
+  STEVE_VERTEX(11, 0, -21, 196, 54, 46), STEVE_VERTEX(5, 0, -21, 196, 54, 46),
+  STEVE_VERTEX(-4, 10, -21, 142, 38, 34), STEVE_VERTEX(-1, 10, -21, 142, 38, 34),
+  STEVE_VERTEX(-1, 7, -21, 142, 38, 34), STEVE_VERTEX(-4, 7, -21, 142, 38, 34),
+  STEVE_VERTEX(1, 10, -21, 142, 38, 34), STEVE_VERTEX(4, 10, -21, 142, 38, 34),
+  STEVE_VERTEX(4, 7, -21, 142, 38, 34), STEVE_VERTEX(1, 7, -21, 142, 38, 34)
+};
+
+/* Vertices 0-7 are the outer leg of the pair, so the distant build can draw
+   half of them by asking for eight vertices and the single-box list. */
+static Vtx spider_leg_left_verts[] = {
+  STEVE_VERTEX(0, 4, -9, 30, 26, 34), STEVE_VERTEX(-34, -28, -9, 30, 26, 34),
+  STEVE_VERTEX(-34, -36, -9, 30, 26, 34), STEVE_VERTEX(0, -6, -9, 30, 26, 34),
+  STEVE_VERTEX(-34, -28, -16, 46, 40, 52), STEVE_VERTEX(0, 4, -16, 46, 40, 52),
+  STEVE_VERTEX(0, -6, -16, 46, 40, 52), STEVE_VERTEX(-34, -36, -16, 46, 40, 52),
+  STEVE_VERTEX(0, 4, 10, 30, 26, 34), STEVE_VERTEX(-30, -26, 10, 30, 26, 34),
+  STEVE_VERTEX(-30, -34, 10, 30, 26, 34), STEVE_VERTEX(0, -6, 10, 30, 26, 34),
+  STEVE_VERTEX(-30, -26, 3, 46, 40, 52), STEVE_VERTEX(0, 4, 3, 46, 40, 52),
+  STEVE_VERTEX(0, -6, 3, 46, 40, 52), STEVE_VERTEX(-30, -34, 3, 46, 40, 52)
+};
+
+static Vtx spider_leg_right_verts[] = {
+  STEVE_VERTEX(0, 4, -9, 30, 26, 34), STEVE_VERTEX(34, -28, -9, 30, 26, 34),
+  STEVE_VERTEX(34, -36, -9, 30, 26, 34), STEVE_VERTEX(0, -6, -9, 30, 26, 34),
+  STEVE_VERTEX(34, -28, -16, 46, 40, 52), STEVE_VERTEX(0, 4, -16, 46, 40, 52),
+  STEVE_VERTEX(0, -6, -16, 46, 40, 52), STEVE_VERTEX(34, -36, -16, 46, 40, 52),
+  STEVE_VERTEX(0, 4, 10, 30, 26, 34), STEVE_VERTEX(30, -26, 10, 30, 26, 34),
+  STEVE_VERTEX(30, -34, 10, 30, 26, 34), STEVE_VERTEX(0, -6, 10, 30, 26, 34),
+  STEVE_VERTEX(30, -26, 3, 46, 40, 52), STEVE_VERTEX(0, 4, 3, 46, 40, 52),
+  STEVE_VERTEX(0, -6, 3, 46, 40, 52), STEVE_VERTEX(30, -34, 3, 46, 40, 52)
 };
 
 static Vtx slime_body_verts[] = {
@@ -1092,6 +1167,33 @@ static Gfx mob_wide_face_display_list[] = {
 static Gfx mob_eyes_display_list[] = {
   gsSP2Triangles(0, 1, 2, 0, 0, 2, 3, 0),
   gsSP2Triangles(4, 5, 6, 0, 4, 6, 7, 0),
+  gsSPEndDisplayList()
+};
+
+/* Four flat quads and nothing else: a face with no muzzle to hang them on,
+   which is what a zombie's features and a spider's eye cluster both are. */
+static Gfx mob_quad_sheet_display_list[] = {
+  gsSP2Triangles(0, 1, 2, 0, 0, 2, 3, 0),
+  gsSP2Triangles(4, 5, 6, 0, 4, 6, 7, 0),
+  gsSP2Triangles(8, 9, 10, 0, 8, 10, 11, 0),
+  gsSP2Triangles(12, 13, 14, 0, 12, 14, 15, 0),
+  gsSPEndDisplayList()
+};
+
+/* Two boxes under one transform, so a spider's eight legs cost four. */
+static Gfx mob_double_box_display_list[] = {
+  gsSP2Triangles(0, 1, 2, 0, 0, 2, 3, 0),
+  gsSP2Triangles(4, 5, 6, 0, 4, 6, 7, 0),
+  gsSP2Triangles(1, 4, 7, 0, 1, 7, 2, 0),
+  gsSP2Triangles(5, 0, 3, 0, 5, 3, 6, 0),
+  gsSP2Triangles(5, 4, 1, 0, 5, 1, 0, 0),
+  gsSP2Triangles(3, 2, 7, 0, 3, 7, 6, 0),
+  gsSP2Triangles(8, 9, 10, 0, 8, 10, 11, 0),
+  gsSP2Triangles(12, 13, 14, 0, 12, 14, 15, 0),
+  gsSP2Triangles(9, 12, 15, 0, 9, 15, 10, 0),
+  gsSP2Triangles(13, 8, 11, 0, 13, 11, 14, 0),
+  gsSP2Triangles(13, 12, 9, 0, 13, 9, 8, 0),
+  gsSP2Triangles(11, 10, 15, 0, 11, 15, 14, 0),
   gsSPEndDisplayList()
 };
 
@@ -3099,8 +3201,8 @@ static void drawChickenMob(u8 mob_num, float hurt, float scale, u8 detailed) {
     scale);
   setMobRotation(mob_num, MOB_ROT_LIMB_A, swing, mob->yaw, 0, scale);
   setMobRotation(mob_num, MOB_ROT_LIMB_B, -swing, mob->yaw, 0, scale);
-  setMobRotation(mob_num, MOB_ROT_WING_LEFT, 0, mob->yaw, -beat, scale);
-  setMobRotation(mob_num, MOB_ROT_WING_RIGHT, 0, mob->yaw, beat, scale);
+  setMobRotation(mob_num, MOB_ROT_UPPER_LEFT, 0, mob->yaw, -beat, scale);
+  setMobRotation(mob_num, MOB_ROT_UPPER_RIGHT, 0, mob->yaw, beat, scale);
 
   setMobPartTransform(mob_num, MOB_BODY, (Vector3) {hurt, 0, 0}, scale);
   setMobPartTransform(mob_num, MOB_HEAD, (Vector3) {hurt, 38, -7}, scale);
@@ -3124,15 +3226,108 @@ static void drawChickenMob(u8 mob_num, float hurt, float scale, u8 detailed) {
     chicken_leg_verts, 8, steve_box_display_list);
   drawMobPart(mob_num, MOB_LIMB_FRONT_RIGHT, MOB_ROT_LIMB_B,
     chicken_leg_verts, 8, steve_box_display_list);
-  drawMobPart(mob_num, MOB_LIMB_BACK_LEFT, MOB_ROT_WING_LEFT,
+  drawMobPart(mob_num, MOB_LIMB_BACK_LEFT, MOB_ROT_UPPER_LEFT,
     chicken_wing_left_verts, 8, steve_box_display_list);
-  drawMobPart(mob_num, MOB_LIMB_BACK_RIGHT, MOB_ROT_WING_RIGHT,
+  drawMobPart(mob_num, MOB_LIMB_BACK_RIGHT, MOB_ROT_UPPER_RIGHT,
     chicken_wing_right_verts, 8, steve_box_display_list);
   if (detailed) {
     setMobPartTransform(mob_num, MOB_TAIL, (Vector3) {hurt, 0, 0}, scale);
     drawMobPart(mob_num, MOB_TAIL, MOB_ROT_BODY, chicken_tail_verts, 8,
       steve_box_display_list);
   }
+}
+
+static void drawZombieMob(u8 mob_num, float hurt, float scale, u8 detailed) {
+  Mob *mob = &mobs[mob_num];
+  float swing = sinf(mob->walk_time) * 34.f;
+  /* Arms out and locked there, with just enough sway that they do not read as
+     a static prop.  This is the whole silhouette, so it does not swing with
+     the legs the way a living biped's would.  Positive: the limb hangs along
+     -Y and a positive X rotation carries -Y toward -Z, which is forward. */
+  float reach = 74.f + sinf(mob->walk_time * .5f) * 7.f;
+  float loll = sinf(mob->walk_time * .35f) * 6.f - 4.f;
+
+  setMobRotation(mob_num, MOB_ROT_BODY, 0, mob->yaw, 0, scale);
+  setMobRotation(mob_num, MOB_ROT_HEAD, loll, mob->yaw + mob->head_yaw, 0,
+    scale);
+  setMobRotation(mob_num, MOB_ROT_LIMB_A, swing, mob->yaw, 0, scale);
+  setMobRotation(mob_num, MOB_ROT_LIMB_B, -swing, mob->yaw, 0, scale);
+  setMobRotation(mob_num, MOB_ROT_UPPER_LEFT, reach, mob->yaw, 0, scale);
+  setMobRotation(mob_num, MOB_ROT_UPPER_RIGHT, reach, mob->yaw, 0, scale);
+
+  setMobPartTransform(mob_num, MOB_BODY, (Vector3) {hurt, 0, 0}, scale);
+  setMobPartTransform(mob_num, MOB_HEAD, (Vector3) {hurt, 96, 0}, scale);
+  setMobPartTransform(mob_num, MOB_LIMB_FRONT_LEFT,
+    (Vector3) {-8 + hurt, 54, 0}, scale);
+  setMobPartTransform(mob_num, MOB_LIMB_FRONT_RIGHT,
+    (Vector3) {8 + hurt, 54, 0}, scale);
+  setMobPartTransform(mob_num, MOB_LIMB_BACK_LEFT,
+    (Vector3) {-17 + hurt, 92, 0}, scale);
+  setMobPartTransform(mob_num, MOB_LIMB_BACK_RIGHT,
+    (Vector3) {17 + hurt, 92, 0}, scale);
+
+  drawMobPart(mob_num, MOB_BODY, MOB_ROT_BODY, zombie_body_verts, 8,
+    steve_box_display_list);
+  drawMobPart(mob_num, MOB_HEAD, MOB_ROT_HEAD, zombie_head_verts, 8,
+    steve_box_display_list);
+  if (detailed) {
+    drawMobSheet(zombie_face_verts, 16, mob_quad_sheet_display_list);
+  }
+  drawMobPart(mob_num, MOB_LIMB_FRONT_LEFT, MOB_ROT_LIMB_A, zombie_leg_verts,
+    8, steve_box_display_list);
+  drawMobPart(mob_num, MOB_LIMB_FRONT_RIGHT, MOB_ROT_LIMB_B, zombie_leg_verts,
+    8, steve_box_display_list);
+  drawMobPart(mob_num, MOB_LIMB_BACK_LEFT, MOB_ROT_UPPER_LEFT,
+    zombie_arm_verts, 8, steve_box_display_list);
+  drawMobPart(mob_num, MOB_LIMB_BACK_RIGHT, MOB_ROT_UPPER_RIGHT,
+    zombie_arm_verts, 8, steve_box_display_list);
+}
+
+static void drawSpiderMob(u8 mob_num, float hurt, float scale, u8 detailed) {
+  Mob *mob = &mobs[mob_num];
+  float swing = sinf(mob->walk_time) * 19.f;
+  /* Eight legs near, four far.  The pair sheets put the outer leg first, so
+     the distant build is the same data read short. */
+  Vtx *left = spider_leg_left_verts;
+  Vtx *right = spider_leg_right_verts;
+  u8 count = detailed ? 16 : 8;
+  Gfx *legs = detailed ? mob_double_box_display_list :
+    steve_box_display_list;
+
+  setMobRotation(mob_num, MOB_ROT_BODY, 0, mob->yaw, 0, scale);
+  setMobRotation(mob_num, MOB_ROT_HEAD, 0, mob->yaw + mob->head_yaw, 0,
+    scale);
+  setMobRotation(mob_num, MOB_ROT_LIMB_A, swing, mob->yaw, 0, scale);
+  setMobRotation(mob_num, MOB_ROT_LIMB_B, -swing, mob->yaw, 0, scale);
+
+  setMobPartTransform(mob_num, MOB_BODY, (Vector3) {hurt, 0, 0}, scale);
+  setMobPartTransform(mob_num, MOB_HEAD, (Vector3) {hurt, 32, -10}, scale);
+  /* Spread wider than the pair sheets are deep, so the four anchors put eight
+     legs along the body instead of doubling two of them up in the middle. */
+  setMobPartTransform(mob_num, MOB_LIMB_FRONT_LEFT,
+    (Vector3) {-16 + hurt, 34, -12}, scale);
+  setMobPartTransform(mob_num, MOB_LIMB_FRONT_RIGHT,
+    (Vector3) {16 + hurt, 34, -12}, scale);
+  setMobPartTransform(mob_num, MOB_LIMB_BACK_LEFT,
+    (Vector3) {-16 + hurt, 34, 16}, scale);
+  setMobPartTransform(mob_num, MOB_LIMB_BACK_RIGHT,
+    (Vector3) {16 + hurt, 34, 16}, scale);
+
+  drawMobPart(mob_num, MOB_BODY, MOB_ROT_BODY, spider_body_verts, 8,
+    steve_box_display_list);
+  drawMobPart(mob_num, MOB_HEAD, MOB_ROT_HEAD, spider_head_verts, 8,
+    steve_box_display_list);
+  if (detailed) {
+    drawMobSheet(spider_face_verts, 16, mob_quad_sheet_display_list);
+  }
+  drawMobPart(mob_num, MOB_LIMB_FRONT_LEFT, MOB_ROT_LIMB_A, left, count,
+    legs);
+  drawMobPart(mob_num, MOB_LIMB_FRONT_RIGHT, MOB_ROT_LIMB_B, right, count,
+    legs);
+  drawMobPart(mob_num, MOB_LIMB_BACK_LEFT, MOB_ROT_LIMB_B, left, count,
+    legs);
+  drawMobPart(mob_num, MOB_LIMB_BACK_RIGHT, MOB_ROT_LIMB_A, right, count,
+    legs);
 }
 
 static void drawMob(u8 mob_num, u8 detailed) {
@@ -3159,8 +3354,14 @@ static void drawMob(u8 mob_num, u8 detailed) {
     drawChickenMob(mob_num, hurt, scale, detailed);
     return;
   }
-  /* Zombies and spiders have no build of their own yet and still borrow the
-     quadruped one; giving them models is a separate piece of work. */
+  if (mob->type == MOB_ZOMBIE) {
+    drawZombieMob(mob_num, hurt, scale, detailed);
+    return;
+  }
+  if (mob->type == MOB_SPIDER) {
+    drawSpiderMob(mob_num, hurt, scale, detailed);
+    return;
+  }
   drawQuadrupedMob(mob_num, mob->type == MOB_PIG ? &pig_model : &sheep_model,
     hurt, scale, detailed);
 }
@@ -3663,14 +3864,20 @@ static void buildGroundShadows(void) {
 
   for (i = 0; i < MAX_MOBS && shadow_count < SHADOW_SLOTS; i++) {
     /* A calf's shadow shrinks with it; an adult-sized blob under a small
-       animal is the tell that gives a scaled model away. */
+       animal is the tell that gives a scaled model away.  The two shapes that
+       are not roughly animal-sized get their own footprint: a spider is wide
+       and flat, a zombie is a person. */
     float size = MOB_IS_BABY(&mobs[i]) ? MOB_BABY_SCALE : 1.f;
+    float height = mobs[i].type == MOB_ZOMBIE ? .9f :
+      (mobs[i].type == MOB_SPIDER ? .35f : .5f);
+    float radius = mobs[i].type == MOB_SPIDER ? .62f :
+      (mobs[i].type == MOB_ZOMBIE ? .34f : .40f);
 
     if (!mobs[i].active) {
       continue;
     }
-    addGroundShadow(mobs[i].position, BLOCK_SIZE * .5f * size,
-      BLOCK_SIZE * .40f * size, strength);
+    addGroundShadow(mobs[i].position, BLOCK_SIZE * height * size,
+      BLOCK_SIZE * radius * size, strength);
   }
 
   for (i = 0; i < MAX_DROPPED_ITEMS && shadow_count < SHADOW_SLOTS; i++) {
