@@ -455,6 +455,39 @@ void callbackGfx(int pendingGfx) {
   }
   last_callback_time = callback_time;
 
+  if (current_screen == LOADING_PREVIEW && loadingPreviewFinished()) {
+    current_screen = GAME;
+  }
+
+  /* The pack is a true pause on a single-stick console.  Letting the clock
+     advance while AI and the player are frozen could turn a daylight menu
+     visit into an unavoidable night ambush on close.  A battle is the same
+     kind of pause and takes longer, so it holds the clock too. */
+  if (current_screen == GAME && !mon64BattleActive()) {
+    updateDayCycle();
+  } else {
+    pauseDayCycle();
+  }
+  /*
+   * The world moves before the frame that shows it is built, not after.
+   *
+   * These used to run at the foot of the callback, which meant every frame
+   * was drawn from a camera and an entity set one whole callback old -- a
+   * fixed lag on top of the RSP/RDP cost and the buffer swap, and the part
+   * of it that was free to give back.  It matters most for aiming, where the
+   * player is closing a loop against what they can see.
+   *
+   * Running first also makes the gated block below more consistent, not
+   * less: the rebase, the streaming centre and the draw now all agree on
+   * this callback's player position instead of trailing it by one.  Nothing
+   * here touches a display list or the mesh arena, and block edits from
+   * mining already happened beside a running task, since this ran on every
+   * callback either way -- so moving it earlier introduces no hazard the
+   * old order did not already have.
+   */
+  diagPaintPhase(DIAG_PHASE_PLAYERS);
+  updatePlayers();
+
   /*
    * One cinematic task can outlive a video retrace.  Queuing a second in that
    * case lets NuSystem rotate framebuffers while the RDP is still writing the
@@ -572,21 +605,6 @@ void callbackGfx(int pendingGfx) {
     diagNoteGatedWork((u32) OS_CYCLES_TO_USEC(osGetTime() - overlap_start));
   }
 
-  if (current_screen == LOADING_PREVIEW && loadingPreviewFinished()) {
-    current_screen = GAME;
-  }
-
-  /* The pack is a true pause on a single-stick console.  Letting the clock
-     advance while AI and the player are frozen could turn a daylight menu
-     visit into an unavoidable night ambush on close.  A battle is the same
-     kind of pause and takes longer, so it holds the clock too. */
-  if (current_screen == GAME && !mon64BattleActive()) {
-    updateDayCycle();
-  } else {
-    pauseDayCycle();
-  }
-  diagPaintPhase(DIAG_PHASE_PLAYERS);
-  updatePlayers();
 #ifdef ENABLE_AUDIO
   updateAudio(current_screen);
 #endif
