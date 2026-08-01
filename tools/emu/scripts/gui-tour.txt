@@ -1,0 +1,42 @@
+# A tour of every GUI screen the game reaches on a fresh save, one shot each.
+#
+# Durations are rendered frames.  The two long waits are the world preview:
+# menuAct ignores START until the flyover terrain behind the menu is ready.
+
+wait 400
+shot title              # title card while the preview bar fills
+
+wait 500
+shot world-select       # "choose a world" over the finished flyover
+
+press START 8
+wait 60
+shot world-naming       # CREATE WORLD block-letter keyboard
+
+press START 8
+wait 240
+shot hud                # compass, quest tracker, hint panels, hearts, hotbar
+
+press START 8
+wait 90
+shot pack               # PACK / POCKET CRAFT inventory
+
+press CRIGHT 8
+wait 60
+shot pack-craft         # crafting column selected
+
+press B 8
+wait 90
+stick 0 70 150          # walk forward
+wait 45
+shot hud-walking
+
+stick 70 0 60           # turn right
+wait 90
+shot hud-turned
+
+press CUP 8             # camera mode
+wait 120
+shot camera
+
+stop

@@ -15,3 +15,6 @@ __pycache__/
 !toolchain/
 !toolchain/spicy-ld.sh
 !tools/resolve_freeze.sh
+!tools/emu/build.sh
+!tools/emu/run.sh
+/tools/emu/*.dylib
