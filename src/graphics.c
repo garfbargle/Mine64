@@ -2456,22 +2456,71 @@ static void drawSteve(u8 player_num) {
   drawStevePart(player_num, STEVE_HEAD, steve_eye_verts, steve_eyes_display_list);
 }
 
+/* The first-person arm pivots at the elbow, not at the hand.  Local +Y of
+   first_person_arm_verts runs from the hand at the origin back to the elbow, so
+   a pitch past 90 degrees lays the forearm back toward the camera and leaves
+   the tool -- which grows from that same origin the other way -- pointing
+   forward past the crosshair.  Pivoting at the hand instead pinned the one
+   point a strike should move: the only part left free was the forearm's far
+   end, which swung back across the camera, and the attack read as the player
+   hitting their own face. */
+#define FP_ARM_LENGTH 48.f
+#define FP_ELBOW_X 44.f
+#define FP_ELBOW_Y -54.f
+#define FP_ELBOW_Z -42.f
+#define FP_REST_PITCH 120.f
+#define FP_ARM_ROLL 25.f
+/* A forearm pinned at a fixed elbow can only sweep its hand perpendicular to
+   itself, so rotation alone can never carry a strike out toward what the player
+   is aiming at.  Driving the elbow forward through the swing does: perspective
+   pulls anything travelling down -Z in toward the centre of the screen. */
+#define FP_SWING_PITCH 38.f
+#define FP_SWING_FORWARD 45.f
+#define FP_SWING_INWARD 6.f
+#define FP_SWING_RISE 4.f
+
+/* 0 while the arm rests, 1 at the furthest reach of a strike. */
+static float firstPersonReach(Player *player) {
+  float reach = 0;
+
+  if (player->attack_time > 0) {
+    reach = sinf((1.f - player->attack_time / PLAYER_ATTACK_DURATION) *
+      180.f * M_DTOR);
+  }
+  if (player->breaking && player->break_time > 0) {
+    /* Mining is the same strike, shallower and repeating. */
+    reach = max(reach, (sinf(player->break_progress * 32.f * M_DTOR) * .5f +
+      .5f) * .6f);
+  }
+  return reach;
+}
+
 static void drawFirstPersonHand(u8 player_num) {
   Player *player = &players[player_num];
   u8 item = playerHeldItem(player);
-  float swing;
+  float reach, pitch, pitch_sin, pitch_cos, roll_sin, roll_cos;
 
   if (player->camera_mode != CAMERA_FIRST_PERSON) {
     return;
   }
-  swing = punchSwingAngle(player) + miningSwingAngle(player);
+  reach = firstPersonReach(player);
+  pitch = FP_REST_PITCH + FP_SWING_PITCH * reach;
+  pitch_sin = sinf(pitch * M_DTOR);
+  pitch_cos = cosf(pitch * M_DTOR);
+  roll_sin = sinf(FP_ARM_ROLL * M_DTOR);
+  roll_cos = cosf(FP_ARM_ROLL * M_DTOR);
   /* Draw in camera space so looking around cannot rotate or displace the
      first-person model. Only the deliberate attack/mining swing changes it. */
   loadCameraProjection();
-  guTranslate(&first_person_sword_translate[dl_no][player_num], 34.f, -36.f,
-    -72.f);
-  guRotateRPY(&first_person_sword_rotate[dl_no][player_num],
-    20.f + swing, 0.f, -18.f);
+  /* The rotation turns the model about its own origin -- the hand -- so for the
+     elbow to be what stays put the translation has to undo where the rotation
+     sends it: translate = elbow - (0, FP_ARM_LENGTH, 0) * rotation. */
+  guTranslate(&first_person_sword_translate[dl_no][player_num],
+    FP_ELBOW_X - FP_SWING_INWARD * reach + FP_ARM_LENGTH * pitch_cos * roll_sin,
+    FP_ELBOW_Y + FP_SWING_RISE * reach - FP_ARM_LENGTH * pitch_cos * roll_cos,
+    FP_ELBOW_Z - FP_SWING_FORWARD * reach - FP_ARM_LENGTH * pitch_sin);
+  guRotateRPY(&first_person_sword_rotate[dl_no][player_num], pitch, 0.f,
+    FP_ARM_ROLL);
   gSPClearGeometryMode(dlp++, G_CULL_BACK);
   gSPMatrix(dlp++, OS_K0_TO_PHYSICAL(&first_person_sword_translate[dl_no][player_num]),
     G_MTX_MODELVIEW | G_MTX_LOAD | G_MTX_NOPUSH);

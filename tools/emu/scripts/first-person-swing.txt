@@ -1,0 +1,33 @@
+# The first-person arm through one attack swing.
+#
+#   tools/emu/run.sh tools/emu/scripts/first-person-swing.txt build/shots-swing
+#
+# A B tap always reads as a punch even when it hits nothing, so the arc can be
+# captured on open meadow with no target to line up.  Each `shot` costs one
+# frame, so the run of them after the tap is consecutive frames of the swing.
+
+wait 960                # title preview: menuAct will not launch before it
+press A 8
+wait 40                 # create-world card
+press START 8
+wait 60                 # name keyboard
+press START 8
+wait 300                # dropped into the world
+
+stick -14 0 57          # come about onto the open meadow
+wait 10
+shot rest               # the arm at rest, nothing swinging
+
+press B 2               # tap: punchSwingAngle starts its arc
+shot swing-0
+shot swing-1
+shot swing-2
+shot swing-3
+shot swing-4
+shot swing-5
+shot swing-6
+shot swing-7
+shot swing-8
+shot swing-9
+
+stop
