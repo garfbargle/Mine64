@@ -80,6 +80,17 @@ extern u32 diag_resolve_clamps;
 extern u32 diag_ray_guard_speed;
 extern u32 diag_ray_guard_time;
 extern u32 diag_position_glitches;
+/* Pad calibration, riding the G row: current raw stick deflection and the peak
+   since boot.  Rest the stick to read its centre error, then roll it round the
+   gate to read how far it actually travels -- the two numbers the stick
+   shaping in player.c has to assume. */
+extern u32 diag_stick_magnitude;
+extern u32 diag_stick_peak;
+/* Simulation step in hundredths of a 60 Hz frame, riding the T row.  100 is
+   retrace rate.  Distinct from FPS, which counts drawn frames: the player
+   updates on every callback whether one is drawn or not, so this sits well
+   above the frame rate and is the unit the stick constants are written in. */
+extern u32 diag_sim_delta;
 /* Overlay visibility: Z + D-pad Up toggles; any integrity anomaly (fault,
    hang, key corruption, position snap) switches it on automatically.  The
    watchdog and SD post-mortem are never gated on it. */

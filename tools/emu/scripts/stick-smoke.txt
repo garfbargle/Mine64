@@ -1,0 +1,49 @@
+# Smoke test for the reshaped stick: does the player still walk, still steer,
+# still aim with Z, and does a barely-deflected stick now do almost nothing.
+#
+# This checks that the control path works, not how it feels -- frame pacing
+# under the emulator is nothing like the console's, and the whole point of the
+# rate limiter and the split look delta is what they do at a real frame rate.
+
+wait 960                # title preview: menuAct will not launch before it
+press A 8
+wait 40                 # create-world card
+press START 8
+wait 60                 # name keyboard
+press START 8
+wait 300                # into the world
+
+wait 24
+shot 1-spawn            # heading before anything moves
+
+# Full deflection forward.  Top walk speed is unchanged, so this should cover
+# the same ground the old build did.
+stick 0 80 60
+wait 12
+shot 2-walked
+
+# Full deflection sideways is a steer: about 204 degrees a second, so 60
+# emulator frames at ~23 fps should come most of the way round.
+stick 80 0 60
+wait 12
+shot 3-steered
+
+# Z-look down, then back up.  Pitch is deliberately slower than yaw now.
+stick 0 -80 20 Z
+wait 8
+shot 4-aimed-down
+stick 0 80 20 Z
+wait 8
+shot 5-aimed-back
+
+# The point of the exercise: a stick resting just outside the old dead zone.
+# 12 counts used to turn about 33 degrees a second; it should now be a crawl,
+# and 8 counts should be nothing at all.
+stick 12 0 60
+wait 12
+shot 6-barely-steered
+stick 8 0 60
+wait 12
+shot 7-dead-zone
+
+stop

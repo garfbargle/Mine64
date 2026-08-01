@@ -44,7 +44,7 @@ wait 60                 # name keyboard
 press START 8
 wait 300                # dropped into the world
 
-stick -14 0 57          # come about onto the open meadow
+stick -27 0 57          # come about onto the open meadow
 wait 10
 press CRIGHT 8
 wait 6

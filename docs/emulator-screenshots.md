@@ -69,6 +69,16 @@ one, `L+R` into a stride is the vault, and closing on a block while mining is B
 with one. A button step followed by a stick step cannot express any of them,
 because the game reads both from the same frame.
 
+A deflection is not an angle. The game shapes the stick before it turns
+anything — a radial dead zone at 9 counts, saturation at 64, and a mostly cubic
+curve in between, all of it in `player.c` — so a script that wants a gentle
+camera move cannot get one by halving a number. Small deflections are much
+gentler than their size suggests, and anything under 9 does nothing at all;
+a slow turn is a moderate deflection held briefly, not a tiny one held for a
+long time. Any script whose framing depends on turning by a particular amount
+has to be re-derived when that shaping changes, which is why the turns in
+`demo-30s.txt` carry the angle they are aiming for in a comment.
+
 ## 4. Durations are rendered frames, not polls
 
 This is the one thing worth remembering. Mine64 reads the pad roughly twice per

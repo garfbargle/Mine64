@@ -21,20 +21,72 @@
 #define START_X (MAX_X / 2)
 #define START_Z (MAX_Z / 2)
 
-#define STICK_DAMPER 22
-/* Steering while walking wants its own feel from aiming with Z held, so the
-   two sensitivities are separate even where they currently agree. */
-#define TURN_DAMPER 22
-/* Full stick deflection is around 80, so a walk covers 80/16 = 5 units per
-   60 Hz frame -- about 4.7 blocks a second, which is Minecraft's walk.  The
-   old 1/8 was nearly ten blocks a second: faster than a sprint is supposed
-   to be, which left L with nothing to give. */
-#define MOVE_SPEED (1 / 16.f)
+/*
+ * Analog stick shaping.
+ *
+ * Every pad in the wild is a different pad.  A new stick reads about 80 counts
+ * at full deflection; one that has been played reads less, rests a few counts
+ * off centre and wanders by another one or two between samples, and since the
+ * controller latches its idea of centre when it is reset, a stick that was
+ * leaning at power-on is biased for the whole session.  None of that is
+ * knowable from in here, so every constant below is picked to degrade gently
+ * across the whole range of pads rather than to be exactly right for one.
+ *
+ * Raw counts become a direction and a 0..1 magnitude once, radially, and
+ * everything downstream works in those terms.
+ */
+
+/* Slop tolerated at rest.  An emulator's stick is exact and needs about 4;
+   hardware needs this much before a pad that is merely tired stops walking the
+   camera around on its own. */
+#define STICK_DEAD_ZONE 9.f
+/* Magnitude taken as full deflection.  Nintendo's own guidance puts the
+   dependable range near 61 even though a healthy stick reaches 80, so
+   saturating here costs a good pad the outermost fifth of its travel -- which
+   it spends jammed against the gate anyway -- and hands a worn one its full
+   speed back instead of a permanent handicap. */
+#define STICK_SATURATION 64.f
+/* How much of the look response stays proportional; the rest is cubic.  Enough
+   curve to keep the first part of the travel quiet, but not so much that fine
+   control is only available in the few counts just outside the dead zone --
+   that is the least repeatable part of a real stick's travel, mechanically,
+   and squeezing precision into it makes precision impossible to hold. */
+#define STICK_LINEARITY .45f
+
+/*
+ * Degrees per 60 Hz frame at full deflection.
+ *
+ * Aiming and steering are different jobs and get different ceilings.  A steer
+ * is a change of heading and wants authority; aiming with Z is where a block
+ * face has to be landed on, and every degree per second of top speed there is
+ * a degree per second of overshoot, because the player is correcting against
+ * a picture that is already 100 ms old.  Pitch is slower again: it covers
+ * ninety degrees of travel against yaw's full circle.
+ */
+#define LOOK_YAW_RATE 2.2f
+#define LOOK_PITCH_RATE 1.6f
+#define TURN_RATE 2.8f
+/* Ceiling on how fast a turn rate itself may change, in degrees per frame per
+   frame: about a tenth of a second from rest to full speed.  Long enough to
+   round off the ends of every turn, short enough that holding one has no lag
+   worth feeling. */
+#define LOOK_ACCELERATION .55f
+
+/* World units per 60 Hz frame at full deflection -- about 4.7 blocks a second,
+   which is Minecraft's walk.  Stick magnitude arrives normalised, so this is
+   the speed itself rather than a divisor on raw counts. */
+#define MOVE_SPEED 5.f
 #define SPRINT_MULTIPLIER 1.5f
 #define JUMP_SPEED (BLOCK_SIZE / 4.5)
 #define TERMINAL_SPEED (BLOCK_SIZE / 2)
 #define GRAVITY (BLOCK_SIZE / 40)
 #define MAX_FRAME_DELTA 2.5f
+/* Rotation's own frame-time ceiling.  Physics has to keep the tight clamp so
+   that a long frame cannot carry anyone through a wall, but a camera tunnels
+   through nothing, and clamping both at 2.5 meant the same push turned 218
+   degrees a second at 24 fps and 82 at 9 -- with terrain streaming moving the
+   frame rate around constantly, that read as the stick being unpredictable. */
+#define MAX_LOOK_DELTA 8.f
 #define BOX_RADIUS 0.35
 #define BOX_HEIGHT 1.8
 #define EYE_HEIGHT PLAYER_EYE_HEIGHT
@@ -537,6 +589,8 @@ static void spawnPlayer(Player *player, int x, int z) {
      into existence rather than saved.  Respawning after a death leaves
      whatever the player last chose alone. */
   player->stick_turns = TRUE;
+  player->look_rate_yaw = 0;
+  player->look_rate_pitch = 0;
   player->walk_time = 0;
   player->walk_swing = 0;
   player->y_velocity = 0;
@@ -593,6 +647,8 @@ static void respawnPlayer(Player *player, int x, int z) {
   player->fall_distance = 0;
   player->vault_time = 0;
   player->camera_y_offset = 0;
+  player->look_rate_yaw = 0;
+  player->look_rate_pitch = 0;
   player->knockback_velocity = (Vector3) {0, 0, 0};
   player->attack_time = 0;
   player->hurt_time = 0;
@@ -1456,6 +1512,10 @@ static void openInventory(u8 player_num) {
     player->crafting_cursor = playerRecipeCount(player) - 1;
   }
   inventory_player = player_num;
+  /* The pack is a pause, and a paused turn should not still be running when
+     the world comes back. */
+  player->look_rate_yaw = 0;
+  player->look_rate_pitch = 0;
   resetInventoryNavigation();
   current_screen = INVENTORY;
 }
@@ -1508,17 +1568,69 @@ static u8 playerColumnReady(int cx, int cz) {
     !graphicsColumnMissingMesh(cx, cz);
 }
 
-static u8 updatePlayer(u8 player_num, float delta) {
+/* A frame's stick reading, shaped once and shared by everything that consumes
+   it.  Both axes clear one radial dead zone rather than two independent ones,
+   so that leaving centre is a smooth departure from zero instead of a step up
+   to whatever the threshold was, and so a diagonal is not quietly faster than
+   a straight push the way per-axis handling makes it. */
+typedef struct {
+  float x;       /* -1..1, proportional to deflection past the dead zone */
+  float y;
+  u8 deflection; /* raw counts, kept for the overlay's calibration row */
+} StickInput;
+
+static StickInput readStick(s8 raw_x, s8 raw_y) {
+  StickInput stick = {0, 0, 0};
+  float x = raw_x;
+  float y = raw_y;
+  float length = sqrtf(x * x + y * y);
+  float magnitude;
+
+  stick.deflection = (u8) min(255.f, length);
+  if (length <= STICK_DEAD_ZONE) {
+    return stick;
+  }
+  /* Saturating rather than dividing by the raw maximum is the whole robustness
+     story: a stick that cannot reach STICK_SATURATION loses speed in
+     proportion instead of falling off a cliff, and one that overshoots it is
+     simply already at full. */
+  magnitude = min(1.f,
+    (length - STICK_DEAD_ZONE) / (STICK_SATURATION - STICK_DEAD_ZONE));
+  stick.x = x * (magnitude / length);
+  stick.y = y * (magnitude / length);
+  return stick;
+}
+
+/* Mostly cubic, so the quiet part of the stick's travel stays quiet.  Applied
+   per axis rather than to the magnitude, because a steer should depend on how
+   far over the stick is and not on whether the player also happens to be
+   walking forward at the time. */
+static float stickCurve(float axis) {
+  float magnitude = axis < 0 ? -axis : axis;
+  float shaped = magnitude *
+    (STICK_LINEARITY + (1.f - STICK_LINEARITY) * magnitude * magnitude);
+
+  return axis < 0 ? -shaped : shaped;
+}
+
+static float approachRate(float current, float target, float step) {
+  if (target > current) {
+    return min(target, current + step);
+  }
+  return max(target, current - step);
+}
+
+static u8 updatePlayer(u8 player_num, float delta, float look_delta) {
   Player *player = &players[player_num];
   NUContData *cont = &cont_data[player_num];
   Vector3 velocity = {0, 0, 0};
   float t, t_total = 0;
   float move_t;
   int collision_axis = 0;
-  s8 stick_x = cont->stick_x;
-  s8 stick_y = cont->stick_y;
+  StickInput stick = readStick(cont->stick_x, cont->stick_y);
   u8 swimming = playerInWater(player);
   u8 grounded;
+  u8 steering = FALSE;
   u8 vaulted = FALSE;
   u8 sprinting = FALSE;
   u8 jumped = FALSE;
@@ -1526,6 +1638,15 @@ static u8 updatePlayer(u8 player_num, float delta) {
   u8 resolve_steps = 0;
 
   diag_player_step = DIAG_STEP_INPUT;
+
+  /* Player 1's pad speaks for the overlay; the peak is never cleared, so a
+     lap of the gate early on leaves the reading there to be read later. */
+  if (player_num == 0) {
+    diag_stick_magnitude = stick.deflection;
+    if (stick.deflection > diag_stick_peak) {
+      diag_stick_peak = stick.deflection;
+    }
+  }
 
   /*
    * Position sanity, before anything derives state from it.  Run 5 faulted
@@ -1589,9 +1710,6 @@ static u8 updatePlayer(u8 player_num, float delta) {
     return TRUE;
   }
 
-  if (stick_x > -4 && stick_x < 4) stick_x = 0;
-  if (stick_y > -4 && stick_y < 4) stick_y = 0;
-
   player->attack_time = max(0, player->attack_time - delta);
   player->hurt_time = max(0, player->hurt_time - delta);
   player->vault_time = max(0, player->vault_time - delta);
@@ -1600,39 +1718,66 @@ static u8 updatePlayer(u8 player_num, float delta) {
     player->camera_y_offset = 0;
   }
 
-  if (cont->button & Z_TRIG) {
-    player->yaw -= stick_x * delta / STICK_DAMPER;
-    player->pitch += stick_y * delta / STICK_DAMPER;
+  /*
+   * Aiming with Z and steering while walking drive one shared pair of rates,
+   * so releasing Z hands an in-progress turn over rather than cutting it dead,
+   * and both get the same ease on and off.  The stick sets a target; the
+   * limiter below decides how fast the camera is allowed to get there.
+   *
+   * The console has one stick, and it is worth more as a rudder than as a
+   * strafe: steering keeps the view pointing wherever the player is headed
+   * without the camera ever having to guess at their intent.
+   */
+  {
+    float yaw_target = 0;
+    float pitch_target = 0;
+
+    if (cont->button & Z_TRIG) {
+      yaw_target = -stickCurve(stick.x) * LOOK_YAW_RATE;
+      pitch_target = stickCurve(stick.y) * LOOK_PITCH_RATE;
+    } else if (player->stick_turns) {
+      yaw_target = -stickCurve(stick.x) * TURN_RATE;
+      steering = TRUE;
+    }
+    player->look_rate_yaw = approachRate(player->look_rate_yaw, yaw_target,
+      LOOK_ACCELERATION * look_delta);
+    player->look_rate_pitch = approachRate(player->look_rate_pitch,
+      pitch_target, LOOK_ACCELERATION * look_delta);
+  }
+
+  if (player->look_rate_yaw != 0) {
+    player->yaw += player->look_rate_yaw * look_delta;
     if (player->yaw < 0) player->yaw += 360;
     else if (player->yaw >= 360) player->yaw -= 360;
+    /* Z-look deliberately turns the head and leaves the body behind.  A steer
+       is the whole player coming about, so the avatar follows even when the
+       turn happens from a standstill -- but only while the stick is actually
+       pushed sideways, or the tail of a Z-look would drag the body round to
+       match the head the moment Z came up. */
+    if (steering && stick.x != 0) {
+      player->body_yaw = player->yaw;
+    }
+  }
+  if (player->look_rate_pitch != 0) {
+    player->pitch += player->look_rate_pitch * look_delta;
     if (player->pitch < 0) player->pitch += 360;
     else if (player->pitch >= 360) player->pitch -= 360;
     if (player->pitch > 90 && player->pitch < 180) player->pitch = 90;
     if (player->pitch < 270 && player->pitch > 180) player->pitch = 270;
-  } else {
-    if (player->stick_turns) {
-      /* The console has one stick, and it is worth more as a rudder than as a
-         strafe: steering keeps the view pointing wherever the player is headed
-         without the camera ever having to guess at their intent.  A plain
-         deflection is a plain turn rate, so releasing the sideways push stops
-         the turn on the spot instead of unwinding it. */
-      if (stick_x != 0) {
-        player->yaw -= stick_x * delta / TURN_DAMPER;
-        if (player->yaw < 0) player->yaw += 360;
-        else if (player->yaw >= 360) player->yaw -= 360;
-        /* Z-look deliberately turns the head and leaves the body behind.  A
-           steer is the whole player coming about, so the avatar follows even
-           when the turn happens from a standstill -- but only on an actual
-           steer, or releasing Z would snap the body round to match the head. */
-        player->body_yaw = player->yaw;
-      }
-      /* Only the forward axis walks.  If sideways carried any movement of its
-         own, lining up on the block in front of you would mean shuffling away
-         from it. */
-      stick_x = 0;
-    }
-    velocity.x += stick_x * cosf(player->yaw * M_DTOR) - stick_y * sinf(player->yaw * M_DTOR);
-    velocity.z -= stick_x * sinf(player->yaw * M_DTOR) + stick_y * cosf(player->yaw * M_DTOR);
+  }
+
+  if ((cont->button & Z_TRIG) == 0) {
+    /* Walking keeps the proportional reading.  The cubic curve is there to buy
+       fine control while aiming, and a player asking to walk generally wants
+       to walk, not to creep for the first half of the stick. */
+    float move_x = steering ? 0 : stick.x;
+    float move_y = stick.y;
+
+    /* Only the forward axis walks while the stick steers.  If sideways carried
+       any movement of its own, lining up on the block in front of you would
+       mean shuffling away from it. */
+    velocity.x += move_x * cosf(player->yaw * M_DTOR) - move_y * sinf(player->yaw * M_DTOR);
+    velocity.z -= move_x * sinf(player->yaw * M_DTOR) + move_y * cosf(player->yaw * M_DTOR);
     velocity.x *= MOVE_SPEED;
     velocity.z *= MOVE_SPEED;
     if (swimming) {
@@ -1869,6 +2014,7 @@ static u8 updatePlayer(u8 player_num, float delta) {
 void updatePlayers() {
   OSTime time;
   float delta;
+  float look_delta;
   u16 down_pressed, up_pressed, act_pressed;
   u8 i;
 
@@ -1879,6 +2025,11 @@ void updatePlayers() {
   delta = last_time == 0 ? 1.f :
     OS_CYCLES_TO_USEC(time - last_time) * 60 / 1000000.f;
   last_time = time;
+  /* Rotation gets the real frame time, near enough, while everything that can
+     move a body through the world keeps the tight clamp.  See MAX_LOOK_DELTA:
+     sharing one clamp is what tied look speed to the frame rate. */
+  look_delta = min(delta, MAX_LOOK_DELTA);
+  diag_sim_delta = (u32) (delta * 100);
   if (delta > MAX_FRAME_DELTA) {
     delta = MAX_FRAME_DELTA;
   }
@@ -2088,7 +2239,7 @@ void updatePlayers() {
     }
   }
   for (i = 0; i < active_player_count; i++) {
-    if (updatePlayer(i, delta)) {
+    if (updatePlayer(i, delta, look_delta)) {
       return;
     }
   }

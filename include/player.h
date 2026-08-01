@@ -68,6 +68,13 @@ typedef struct {
   /* Left and right steer rather than step sideways, so the view always points
      where the player is headed.  Off restores strafing. */
   u8 stick_turns;
+  /* Live turn rates in degrees per 60 Hz frame, which the stick sets a target
+     for rather than writing directly.  Carrying the rate across frames is what
+     rounds off the start and stop of every turn; aiming with Z and steering
+     share the yaw rate so releasing Z hands a turn over instead of cutting it.
+     Transient like the rest of the pose. */
+  float look_rate_yaw;
+  float look_rate_pitch;
   float walk_time;
   float walk_swing;
   float y_velocity;

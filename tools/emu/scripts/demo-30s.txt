@@ -36,7 +36,7 @@ wait 300                # dropped into the world that was orbiting the menu
 # --- 1. where you woke up (0:00) ---
 wait 24
 shot 1-spawn
-stick 13 0 100          # come about 150 degrees: horizon, fog, compass, HUD
+stick 25 0 100          # come about 150 degrees: horizon, fog, compass, HUD
 wait 20
 shot 2-horizon
 
@@ -46,12 +46,12 @@ shot 2-horizon
 # heading is how the camera ends up pressed into a wall of dirt for the rest
 # of the take.
 stick 0 70 26           # the walk is the point: columns stream in ahead
-stick -9 70 22          # drift the heading so it does not read as a rail
+stick -16 70 22         # drift the heading so it does not read as a rail
 wait 10
 shot 3-walked
 
 # --- 3. mine (0:09) ---
-stick 0 -26 10 Z        # Z-look down: the stick turns the head, not the body
+stick 0 -48 10 Z        # Z-look down: the stick turns the head, not the body
 wait 8
 shot 4-aimed
 press B 22              # ground is 22 ticks, ~9 frames of held B.  Two blocks,
@@ -67,7 +67,7 @@ press A 8               # place the block that just went in the pack
 wait 12
 stick 0 -45 14          # step back off it, so the placed block is seen from
                         # outside rather than through the camera's nose
-stick 0 20 8 Z          # and lift the view back toward the horizon
+stick 0 43 8 Z          # and lift the view back toward the horizon
 wait 8
 shot 6-placed
 
@@ -85,17 +85,17 @@ press B 8
 wait 16
 
 # --- 6. third person, and run (0:21) ---
-stick 0 20 5 Z          # level the camera again: -29 down, +18 back, +11 here
+stick 0 43 5 Z          # level the camera again: -29 down, +18 back, +11 here
 press CUP 8             # third person: the avatar, and a nine-block reach
 wait 16
 shot 9-third
 stick 0 70 55 L         # L sprints, and sprinting spends food
 stick 0 70 10 L+R       # L+R into a stride is the vault; clear of one, a jump
 wait 8
-stick 11 70 45 L        # lean into the turn rather than snapping round
+stick 19 70 45 L        # lean into the turn rather than snapping round
 stick 0 70 40 L
 shot 10-run
-stick -10 0 38          # settle on the view
+stick -22 0 38          # settle on the view
 wait 16
 shot 11-final
 

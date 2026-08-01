@@ -357,6 +357,19 @@ u32 diag_ray_guard_time;
    out) and was snapped back, or a rebase was refused for the same reason.
    Any non-zero G proves the position-corruption theory of the run-5 fault. */
 u32 diag_position_glitches;
+/* Raw stick deflection for player 1 this frame, and the largest seen since
+   boot.  These are the two numbers the shaping constants in player.c have to
+   be guessed at without: rest tells you how much dead zone a pad needs, peak
+   tells you whether it can reach STICK_SATURATION. */
+u32 diag_stick_magnitude;
+u32 diag_stick_peak;
+/* Hundredths of a 60 Hz frame between player updates.  100 means the
+   simulation is stepping at retrace rate.  This is the number every rate
+   constant in player.c is denominated in, and it is not the FPS row: the
+   player updates on every graphics callback, drawn frame or not.  The worst
+   case is already on the W row, which measures the same gap in tenths of a
+   millisecond. */
+u32 diag_sim_delta;
 
 static const u16 diag_step_colors[8] = {
   GPACK_RGBA5551(0, 0, 0, 1),       /* 0 none */
@@ -5734,6 +5747,13 @@ static void drawStreamingDiagnostics() {
      borrow the two least relevant rows during this focused reproduction. */
   y = drawDiagnosticRow(diag_ray_clamps ? "S" : "C",
     diag_ray_clamps ? diag_ray_guard_speed : mesh_block_count, y);
+  /* Simulation step in hundredths of a 60 Hz frame, riding the T row: 100 is
+     retrace rate, and it is the unit every stick constant in player.c is
+     written in.  Not the same as FPS -- the player updates on every callback,
+     drawn frame or not, so this runs well ahead of the frame rate and dips
+     hard whenever the gated streaming work stretches a callback. */
+  drawString("I", 60, y);
+  drawUnsigned(diag_sim_delta, 72, y);
   y = drawDiagnosticRow("T", pending_terrain, y);
   /* Worst frame gap and worst gated-CPU cost in the window, in tenths of a
      millisecond: W 166 is a clean 60 Hz frame, W 1000 is 10 fps.  B close to
@@ -5755,6 +5775,12 @@ static void drawStreamingDiagnostics() {
     solo_max_visible_columns, 72, y);
   y = drawDiagnosticRow("B", diag_worst_gated_usec / 100, y);
   y = drawDiagnosticRow("L", diag_loop_clamps, y);
+  /* Stick deflection now and at its peak, riding the G row the way FPS rides
+     W: pad calibration is read once and never watched, so it does not deserve
+     a row of its own in a stack that has none left. */
+  drawString("J", 60, y);
+  drawUnsigned(diag_stick_magnitude, 72, y);
+  drawUnsigned(diag_stick_peak, 116, y);
   y = drawDiagnosticRow("G", diag_position_glitches, y);
   /* Corrupt window keys caught and repaired.  Any non-zero K is the run-6
      guTranslate fault being absorbed; the first bad key's bits are in the
