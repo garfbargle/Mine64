@@ -16,6 +16,6 @@ ${CC:-cc} -std=c89 -Wall -Wextra -Wno-unused-parameter -O1 \
   -I tools/gentest/shim -I include \
   -o "$out/edittest" \
   tools/edittest/main.c tools/gentest/stubs.c \
-  src/edits.c src/world.c src/noise.c src/math.c src/mods.c -lm
+  src/edits.c src/home.c src/world.c src/noise.c src/math.c src/mods.c -lm
 
 "$out/edittest"

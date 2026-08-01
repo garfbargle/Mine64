@@ -2043,7 +2043,6 @@ void updatePlayers() {
       return;
     }
   }
-  worldEditTickMessage();
   diagPaintPhase(DIAG_PHASE_TREES);
   updateTrees(delta);
   diagPaintPhase(DIAG_PHASE_ITEMS);
@@ -2112,13 +2111,7 @@ void updatePlayers() {
       if ((cont_data[i].button & Z_TRIG) == 0 &&
           cont_data[i].trigger &
           (U_JPAD | D_JPAD | L_JPAD | R_JPAD)) {
-        if (!worldFixedExtentResident()) {
-          /* The save format still writes the whole original extent, and part
-             of it has been evicted by streaming.  Refusing is temporary state
-             -- walking back reloads the extent -- so unlike a write failure
-             it must not permanently disable saving. */
-          save_far_message = 120;
-        } else if (!worldJobActive()) {
+        if (!worldJobActive()) {
           /* Sliced across callbacks now, so the game keeps drawing and the
              player keeps moving while it writes; menuSaveFinished posts the
              confirmation.  Asking again mid-write would open a second file

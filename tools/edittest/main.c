@@ -1,15 +1,16 @@
 /*
- * Does the player-edit pool keep its promises?
+ * Do the player's changes to the world survive the block window recycling
+ * them, and is there still a budget to run out of?
  *
- * The pool is a compact array sorted by column bucket, with a prefix index so
- * that replaying one column does not walk the whole thing.  That layout is
- * what lets the ceiling rise, and it is also the kind of structure that goes
- * wrong quietly: a bucket offset that drifts by one does not crash, it just
- * replays somebody else's edits into a column, and the damage only shows up
- * after the player walks away and comes back.
+ * The window is a scrolling cache: walk far enough and a column is reused for
+ * somewhere else, and coming back rebuilds it from its coordinates and the
+ * seed.  Edits used to live in a sparse pool of deviations with a few thousand
+ * slots.  Now the whole save extent is kept in the home store, so the question
+ * is no longer how many edits fit -- it is whether the store is written and
+ * read back at the right moments.
  *
- * So every check here ends the same way -- regenerate the column from scratch
- * and ask whether the world still looks the way the player left it.
+ * Every check therefore ends the same way: force the column out of the window,
+ * bring it back, and ask whether the world still looks the way it was left.
  *
  * Build and run:  tools/edittest/run.sh
  */
@@ -17,6 +18,7 @@
 
 #include "blocks.h"
 #include "edits.h"
+#include "home.h"
 #include "math.h"
 #include "mods.h"
 #include "world.h"
@@ -32,57 +34,7 @@ static void check(const char *what, int ok) {
   }
 }
 
-/*
- * Everything the pool's layout claims, tested against the pool itself.
- *
- * Records are sorted by bucket and then by key, the prefix index agrees with
- * where records actually sit, and every record is filed under the column its
- * own coordinates put it in.
- */
-static int poolConsistent(void) {
-  u16 bucket;
-  u16 index;
-
-  if (world_edit_column_first[0] != 0) {
-    printf("    bucket 0 does not start at 0\n");
-    return 0;
-  }
-  if (world_edit_column_first[EDIT_COLUMNS] != world_edit_count) {
-    printf("    terminator %u != count %u\n",
-      world_edit_column_first[EDIT_COLUMNS], world_edit_count);
-    return 0;
-  }
-  for (bucket = 0; bucket < EDIT_COLUMNS; bucket++) {
-    u16 start = world_edit_column_first[bucket];
-    u16 end = world_edit_column_first[bucket + 1];
-
-    if (start > end) {
-      printf("    bucket %u runs backwards (%u..%u)\n", bucket, start, end);
-      return 0;
-    }
-    for (index = start; index < end; index++) {
-      WorldEdit record = world_edits[index];
-      u16 owner = (u16) (((int) EDIT_X(record) >> CHUNK_SHIFT) * CHUNKS_Z +
-        ((int) EDIT_Z(record) >> CHUNK_SHIFT));
-
-      if (owner != bucket) {
-        printf("    record %u sits in bucket %u but belongs to %u\n",
-          index, bucket, owner);
-        return 0;
-      }
-      if (index > start &&
-          EDIT_KEY_OF(world_edits[index - 1]) >= EDIT_KEY_OF(record)) {
-        printf("    bucket %u is not sorted at %u\n", bucket, index);
-        return 0;
-      }
-    }
-  }
-  return 1;
-}
-
-/* Throw the column away and rebuild it from its coordinates and the seed, the
-   way streaming does when the player walks out of range and returns. */
-static void regenerateColumn(int cx, int cz) {
+static void decorate(int cx, int cz) {
   int guard;
 
   worldGenerateColumnTerrain(cx, cz);
@@ -95,6 +47,18 @@ static void regenerateColumn(int cx, int cz) {
   failures++;
 }
 
+/*
+ * Push a column out of the window and pull it back.
+ *
+ * Slots are addressed by the low bits of the chunk coordinates, so claiming
+ * the column WINDOW_COLUMNS away lands on the same slot and evicts this one --
+ * the same thing walking that far does, without the walk.
+ */
+static void evictAndReturn(int cx, int cz) {
+  decorate(cx + WINDOW_COLUMNS, cz);
+  decorate(cx, cz);
+}
+
 static void generateWorld(u32 seed) {
   gentestSetTime(seed);
   beginWorldGeneration(seed);
@@ -102,11 +66,11 @@ static void generateWorld(u32 seed) {
   }
 }
 
-/* A cell inside the extent that currently holds something other than `block`,
-   so an edit to `block` is always a real deviation. */
+/* A cell inside the extent holding something other than `block`, so writing
+   `block` there is always a real change. */
 static int findCell(int cx, int cz, u8 block, int *out_x, int *out_y,
     int *out_z) {
-  int bx, by, bz;
+  int bx, bz, by;
 
   for (bx = 0; bx < CHUNK_SIZE; bx++) {
     for (bz = 0; bz < CHUNK_SIZE; bz++) {
@@ -126,223 +90,243 @@ static int findCell(int cx, int cz, u8 block, int *out_x, int *out_y,
   return 0;
 }
 
-static void testBasicPersistence(void) {
+static void testSurvivesRecycling(void) {
   int x, y, z;
 
-  printf("\nAn edit survives regeneration\n");
+  printf("\nAn edit survives the window recycling its column\n");
   check("a target cell was found", findCell(3, 4, BRICKS, &x, &y, &z));
   check("the edit is accepted", worldEditSet(x, y, z, BRICKS));
   check("the world shows it immediately", blockGet(x, y, z) == BRICKS);
-  check("it took exactly one slot", world_edit_count == 1);
-  check("the pool is consistent", poolConsistent());
 
-  regenerateColumn(3, 4);
-  check("it is still there after regeneration", blockGet(x, y, z) == BRICKS);
+  evictAndReturn(3, 4);
+  check("it is still there after the column comes back",
+    blockGet(x, y, z) == BRICKS);
+}
+
+/* Breaking a block is an edit like any other, and the one most likely to be
+   quietly undone by regeneration putting the terrain back. */
+static void testRemovalSurvives(void) {
+  int x, y, z;
+
+  printf("\nA removed block stays removed\n");
+  check("a solid cell was found", findCell(6, 3, AIR, &x, &y, &z));
+  check("the removal is accepted", worldEditSet(x, y, z, AIR));
+  evictAndReturn(6, 3);
+  check("the cell is still empty", blockGet(x, y, z) == AIR);
 }
 
 /*
- * The reclamation rule: an edit that puts the original block back is not a
- * deviation any more.  Without this, mining a block and replacing it spends a
- * slot forever, which is most of what a player does while building.
+ * The point of the whole change: build far more than the old pool could hold.
+ *
+ * Sixteen columns filled solid over eleven levels is 11,264 changed cells,
+ * against a pool that used to stop at 2,048.  Nothing here is expected to be
+ * refused, and all of it has to come back.
  */
-static void testReclamation(void) {
-  int x, y, z;
-  u8 original;
-  u16 before;
-
-  printf("\nUndoing an edit returns its slot\n");
-  check("a target cell was found", findCell(5, 5, BRICKS, &x, &y, &z));
-  original = blockGet(x, y, z);
-  before = world_edit_count;
-
-  worldEditSet(x, y, z, BRICKS);
-  check("the edit took a slot", world_edit_count == before + 1);
-  worldEditSet(x, y, z, AIR);
-  check("changing it again reuses the slot", world_edit_count == before + 1);
-  worldEditSet(x, y, z, original);
-  check("putting the original back frees the slot",
-    world_edit_count == before);
-  check("the pool is consistent", poolConsistent());
-
-  regenerateColumn(5, 5);
-  check("regeneration restores the original block",
-    blockGet(x, y, z) == original);
-}
-
-/* Setting a cell to what it already holds is not a deviation and must not
-   consume a slot -- otherwise placing a stone block against stone terrain
-   quietly bills the player for it. */
-static void testNoOpEdit(void) {
-  int x, y, z;
-  u16 before;
-
-  printf("\nA no-op edit costs nothing\n");
-  check("a target cell was found", findCell(6, 6, BRICKS, &x, &y, &z));
-  before = world_edit_count;
-  check("setting a cell to its own block is accepted",
-    worldEditSet(x, y, z, blockGet(x, y, z)));
-  check("the pool did not grow", world_edit_count == before);
-}
-
-/*
- * Many edits scattered across many columns, then every column rebuilt.  This
- * is where a drifting bucket offset shows itself: the pool stays the right
- * size and every individual insert looks fine, but a column replays the wrong
- * records.
- */
-static void testManyColumns(void) {
-#define SAMPLE_COUNT 900
-  static int xs[SAMPLE_COUNT];
-  static int ys[SAMPLE_COUNT];
-  static int zs[SAMPLE_COUNT];
-  static u8 blocks[SAMPLE_COUNT];
-  static const u8 palette[4] = {BRICKS, PLANKS, COBBLESTONE, AIR};
-  int taken = 0;
-  int attempt;
+static void testNoBudget(void) {
+  int cx, cz, bx, bz, y;
+  int written = 0;
+  int refused = 0;
   int wrong = 0;
-  int cx, cz;
-  int i;
 
-  printf("\nScattered edits across the whole extent\n");
-  for (attempt = 0; attempt < SAMPLE_COUNT * 12 && taken < SAMPLE_COUNT;
-      attempt++) {
-    int x = random(MAX_X);
-    int y = 1 + random(MAX_Y - 1);
-    int z = random(MAX_Z);
-    u8 block = palette[random(4)];
+  printf("\nBuilding is not rationed\n");
+  for (cx = 2; cx < 6; cx++) {
+    for (cz = 2; cz < 6; cz++) {
+      for (bx = 0; bx < CHUNK_SIZE; bx++) {
+        for (bz = 0; bz < CHUNK_SIZE; bz++) {
+          for (y = 10; y < 21; y++) {
+            int x = cx * CHUNK_SIZE + bx;
+            int z = cz * CHUNK_SIZE + bz;
 
-    if (blockGet(x, y, z) == block || !worldEditCanSet(x, y, z)) {
-      continue;
-    }
-    /* Later writes to a cell would make the expected value ambiguous. */
-    for (i = 0; i < taken; i++) {
-      if (xs[i] == x && ys[i] == y && zs[i] == z) {
-        break;
+            if (worldEditSet(x, y, z, BRICKS)) {
+              written++;
+            } else {
+              refused++;
+            }
+          }
+        }
       }
     }
-    if (i < taken) {
-      continue;
-    }
-    if (!worldEditSet(x, y, z, block)) {
-      continue;
-    }
-    xs[taken] = x;
-    ys[taken] = y;
-    zs[taken] = z;
-    blocks[taken] = block;
-    taken++;
   }
-  check("enough edits were placed", taken == SAMPLE_COUNT);
-  check("the pool is consistent", poolConsistent());
+  printf("    %d cells written, %d refused\n", written, refused);
+  check("every cell was accepted", refused == 0);
+  check("far more than the old 2048-slot pool", written == 4 * 4 * 64 * 11);
+
+  for (cx = 2; cx < 6; cx++) {
+    for (cz = 2; cz < 6; cz++) {
+      evictAndReturn(cx, cz);
+    }
+  }
+  for (cx = 2; cx < 6; cx++) {
+    for (cz = 2; cz < 6; cz++) {
+      for (bx = 0; bx < CHUNK_SIZE; bx++) {
+        for (bz = 0; bz < CHUNK_SIZE; bz++) {
+          for (y = 10; y < 21; y++) {
+            if (blockGet(cx * CHUNK_SIZE + bx, y, cz * CHUNK_SIZE + bz) !=
+                BRICKS) {
+              wrong++;
+            }
+          }
+        }
+      }
+    }
+  }
+  check("all of it survives recycling", wrong == 0);
+}
+
+/*
+ * Canopy from a neighbour reaches two blocks past its own column, so a column
+ * restored from its snapshot can have leaves stamped back over it by a
+ * neighbour rebuilt afterwards.  Deterministic terrain would survive that --
+ * the same leaves land in the same places -- but the player's edit would not.
+ */
+static void testNeighbourCanopy(void) {
+  int x, y, z;
+  int cx = 8;
+  int cz = 8;
+
+  printf("\nA neighbour rebuilding does not overwrite an edit\n");
+  check("a target cell was found", findCell(cx, cz, BRICKS, &x, &y, &z));
+  check("the edit is accepted", worldEditSet(x, y, z, BRICKS));
+  evictAndReturn(cx, cz);
+  check("it survives its own column's rebuild", blockGet(x, y, z) == BRICKS);
+
+  /* Now rebuild everything around it, which is what runs the tree pass over
+     the edited column's boundary again. */
+  {
+    int dx, dz;
+
+    for (dx = -1; dx <= 1; dx++) {
+      for (dz = -1; dz <= 1; dz++) {
+        if (dx != 0 || dz != 0) {
+          evictAndReturn(cx + dx, cz + dz);
+        }
+      }
+    }
+  }
+  check("it survives every neighbour's rebuild too",
+    blockGet(x, y, z) == BRICKS);
+}
+
+/*
+ * The save reads the home store rather than the window, which is what retired
+ * the old "too far from spawn to save" refusal.  The store therefore has to
+ * agree with the window for a column that is still resident, and has to keep
+ * answering for one that is not.
+ */
+static void testStoreMatchesWindow(void) {
+  int x, y, z;
+  int mismatches = 0;
+  int cx, cz, bx, bz;
+
+  printf("\nThe store is what the save will write\n");
+  check("a target cell was found", findCell(9, 9, BRICKS, &x, &y, &z));
+  worldEditSet(x, y, z, BRICKS);
+
+  /* An edit made since the column was restored is only in the window until
+     this runs; the save calls it for exactly that reason. */
+  homeFlushResident();
+  check("the store has the fresh edit", homeBlockGet(x, y, z) == BRICKS);
 
   for (cx = 0; cx < CHUNKS_X; cx++) {
     for (cz = 0; cz < CHUNKS_Z; cz++) {
-      regenerateColumn(cx, cz);
-    }
-  }
-  for (i = 0; i < taken; i++) {
-    if (blockGet(xs[i], ys[i], zs[i]) != blocks[i]) {
-      if (wrong == 0) {
-        printf("    first mismatch at %d,%d,%d: %u, expected %u\n",
-          xs[i], ys[i], zs[i], blockGet(xs[i], ys[i], zs[i]), blocks[i]);
+      for (bx = 0; bx < CHUNK_SIZE; bx += 3) {
+        for (bz = 0; bz < CHUNK_SIZE; bz += 3) {
+          int wx = cx * CHUNK_SIZE + bx;
+          int wz = cz * CHUNK_SIZE + bz;
+          int wy;
+
+          for (wy = 0; wy < MAX_Y; wy += 5) {
+            if (homeBlockGet(wx, wy, wz) != blockGet(wx, wy, wz)) {
+              mismatches++;
+            }
+          }
+        }
       }
-      wrong++;
     }
   }
-  check("every edit survives a full rebuild of the extent", wrong == 0);
-#undef SAMPLE_COUNT
+  check("store and window agree across the extent", mismatches == 0);
+
+  /* Walk the column out of the window; the store must still answer. */
+  decorate(9 + WINDOW_COLUMNS, 9);
+  check("the store answers for an evicted column",
+    homeBlockGet(x, y, z) == BRICKS);
+  decorate(9, 9);
 }
 
 /*
- * Exploration must not spend the building budget.  Outside the fixed extent a
- * change still lands in the block window -- the player sees it happen -- but
- * it takes no slot, because the save format could never have carried it.
+ * Outside the extent a change is applied but not retained.  It is not refused
+ * -- the player sees it happen -- it simply does not outlive the column, which
+ * is all the save format could ever have carried.
  */
-static void testOutsideExtent(void) {
+static void testOutsideExtentIsTransient(void) {
   int cx = CHUNKS_X + 3;
-  int cz = 2;
+  int cz = 5;
   int x = cx * CHUNK_SIZE + 1;
   int z = cz * CHUNK_SIZE + 1;
-  u16 before = world_edit_count;
   int y;
   int placed = 0;
+  int survived = 0;
 
-  printf("\nEdits outside the extent are transient, not refused\n");
-  worldGenerateColumnTerrain(cx, cz);
-  for (y = 0; y < 8; y++) {
-    if (worldAdvanceColumnDecoration(cx, cz)) {
-      break;
-    }
-  }
+  printf("\nOutside the extent, changes are transient by design\n");
+  decorate(cx, cz);
   for (y = 1; y < MAX_Y; y++) {
     if (blockGet(x, y, z) != BRICKS && worldEditSet(x, y, z, BRICKS)) {
       placed++;
     }
   }
   check("the edits are accepted", placed > 0);
-  check("the world shows them", blockGet(x, MAX_Y - 1, z) == BRICKS ||
-    placed == 0);
-  check("no pool slot was spent", world_edit_count == before);
-  check("the pool is consistent", poolConsistent());
+
+  evictAndReturn(cx, cz);
+  for (y = 1; y < MAX_Y; y++) {
+    if (blockGet(x, y, z) == BRICKS) {
+      survived++;
+    }
+  }
+  /* The regenerated column may legitimately contain bricks of its own only if
+     the generator puts them there, which it does not at these coordinates. */
+  check("none of them outlive the column", survived == 0);
 }
 
-/*
- * What a full pool looks like from the outside.  The old failure was silent:
- * worldEditSet returned FALSE and the caller returned, so a refused placement
- * and a dropped controller read looked identical.
- */
-static void testOverflow(void) {
+/* A world is not allowed to inherit the previous one's blocks.  The store is
+   the whole extent, so a stale one would hand a rerolled seed the terrain it
+   was asked to replace. */
+static void testNewWorldClearsStore(void) {
   int x, y, z;
-  int refusals = 0;
-  int accepted = 0;
+  int differs = 0;
+  int bx, by, bz;
 
-  printf("\nA full pool refuses loudly and stays intact\n");
-  world_edit_full_message = 0;
-  for (x = 0; x < MAX_X; x++) {
-    for (z = 0; z < MAX_Z; z++) {
-      for (y = 1; y < MAX_Y; y++) {
-        if (blockGet(x, y, z) == BRICKS || !worldEditInExtent(x, y, z)) {
-          continue;
-        }
-        if (worldEditSet(x, y, z, BRICKS)) {
-          accepted++;
-        } else {
-          refusals++;
+  printf("\nA new world does not inherit the old one's store\n");
+  check("a target cell was found", findCell(4, 4, BRICKS, &x, &y, &z));
+  worldEditSet(x, y, z, BRICKS);
+  homeFlushResident();
+
+  generateWorld(999u);
+  for (bx = 0; bx < MAX_X; bx += 7) {
+    for (bz = 0; bz < MAX_Z; bz += 7) {
+      for (by = 0; by < MAX_Y; by += 3) {
+        if (homeBlockGet(bx, by, bz) != blockGet(bx, by, bz)) {
+          differs++;
         }
       }
     }
   }
-  check("the pool filled to its ceiling",
-    world_edit_count == MAX_WORLD_EDITS);
-  check("some edits were accepted", accepted > 0);
-  check("the rest were refused", refusals > 0);
-  check("the refusal was counted", world_edit_overflows > 0);
-  check("the player is told", world_edit_full_message > 0);
-  check("the pool is consistent", poolConsistent());
-  check("canSet agrees the pool is full",
-    !worldEditCanSet(MAX_X - 1, MAX_Y - 1, MAX_Z - 1) ||
-    blockGet(MAX_X - 1, MAX_Y - 1, MAX_Z - 1) == BRICKS);
+  check("the store matches the world that was just generated", differs == 0);
 }
 
 int main(void) {
-  printf("Mine64 edit pool checks\n");
-  printf("  extent %dx%dx%d, %d columns, %d slots\n",
-    MAX_X, MAX_Y, MAX_Z, EDIT_COLUMNS, MAX_WORLD_EDITS);
+  printf("Mine64 edit persistence checks\n");
+  printf("  extent %dx%dx%d, %d columns, store %d KiB\n",
+    MAX_X, MAX_Y, MAX_Z, HOME_COLUMNS,
+    (int) (HOME_COLUMNS * COLUMN_BLOCK_BYTES / 1024));
 
   generateWorld(20250801u);
-  initWorldEdits();
-  check("a fresh pool is consistent", poolConsistent());
-
-  testBasicPersistence();
-  testReclamation();
-  testNoOpEdit();
-  testManyColumns();
-  testOutsideExtent();
-
-  /* Last: it fills the pool and never empties it. */
-  initWorldEdits();
-  generateWorld(20250801u);
-  testOverflow();
+  testSurvivesRecycling();
+  testRemovalSurvives();
+  testNoBudget();
+  testNeighbourCanopy();
+  testStoreMatchesWindow();
+  testOutsideExtentIsTransient();
+  testNewWorldClearsStore();
 
   if (failures != 0) {
     printf("\n%d check(s) failed\n", failures);

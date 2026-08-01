@@ -14,7 +14,6 @@
 #include "textures.h"
 #include "day_cycle.h"
 #include "details.h"
-#include "edits.h"
 
 #define CROSSHAIR_SIZE 10
 #define HOTBAR_SLOT_COUNT INVENTORY_COLUMNS
@@ -80,14 +79,15 @@ Gfx frame_display_lists[NUM_DISPLAY_LISTS][FRAME_DISPLAY_LIST_SIZE];
  * no compaction pass, no second arena, and no stop-the-world: a fully
  * fragmented arena heals over a few dozen frames while the game runs.
  */
-/* 1.25 MiB: the radius-10 mesh ring is ~390 shell columns plus the
+/* 1.125 MiB: the radius-10 mesh ring is ~390 shell columns plus the
    full-detail near disc, all in baked-vertex form now that the shells'
    compact matrix-pair format is gone -- its two per-quad matrix operations
-   were the measured bulk of the RSP's standing frame.  The quarter
-   megabyte of growth is paid for by retiring the per-block matrix table
-   the old format needed (128 KiB) plus link headroom, and the A row still
-   reports the margin on hardware. */
-#define MESH_ARENA_SIZE 163840
+   were the measured bulk of the RSP's standing frame.
+   Trimmed by 128 KiB from 1.25 MiB to fund the home store, which keeps the
+   whole save extent resident so that building is not rationed.  The A row
+   reports the remaining margin on hardware; if it starts reading near zero
+   with terrain missing at the ring's edge, this is the number that gave. */
+#define MESH_ARENA_SIZE 147456
 static Gfx mesh_arena[MESH_ARENA_SIZE];
 
 typedef struct {
@@ -4655,16 +4655,6 @@ static void drawGameText() {
         drawStackCount(stack, bar_x + slot * slot_size, bar_y, slot_size);
       }
     }
-  }
-  /* A refused edit is otherwise indistinguishable from a dropped controller
-     input: the block simply does not appear.  Say which of the two it was.
-     Drawn once rather than per viewport -- the pool is shared, so in co-op it
-     is one world's limit and not one player's. */
-  if (world_edit_full_message > 0) {
-    static const char *full_text = "BUILD LIMIT REACHED";
-
-    setHudTextColor(238, 120, 96);
-    drawString(full_text, (SCREEN_WD - hudStringWidth(full_text)) / 2, 178);
   }
   setHudTextColor(255, 255, 255);
 }
