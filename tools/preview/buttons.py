@@ -211,6 +211,17 @@ FONT_5X7 = {
     "S": ["01111", "10000", "10000", "01110", "00001", "00001", "11110"],
     "T": ["11111", "00100", "00100", "00100", "00100", "00100", "00100"],
     "U": ["10001", "10001", "10001", "10001", "10001", "10001", "01110"],
+    "D": ["11110", "10001", "10001", "10001", "10001", "10001", "11110"],
+    "F": ["11111", "10000", "10000", "11110", "10000", "10000", "10000"],
+    "G": ["01110", "10001", "10000", "10111", "10001", "10001", "01110"],
+    "H": ["10001", "10001", "10001", "11111", "10001", "10001", "10001"],
+    "L": ["10000", "10000", "10000", "10000", "10000", "10000", "11111"],
+    "O": ["01110", "10001", "10001", "10001", "10001", "10001", "01110"],
+    "V": ["10001", "10001", "10001", "10001", "10001", "01010", "00100"],
+    "W": ["10001", "10001", "10001", "10101", "10101", "11011", "10001"],
+    "X": ["10001", "10001", "01010", "00100", "01010", "10001", "10001"],
+    "Y": ["10001", "10001", "01010", "00100", "00100", "00100", "00100"],
+    "Z": ["11111", "00001", "00010", "00100", "01000", "10000", "11111"],
 }
 
 
@@ -227,18 +238,70 @@ def text(canvas, string, x, y, color=(224, 228, 219)):
                                      color)
 
 
+CHAR_WIDTH = {"i": 3, ":": 3, ".": 3, " ": 3, "'": 3, ",": 3,
+              "l": 4, "!": 4, "t": 5, "k": 6}
+
+
+def string_width(s):
+    """menu.c's charWidth, so a legend measures the same here as on screen."""
+    return sum(CHAR_WIDTH.get(c, 7) for c in s)
+
+
+def legend(styles):
+    """drawWorldSetup's control legend, both phases, from menu.c's own table."""
+    menu = open(os.path.join(ROOT, "src", "menu.c")).read()
+    d = {}
+    for m in re.finditer(r"^#define (SETUP_STRIP_\w+|LEGEND_\w+|"
+                         r"WORLD_SETUP_LEGEND_Y)\s+(\d+)$", menu, re.M):
+        d[m.group(1)] = int(m.group(2))
+    table = re.search(r"world_setup_legend\[\]\s*=\s*\{(.*?)\};", menu, re.S)
+    entries = re.findall(r"\{\s*BUTTON_ICON_(\w+)\s*,\s*\"([^\"]*)\"\s*\}",
+                         table.group(1))
+    names = {"A": "button_a", "B": "button_b", "START": "button_start",
+             "L": "button_l", "R": "button_r", "Z": "button_z"}
+
+    widths = [styles[names[i]]["width"] + d["LEGEND_ICON_GAP"] +
+              string_width(label) for i, label in entries]
+    total = sum(widths) + d["LEGEND_ENTRY_GAP"] * (len(entries) - 1)
+    x0 = (d["SETUP_STRIP_LEFT"] + d["SETUP_STRIP_RIGHT"] - total) // 2
+
+    top = d["SETUP_STRIP_TOP"]
+    canvas = Canvas(320, d["SETUP_STRIP_BOTTOM"] - top + 4,
+                    background=(46, 50, 43))
+    canvas.fill_rect(d["SETUP_STRIP_LEFT"], 0, d["SETUP_STRIP_RIGHT"],
+                     d["SETUP_STRIP_BOTTOM"] - top, (28, 31, 27))
+
+    x = x0
+    y = d["WORLD_SETUP_LEGEND_Y"] - top
+    for (icon, label), width in zip(entries, widths):
+        style = styles[names[icon]]
+        draw_button(canvas, style, x,
+                    y + (d["LEGEND_ROW_HEIGHT"] - style["height"]) // 2)
+        text(canvas, label, x + style["width"] + d["LEGEND_ICON_GAP"],
+             y + d["LEGEND_LABEL_DROP"], color=(150, 155, 142))
+        x += width + d["LEGEND_ENTRY_GAP"]
+    return canvas
+
+
 def main():
     ap = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--guides", action="store_true")
+    ap.add_argument("--legend", action="store_true",
+                    help="the world setup screen's control legend")
     ap.add_argument("--crt", action="store_true")
     ap.add_argument("--zoom", type=int, default=6)
     ap.add_argument("-o", "--out", default="buttons.png")
     args = ap.parse_args()
 
     styles = load_styles()
-    canvas = guides(styles) if args.guides else sheet(styles)
+    if args.guides:
+        canvas = guides(styles)
+    elif args.legend:
+        canvas = legend(styles)
+    else:
+        canvas = sheet(styles)
     img = Image.fromarray(canvas.px)
     if args.crt:
         img = crt(img)
