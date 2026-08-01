@@ -14,6 +14,10 @@ enum SoundEffect {
 void initAudio(void);
 void updateAudio(enum Screen screen);
 void playSound(enum SoundEffect effect);
+/* Peak KiB taken from the audio heap, for the diagnostic overlay's U row.  The
+   heap is sized from the SDK's formula rather than from measurement; this is
+   the measurement.  See docs/ram-budget.md. */
+u32 audioHeapPeakKiB(void);
 #else
 #define playSound(effect) ((void)(effect))
 #endif

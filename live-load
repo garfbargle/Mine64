@@ -7,6 +7,22 @@ BUILD_IMAGE="${MINE64_BUILD_IMAGE:-mine64-nusys-build:local}"
 DOCKER_PLATFORM="${MINE64_DOCKER_PLATFORM:-linux/amd64}"
 SC64_DEPLOYER="${SC64_DEPLOYER:-$PROJECT_DIR/../N64FlashcartMenu/tools/sc64/sc64deployer}"
 
+# Music and effects are the point of loading onto real hardware -- emulation
+# does not reproduce the audio path any more than it reproduces the RDP -- so
+# the audio ROM is what this deploys.  MINE64_AUDIO=0 builds the silent one,
+# which is the right call when bisecting something that has nothing to do with
+# sound and the extra megabyte of upload is just waiting.
+MINE64_AUDIO="${MINE64_AUDIO:-1}"
+if [[ "$MINE64_AUDIO" == "1" ]]; then
+    MAKE_ARGS=(AUDIO=1)
+    ROM_NAME="mine64-audio.n64"
+    SYMBOL_NAME="mine64-audio.out"
+else
+    MAKE_ARGS=()
+    ROM_NAME="mine64.n64"
+    SYMBOL_NAME="mine64.out"
+fi
+
 if ! command -v docker >/dev/null; then
     echo "Docker is required to build Mine64." >&2
     exit 1
@@ -18,19 +34,19 @@ if [[ ! -x "$SC64_DEPLOYER" ]]; then
     exit 1
 fi
 
-echo "Building Mine64..."
+echo "Building Mine64 (${ROM_NAME})..."
 docker run --rm --platform "$DOCKER_PLATFORM" \
     -v "$PROJECT_DIR:/work" -w /work \
-    "$BUILD_IMAGE" make -j2
+    "$BUILD_IMAGE" make "${MAKE_ARGS[@]}" -j2
 
-echo "Live-loading build/mine64.n64 to SummerCart64 RAM..."
-"$SC64_DEPLOYER" upload "$PROJECT_DIR/build/mine64.n64"
+echo "Live-loading build/$ROM_NAME to SummerCart64 RAM..."
+"$SC64_DEPLOYER" upload "$PROJECT_DIR/build/$ROM_NAME"
 "$SC64_DEPLOYER" info | grep -F "Boot mode:"
 
 # Archive the symbols matching exactly this deployed ROM.  A frozen console
 # writes mine64/freeze.txt with raw PC/RA addresses; tools/resolve_freeze.sh
 # resolves them against this file.  Without the archive, the next rebuild
 # shifts every symbol and the post-mortem becomes unreadable.
-cp "$PROJECT_DIR/mine64.out" "$PROJECT_DIR/build/mine64-deployed.out"
+cp "$PROJECT_DIR/$SYMBOL_NAME" "$PROJECT_DIR/build/mine64-deployed.out"
 echo "Symbols archived to build/mine64-deployed.out"
 

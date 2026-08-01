@@ -722,20 +722,24 @@ double-buffered, so the RSP can never read a camera transform while the CPU
 prepares the following frame. That is an important difference on real N64
 hardware.
 
-The linked release program leaves roughly 64 KiB free below NuSystem's fixed
+The linked release program leaves roughly 128 KiB free below NuSystem's fixed
 framebuffer reservation, including the 1 MiB block window, the 1.125 MiB mesh
 arena, the 196 KiB home store, NuSystem task buffers, and doubled render state.
 It remains within the stock console's 4 MiB RDRAM; an Expansion Pak is not
 required. `tools/check_ram.py` runs at the end of every build and fails it on an
 overrun, because nothing at link time notices when BSS grows into addresses
-NuSystem pins at runtime; it also warns under 64 KiB of headroom. The audio
-variant does not currently fit and is deferred; see *Known gaps*.
+NuSystem pins at runtime; it also warns under 64 KiB of headroom.
 
-Half that headroom was bought back by dropping the five graphics microcodes the
-single-task render path stopped using — only F3DEX2 is ever selected, and
-`src/ucode_stubs.c` keeps NuSystem's table resolving without them.
-[RAM budget](docs/ram-budget.md) walks through what every large allocation is
-for, what is still reclaimable, and what only looks wasteful.
+That headroom was bought back three ways: dropping the five graphics microcodes
+the single-task render path stopped using (only F3DEX2 is ever selected, and
+`src/ucode_stubs.c` keeps NuSystem's table resolving without them), supplying
+Mine64's own 64 KiB RDP FIFO in place of the SDK's 128 KiB one, and sizing the
+audio heap to this game's four voices rather than the SDK's sequence-player
+default. The audio ROM now links, with 2 KiB to spare — enough to test on
+hardware, not enough to build on; the `U` diagnostic row is there to size the
+heap properly from a real reading. [RAM budget](docs/ram-budget.md) walks
+through what every large allocation is for, what is still reclaimable, and what
+only looks wasteful.
 
 ### Freeze forensics
 
@@ -758,7 +762,8 @@ cap, 1120 being the shipped default; columns re-LOD over a few seconds,
 so read FPS after `W`/`B` settle): `X Z` player block position, `F` frame heartbeat (frozen F = no frames being built), `O`
 origin rebases, `M`/`V` frame-list peak and overflows, `R D Q A C T`
 streaming state (resident / decorated / queued / arena-free% / allocated mesh
-blocks / terrain-pending), `W`/`B` worst frame gap and worst gated-CPU cost in
+blocks / terrain-pending), `U` audio-heap KiB in use against the 96 KiB
+reserved (audio builds only), `W`/`B` worst frame gap and worst gated-CPU cost in
 tenths of a millisecond over ~2 s (W 166 is clean 60 Hz; B tracking W
 blames callback CPU work, W high with B low blames the RSP/RDP), `L`
 runaway-loop guard trips, `G` position-sanity snaps, `K` corrupted window

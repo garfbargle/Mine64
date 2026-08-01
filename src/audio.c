@@ -3,6 +3,16 @@
 #ifdef ENABLE_AUDIO
 
 #include <nualsgi.h>
+
+/*
+ * NU_AU_HEAP_SIZE is the SDK's 320 KiB default, sized for a game running a full
+ * sequence player.  Mine64 runs four voices, 64 updates, 32 x 1 KiB streaming
+ * buffers and a 2048-entry command list; the SDK's own NU_AU_HEAP_MIN_SIZE
+ * formula over those numbers wants about 73 KiB.  The heap must sit directly
+ * beneath the framebuffers, so shrinking it also moves its base up.
+ */
+#define MINE64_AU_HEAP_SIZE 0x18000  /* 96 KiB */
+#define MINE64_AU_HEAP_ADDR (NU_GFX_FRAMEBUFFER_ADDR - MINE64_AU_HEAP_SIZE)
 #include "audio.h"
 #include "music_title_vadpcm.h"
 #include "music_game_vadpcm.h"
@@ -202,9 +212,14 @@ void initAudio(void) {
   prepareEffect(&sfx_tracks[SOUND_PLACE], _sfxPlaceSegmentRomStart,
     SFX_PLACE_DATA_BYTES);
 
-  nuAuMgrInit((void *)NU_AU_HEAP_ADDR, NU_AU_HEAP_SIZE, &nuAuSynConfig);
+  nuAuMgrInit((void *)MINE64_AU_HEAP_ADDR, MINE64_AU_HEAP_SIZE, &nuAuSynConfig);
   nuAuSndPlayerInit(&nuAuSndpConfig);
   nuAuPreNMIFuncSet(nuAuPreNMIProc);
+}
+
+u32 audioHeapPeakKiB(void) {
+  /* alHeap never frees, so used is monotonic and this is already the peak. */
+  return (u32) nuAuHeapGetUsed() / 1024;
 }
 
 void playSound(enum SoundEffect effect) {

@@ -4,6 +4,11 @@
 #define SCREEN_HT 240
 #define SCREEN_WD 320
 
+/* Mine64 supplies its own RDP command FIFO instead of NuSystem's 128 KiB
+   default; see src/rdp_fifo.c.  Must be a multiple of 16. */
+#define MINE64_RDP_FIFO_SIZE (64 * 1024)
+void mine64SetRDPFifo(void);
+
 #define NUM_DISPLAY_LISTS 2
 /* World, targeting, and HUD share one RSP task.  Sized with deliberate
  * headroom over the three independent command buffers this replaced. */

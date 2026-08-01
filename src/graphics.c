@@ -14,6 +14,7 @@
 #include "textures.h"
 #include "day_cycle.h"
 #include "details.h"
+#include "audio.h"
 
 #define CROSSHAIR_SIZE 10
 #define HOTBAR_SLOT_COUNT INVENTORY_COLUMNS
@@ -5134,6 +5135,12 @@ static void drawStreamingDiagnostics() {
   y = drawDiagnosticRow("D", decorated, y);
   y = drawDiagnosticRow("Q", queued, y);
   y = drawDiagnosticRow("A", free_percent, y);
+#ifdef ENABLE_AUDIO
+  /* KiB actually taken from the audio heap, against the MINE64_AU_HEAP_SIZE
+     the build reserved.  The heap was sized from the SDK's own formula, not
+     from a reading; this row is how that guess gets checked on hardware. */
+  y = drawDiagnosticRow("U", audioHeapPeakKiB(), y);
+#endif
   /* Once the boundary marcher fires, S is the swept-frame speed in world
      units and N is its final candidate boundary time in thousandths.  They
      borrow the two least relevant rows during this focused reproduction. */
@@ -5518,6 +5525,9 @@ void initGraphics() {
   int x, z;
 
   nuGfxInit();
+  /* nuGfxInit registers its own FIFO at the SDK's compile-time size; re-point
+     it at ours before any task is submitted. */
+  mine64SetRDPFifo();
   nuGfxDisplayOn();
 
   buildFaceTextureTable();

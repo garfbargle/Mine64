@@ -36,11 +36,11 @@ precisely because the linker will not tell you.
 
 Current state:
 
-- `make` — the program ends **64 KiB** below the framebuffers, and no longer
-  trips the headroom warning. It was 35 KiB until the microcode item below
-  landed in `5f8979d`.
-- `make audio` — the program runs **285 KiB past** the audio heap. It fails the
-  check and does not ship. This is not new; it predates the home store.
+- `make` — the program ends **128 KiB** below the framebuffers. It was 35 KiB
+  before the three fixes below landed.
+- `make audio` — **links for the first time**, with 2 KiB to spare. It was 310
+  KiB over, and had been since before the home store. 2 KiB is enough to put a
+  ROM on hardware and not enough to build on; see item 3.
 
 ## What every big piece actually does
 
@@ -95,12 +95,12 @@ list of exceptions to maintain.
 It is also what a save writes. Before this existed, saving needed the whole area
 loaded at once, so walking away from spawn made saving refuse.
 
-### `nuRDPOutputBuf` — 128 KiB · "the SDK's conveyor belt"
+### `nuRDPOutputBuf` — 64 KiB · "the conveyor belt"
 
 The N64 has two graphics processors that work in a chain: the RSP transforms
 geometry, the RDP fills pixels. This is the belt between them — the RSP writes
-commands in, the RDP consumes them. Its size is Nintendo's default, compiled
-into the SDK library, not a number this game ever chose.
+commands in, the RDP consumes them. It was 128 KiB, Nintendo's default; Mine64
+now supplies its own at half that (`src/rdp_fifo.c`).
 
 ### `frame_display_lists` — 104 KiB · "this frame's instructions"
 
@@ -177,7 +177,7 @@ resolving while the real bodies leave the ROM.
 stopped. The five stubs are 8 bytes each; `gspF3DEX2_fifoTextStart` is still its
 full 5,008 bytes.
 
-### 2. Supply our own RDP FIFO — 64 KiB, both builds
+### 2. Supply our own RDP FIFO — 64 KiB, both builds · **done**
 
 *This was originally filed under "could consider", on the assumption it needed
 an SDK rebuild. It does not.*
@@ -204,7 +204,7 @@ after.
 **Measured:** `nuRDPOutputBuf` is 65,536 bytes in the linked image, down from
 131,072. `make` reached 128 KiB free.
 
-### 3. Stop reserving 320 KiB of audio heap we don't use — ~224 KiB, audio build
+### 3. Stop reserving 320 KiB of audio heap we don't use — ~224 KiB, audio build · **done**
 
 This is the whole reason `make audio` is broken.
 
@@ -230,9 +230,16 @@ Do it in this order:
 
 **Measured:** with a 96 KiB heap, and with items 1 and 2 also in, `make audio`
 links and passes the guard for the first time — but with only **2 KiB free**.
-That is not shippable margin. Audio needs one more source of 30–60 KiB, or a
-heap sized from a real `nuAuHeapGetUsed()` reading rather than from the SDK
-formula, before it can be on by default.
+
+Two KiB is a link-time fact, not a runtime margin: the image and the heap do not
+overlap, so the ROM is correct and can go on hardware. What it is not is
+something to build on — the next few KiB of code breaks it.
+
+The way out is to stop guessing at the heap. 96 KiB is the SDK formula's ~73 KiB
+plus a third; the real figure is whatever `nuAuHeapGetUsed()` returns, and the
+`U` row on the diagnostic overlay now reports it (audio builds only, **Z +
+D-pad Up**). Read `U` on hardware, set `MINE64_AU_HEAP_SIZE` from it with a
+sensible reserve, and the difference comes straight back as headroom.
 
 ### Verified how
 
@@ -321,16 +328,14 @@ exactly where the Z buffer ends. Nothing is wasted between them.
 
 Measured, not projected — every column is a real build in the container.
 
-| | before | **today** (`5f8979d`) | with FIFO + heap |
+| | before | + microcodes | **today** (all three) |
 |---|---|---|---|
-| `make` | 35 KiB free ⚠ | **64 KiB free** ✓ | 128 KiB free ✓ |
-| `make audio` | 310 KiB over ✗ | **285 KiB over** ✗ | 2 KiB free ⚠ |
+| `make` | 35 KiB free ⚠ | 64 KiB free ✓ | **128 KiB free** ✓ |
+| `make audio` | 310 KiB over ✗ | 285 KiB over ✗ | **2 KiB free** ⚠ |
 
-The default build no longer trips the headroom warning. The audio build is still
-failing; the last column is a real build, but 2 KiB is not margin — treat it as
-proof the path exists, not as a shipping configuration. The unlanded half is
-kept as `build/ram-fixes-hardware.patch` for whoever picks up the hardware
-session.
+The default build went from tripping the headroom warning to four times the
+margin the guard asks for. The audio build stopped failing. Both still want a
+hardware pass: the FIFO for frame time, the heap for its real size.
 
 ## How to measure it yourself
 
@@ -342,8 +347,8 @@ session.
 - **On hardware, frame lists** — the `M` row is the peak command count against
   the 6,656 limit, and `V` counts frames that had to shed terrain or were
   dropped.
-- **On hardware, audio heap** — `nuAuHeapGetUsed()` exists but is not wired to
-  the HUD yet. Wiring it is step one of the audio fix.
+- **On hardware, audio heap** — the `U` row is `nuAuHeapGetUsed()` in KiB,
+  against the 96 KiB `MINE64_AU_HEAP_SIZE` reserves. Audio builds only.
 - **Per-symbol breakdown** — `mips-n64-nm -S --size-sort mine64.out | tail -40`
   inside the build container, or parse the ELF symbol table directly if you have
   no toolchain to hand.
