@@ -287,24 +287,16 @@ static u32 checksumPlayers(SavedPlayer *players_to_save, u32 player_count,
   return checksum;
 }
 
-static u32 checksumSave(SavedPlayer *players_to_save, u32 player_count,
-    u8 stored_player_slots) {
-  u32 checksum = checksumPlayers(players_to_save, player_count,
-    stored_player_slots);
-  int x, y, z;
-
-  /* Blocks are stored per column now, but the checksum has to keep visiting
-     them in the original x-major order or every world written before the
-     window would fail verification. */
-  for (x = 0; x < MAX_X; x++) {
-    for (y = 0; y < MAX_Y; y++) {
-      for (z = 0; z < MAX_Z; z++) {
-        checksum = checksumByte(checksum, blockGet(x, y, z));
-      }
-    }
-  }
-  return checksum;
-}
+/*
+ * There is no whole-world checksum function any more, on either side.
+ *
+ * Both directions now total the payload as they stream it, in the order the
+ * bytes go past -- players, then blocks in x-major order, then trees, then
+ * the trailing scalars.  That order is the format, and it is the only thing
+ * the two paths have to agree on; the separate blocks-and-trees passes that
+ * used to exist here were a second full walk of 401,408 blocks whose only
+ * product was a number the write pass could have counted for free.
+ */
 
 /* Fold one word into the running checksum.  The world clock was the first
    scalar the header carried outside the player records; the world seed is the
@@ -354,16 +346,6 @@ static void restoreWorldMods(u32 version, const Header *saved) {
    treesDropOutsideFixedExtent packs every savable record below this line
    before a save is written. */
 #define TREE_SAVE_BYTES (TREE_SAVE_COUNT * sizeof(TreeRecord))
-
-static u32 checksumTrees(u32 checksum) {
-  u8 *bytes = (u8 *) trees;
-  u32 index;
-
-  for (index = 0; index < TREE_SAVE_BYTES; index++) {
-    checksum = checksumByte(checksum, bytes[index]);
-  }
-  return checksum;
-}
 
 u8 saving_available;
 u8 storage_status = STORAGE_NO_CART;
@@ -765,123 +747,99 @@ u8 storageWriteFreezeReport(const char *text, u32 length) {
   return ok;
 }
 
-u8 saveGame() {
+/*
+ * The sliced save.
+ *
+ * The write was the last thing in the game that stopped the console outright:
+ * ~200 KB of packed blocks pushed through a 512-byte window, from a graphics
+ * callback, with no frames and no controller polling in between -- long
+ * enough on a slow card to outlast the freeze watchdog's two-second patience
+ * and make a successful save look exactly like a crash.  It runs on the same
+ * terms the load does now: a bounded number of x-slabs per callback, with the
+ * caller free to draw a frame between them.
+ *
+ * The checksum is what makes this less obvious than the read.  It covers the
+ * players, then every block, then the trees, then the trailing scalars -- and
+ * it lives in the header, which is the first thing in the file.  Rather than
+ * walk all 401,408 blocks once to total them and again to write them, the
+ * payload pass accumulates the checksum in exactly the order it writes, and
+ * the header page is rewritten in place at the end.  One pass, and the file
+ * is self-consistent even if the player mines a block halfway through their
+ * own save: the total is taken from the bytes that actually went out.
+ */
+#define SAVE_STAGE_IDLE 0
+#define SAVE_STAGE_BLOCKS 1
+#define SAVE_STAGE_TREES 2
+
+static struct {
   FIL file;
-  Header *header = (Header *) file_buffer;
-  FRESULT result;
-  u8 write_ok = TRUE;
+  u8 stage;
   u8 slot;
-  u8 player_num;
   u8 had_previous_file;
-  int block_x, block_y, block_z;
-  u8 *trees_ptr;
-  const u8 *trees_end = (const u8 *) trees + TREE_SAVE_BYTES;
+  u32 checksum;
+  int block_x;    /* next x-slab of packed blocks to write */
+  u32 tree_byte;
+} save_job;
 
-  if (!saving_available || game_file_num < 1 || game_file_num > 3) {
-    return FALSE;
-  }
-  /*
-   * The v10 format writes the whole fixed extent out of live block data.
-   * Once streaming has evicted any of it, blockGet answers BLOCK_NOT_RESIDENT
-   * there and this loop would pack 0xF garbage over the player's world --
-   * silent corruption discovered only on the next load.  Refuse instead.
-   * (The caller checks this first and shows its own message; this is the
-   * backstop for any other path.)  Task 6 replaces the format with per-chunk
-   * diffs and removes the restriction.
-   */
-  if (!worldFixedExtentResident()) {
-    return FALSE;
-  }
-  /* The residency ring is wider than the world, so live tree records can sit
-     in columns past the extent -- coordinates treesValid rejects on load.
-     Retire them before the checksum sees them, or this save reads as corrupt
-     on the next boot and silently falls back to the backup. */
-  treesDropOutsideFixedExtent();
-  slot = game_file_num - 1;
-  had_previous_file = files_present[slot];
-  result = f_open(&file, temporary_file_names[slot],
-    FA_WRITE | FA_CREATE_ALWAYS);
-  if (result != FR_OK) {
-    return FALSE;
-  }
+/*
+ * The header as it was at the start of the save, kept out of file_buffer
+ * because the payload overwrites that page hundreds of times before the
+ * header is written again.  The player records in particular have to be the
+ * ones the checksum was opened with, or the total will not match the bytes.
+ */
+static Header save_header;
 
-  /* Inactive slots are included in the checksummed fixed-size header.  Clear
-     them first so a new single-player save is deterministic and recoverable. */
+static u8 writeSaveHeaderPage(void) {
+  const u8 *bytes = (const u8 *) &save_header;
+
   for (cursor_pos = 0; cursor_pos < sizeof(Header); cursor_pos++) {
-    file_buffer[cursor_pos] = 0;
+    file_buffer[cursor_pos] = bytes[cursor_pos];
   }
-  header->magic_num = MAGIC_NUM;
-  header->version = SAVE_VERSION;
-  header->file_num = game_file_num;
-  header->save_count = save_count + 1;
-  header->player_count = active_player_count;
-  header->world_ticks = dayCycleWorldTicks();
-  /* What every column outside the saved extent will be regenerated from when
-     this world is loaded again -- the seed alone is not enough, because the
-     mods decide what the generator does with it. */
-  header->world_seed = world_seed;
-  header->world_mods = world_mods;
-  for (player_num = 0; player_num < active_player_count; player_num++) {
-    savePlayerState(&header->player[player_num], &players[player_num]);
-  }
-  saveWorldDimensions(header);
-  header->checksum = checksumWord(checksumWord(checksumWord(checksumTrees(
-    checksumSave(header->player, header->player_count, MAX_PLAYERS)),
-    header->world_ticks), header->world_seed), header->world_mods);
-
-  cursor_pos = sizeof(Header);
   while (cursor_pos < BUFFER_LEN) {
     file_buffer[cursor_pos++] = 0;
   }
-  write_ok = writePage(&file);
+  return writePage(&save_job.file);
+}
 
-  /* Blocks stay nibble-packed on disk in the original x-major order, so this
-     re-packs pairs out of the column window rather than copying a flat array.
-     MAX_Z is even, so a pair never straddles a row and the byte stream is
-     identical to what earlier versions wrote. */
-  for (block_x = 0; write_ok && block_x < MAX_X; block_x++) {
-    for (block_y = 0; write_ok && block_y < MAX_Y; block_y++) {
-      for (block_z = 0; write_ok && block_z < MAX_Z; block_z += 2) {
-        file_buffer[cursor_pos++] =
-          (u8) ((blockGet(block_x, block_y, block_z) << 4) |
-            (blockGet(block_x, block_y, block_z + 1) & 0x0F));
+/*
+ * Close the file and either publish it or throw it away.  Split out so the
+ * normal end of the payload and a write failure part-way through it land in
+ * one place, exactly as finishLoadGame does for the read.
+ */
+static u8 finishSaveGame(u8 write_ok) {
+  u8 slot = save_job.slot;
 
-        if (cursor_pos >= BUFFER_LEN) {
-          write_ok = writePage(&file);
-        }
-      }
-    }
-  }
-
-  for (trees_ptr = (u8 *) trees; write_ok && trees_ptr < trees_end;
-      trees_ptr++) {
-    file_buffer[cursor_pos++] = *trees_ptr;
-    if (cursor_pos >= BUFFER_LEN) {
-      write_ok = writePage(&file);
-    }
-  }
+  save_job.stage = SAVE_STAGE_IDLE;
   if (write_ok && cursor_pos > 0) {
     while (cursor_pos < BUFFER_LEN) {
       file_buffer[cursor_pos++] = 0;
     }
-    write_ok = writePage(&file);
+    write_ok = writePage(&save_job.file);
   }
-
   if (write_ok) {
-    write_ok = f_sync(&file) == FR_OK;
+    /* Only now is the total known.  Seeking back beats the alternative of
+       totalling the world before writing it, which is a second full pass
+       over every block for a number four bytes long. */
+    save_header.checksum = checksumWord(checksumWord(checksumWord(
+      save_job.checksum, save_header.world_ticks), save_header.world_seed),
+      save_header.world_mods);
+    write_ok = f_lseek(&save_job.file, 0) == FR_OK && writeSaveHeaderPage();
   }
-  if (f_close(&file) != FR_OK) {
+  if (write_ok) {
+    write_ok = f_sync(&save_job.file) == FR_OK;
+  }
+  if (f_close(&save_job.file) != FR_OK) {
     write_ok = FALSE;
   }
   if (write_ok) {
     f_unlink(backup_file_names[slot]);
-    if (had_previous_file &&
+    if (save_job.had_previous_file &&
         f_rename(file_names[slot], backup_file_names[slot]) != FR_OK) {
       write_ok = FALSE;
     }
     if (write_ok &&
         f_rename(temporary_file_names[slot], file_names[slot]) != FR_OK) {
-      if (had_previous_file) {
+      if (save_job.had_previous_file) {
         f_rename(backup_file_names[slot], file_names[slot]);
       }
       write_ok = FALSE;
@@ -894,7 +852,156 @@ u8 saveGame() {
   } else {
     f_unlink(temporary_file_names[slot]);
   }
-  return write_ok;
+  return write_ok ? SAVE_DONE : SAVE_FAILED;
+}
+
+u8 beginSaveGame(void) {
+  u8 player_num;
+  u8 *bytes = (u8 *) &save_header;
+  u32 index;
+
+  save_job.stage = SAVE_STAGE_IDLE;
+  if (!saving_available || game_file_num < 1 || game_file_num > 3) {
+    return SAVE_FAILED;
+  }
+  /*
+   * The v10 format writes the whole fixed extent out of live block data.
+   * Once streaming has evicted any of it, blockGet answers BLOCK_NOT_RESIDENT
+   * there and the payload pass would pack 0xF garbage over the player's world
+   * -- silent corruption discovered only on the next load.  Refuse instead.
+   * (The caller checks this first and shows its own message; this is the
+   * backstop for any other path.)  Per-chunk diffs remove the restriction.
+   *
+   * Nothing can evict a column out from under the rest of the save: the job
+   * driver runs this stage in place of the streaming step, not beside it.
+   */
+  if (!worldFixedExtentResident()) {
+    return SAVE_FAILED;
+  }
+  /* The residency ring is wider than the world, so live tree records can sit
+     in columns past the extent -- coordinates treesValid rejects on load.
+     Retire them before the checksum sees them, or this save reads as corrupt
+     on the next boot and silently falls back to the backup. */
+  treesDropOutsideFixedExtent();
+  save_job.slot = game_file_num - 1;
+  save_job.had_previous_file = files_present[save_job.slot];
+  if (f_open(&save_job.file, temporary_file_names[save_job.slot],
+      FA_WRITE | FA_CREATE_ALWAYS) != FR_OK) {
+    return SAVE_FAILED;
+  }
+
+  /* Inactive slots are included in the checksummed fixed-size header.  Clear
+     them first so a new single-player save is deterministic and recoverable. */
+  for (index = 0; index < sizeof(Header); index++) {
+    bytes[index] = 0;
+  }
+  save_header.magic_num = MAGIC_NUM;
+  save_header.version = SAVE_VERSION;
+  save_header.file_num = game_file_num;
+  save_header.save_count = save_count + 1;
+  save_header.player_count = active_player_count;
+  save_header.world_ticks = dayCycleWorldTicks();
+  /* What every column outside the saved extent will be regenerated from when
+     this world is loaded again -- the seed alone is not enough, because the
+     mods decide what the generator does with it. */
+  save_header.world_seed = world_seed;
+  save_header.world_mods = world_mods;
+  for (player_num = 0; player_num < active_player_count; player_num++) {
+    savePlayerState(&save_header.player[player_num], &players[player_num]);
+  }
+  saveWorldDimensions(&save_header);
+
+  /* The players' share of the total, which is all of it that can be known
+     before the payload goes out.  Written with a zero checksum for now; the
+     page is rewritten from finishSaveGame with the real one. */
+  save_job.checksum = checksumPlayers(save_header.player,
+    save_header.player_count, MAX_PLAYERS);
+  if (!writeSaveHeaderPage()) {
+    return finishSaveGame(FALSE);
+  }
+  save_job.block_x = 0;
+  save_job.tree_byte = 0;
+  save_job.stage = SAVE_STAGE_BLOCKS;
+  return SAVE_BUSY;
+}
+
+/*
+ * `slabs` x-slabs of packed blocks per call, then the trailing tree payload.
+ * The same granularity the read uses, for the same reason: a slab is 1792
+ * bytes, three and a half pages of cart traffic, which is small enough to
+ * disappear inside a frame.
+ */
+u8 stepSaveGame(u16 slabs) {
+  int block_y, block_z;
+
+  if (save_job.stage == SAVE_STAGE_IDLE) {
+    return SAVE_DONE;
+  }
+
+  /* Blocks stay nibble-packed on disk in the original x-major order, so this
+     re-packs pairs out of the column window rather than copying a flat array.
+     MAX_Z is even, so a pair never straddles a row and the byte stream is
+     identical to what earlier versions wrote. */
+  while (save_job.stage == SAVE_STAGE_BLOCKS && slabs > 0) {
+    for (block_y = 0; block_y < MAX_Y; block_y++) {
+      for (block_z = 0; block_z < MAX_Z; block_z += 2) {
+        u8 high = blockGet(save_job.block_x, block_y, block_z);
+        u8 low = blockGet(save_job.block_x, block_y, block_z + 1);
+
+        file_buffer[cursor_pos++] = (u8) ((high << 4) | (low & 0x0F));
+        /* Folded in here, in the order the loader will read them back. */
+        save_job.checksum = checksumByte(save_job.checksum, high);
+        save_job.checksum = checksumByte(save_job.checksum, low);
+        if (cursor_pos >= BUFFER_LEN && !writePage(&save_job.file)) {
+          return finishSaveGame(FALSE);
+        }
+      }
+    }
+    slabs--;
+    if (++save_job.block_x >= MAX_X) {
+      save_job.stage = SAVE_STAGE_TREES;
+    }
+  }
+
+  if (save_job.stage != SAVE_STAGE_TREES) {
+    return SAVE_BUSY;
+  }
+
+  /* The tree payload is 2 KB at most -- a single slice's worth on its own,
+     and the last thing in the file either way. */
+  {
+    const u8 *trees_bytes = (const u8 *) trees;
+
+    while (save_job.tree_byte < TREE_SAVE_BYTES) {
+      u8 byte = trees_bytes[save_job.tree_byte++];
+
+      file_buffer[cursor_pos++] = byte;
+      save_job.checksum = checksumByte(save_job.checksum, byte);
+      if (cursor_pos >= BUFFER_LEN && !writePage(&save_job.file)) {
+        return finishSaveGame(FALSE);
+      }
+    }
+  }
+  return finishSaveGame(TRUE);
+}
+
+u8 saveGameProgress(void) {
+  if (save_job.stage == SAVE_STAGE_IDLE) {
+    return 100;
+  }
+  if (save_job.stage == SAVE_STAGE_TREES) {
+    return 99;
+  }
+  return (u8) ((save_job.block_x * 99) / MAX_X);
+}
+
+u8 saveGame() {
+  u8 status = beginSaveGame();
+
+  while (status == SAVE_BUSY) {
+    status = stepSaveGame(MAX_X);
+  }
+  return status == SAVE_DONE;
 }
 
 /*

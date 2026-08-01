@@ -123,6 +123,12 @@ static char *saved_text[] = {
   "World saved"
 };
 
+/* Capitals: the font atlas has no lowercase 'i' (it lands on a colon), so a
+   mixed-case "Saving" would read as "SAV:NG" on the console. */
+static char *saving_text[] = {
+  "SAVING WORLD"
+};
+
 static char *save_failed_text[] = {
   "Save failed"
 };
@@ -763,7 +769,13 @@ void drawMenu() {
       drawWorldNaming();
       return;
     case GAME:
-      if (save_failed_message > 0) {
+      if (worldJobActive()) {
+        /* The only long job that can run under gameplay is a save.  It takes
+           a couple of seconds now instead of stopping the console, which
+           means it needs to say it is happening. */
+        text = saving_text;
+        n_lines = 1;
+      } else if (save_failed_message > 0) {
         text = save_failed_text;
         n_lines = sizeof(save_failed_text) / sizeof(char *);
       } else if (save_far_message > 0) {
@@ -790,7 +802,8 @@ void drawMenu() {
       return;
   }
 
-  if (current_screen == GAME && save_message_cooldown == 0 &&
+  if (current_screen == GAME && !worldJobActive() &&
+      save_message_cooldown == 0 &&
       save_failed_message == 0 && save_far_message == 0 &&
       player_joined_message == 0 && stick_turns_message == 0) {
     return;
@@ -1055,17 +1068,29 @@ u8 menuCommitReady() {
 }
 
 /*
- * The write itself, once a frame announcing it has been drawn and drained.
- * The name belongs to the terrain that has been orbiting since the setup
- * card: saving here turns that candidate into a real slot without
- * regenerating anything.
+ * A save has finished.  The same write serves two callers and they want
+ * opposite things from it: a commit is the last step of creating a world and
+ * moves the player into it, while an in-game save is an interruption that
+ * should say so briefly and leave everything as it was.
  */
-void menuCommitWorld() {
-  world_commit_stage = WORLD_COMMIT_DONE;
-  if (saving_available && !saveGame()) {
+void menuSaveFinished(u8 ok) {
+  if (world_commit_stage == WORLD_COMMIT_SHOWN) {
+    /* The name belongs to the terrain that has been orbiting since the setup
+       card, so there is nothing left to build: the world is already meshed
+       and the player drops into the shot they were looking at. */
+    world_commit_stage = WORLD_COMMIT_DONE;
+    if (!ok) {
+      save_failed_message = 120;
+    }
+    menu_game_requested = TRUE;
+    return;
+  }
+  if (ok) {
+    save_message_cooldown = 60;
+  } else {
+    saving_available = FALSE;
     save_failed_message = 120;
   }
-  menu_game_requested = TRUE;
 }
 
 void beginWorldNaming() {
