@@ -27,9 +27,17 @@
 #define THIRD_PERSON_SHOULDER_OFFSET 18.f
 #define THIRD_PERSON_SAMPLES 12
 #define THIRD_PERSON_AVATAR_MIN_DISTANCE 40.f
-#define LOADING_PREVIEW_FRAMES 180
-#define LOADING_ORBIT_DEGREES_PER_FRAME .62f
-#define MENU_ORBIT_DEGREES_PER_FRAME .28f
+/* The scenic orbit runs on wall-clock seconds, not on rendered frames.  These
+   were per-frame constants tuned when the preview drew around 20 fps, so every
+   scheduling win since then spun the camera up by the same factor.  Seconds
+   keep the reveal looking identical whatever the frame rate does next. */
+#define LOADING_PREVIEW_SECONDS 9.f
+#define LOADING_ORBIT_DEGREES_PER_SECOND 12.4f
+#define MENU_ORBIT_DEGREES_PER_SECOND 5.6f
+/* One rendered frame can be arbitrarily long -- a mesh build behind the menu,
+   or the gap either side of a world load -- and the orbit must not teleport
+   across it. */
+#define LOADING_MAX_FRAME_SECONDS .25f
 #define LOADING_ORBIT_RADIUS 2240.f
 #define LOADING_CAMERA_HEIGHT 2450.f
 #define LOADING_CAMERA_BOB 120.f
@@ -67,9 +75,17 @@ u8 third_person_avatar_visible[MAX_PLAYERS];
 u16 solo_max_visible_columns = SOLO_MAX_VISIBLE_COLUMNS;
 
 /* How many visible columns actually reach the fog band, per viewer.  At the
-   shipped fog_start nothing does, and the terrain pass uses the zero to
+   parked fog_start nothing does, and the terrain pass uses the zero to
    skip the two-cycle far pass outright. */
 u16 visible_far_count[MAX_PLAYERS];
+
+/* Squared block distance to the nearest frustum cell with no geometry
+   behind it -- not resident, or resident and not yet meshed -- which is
+   where this viewer sees the void.  VISIBLE_HOLE_NONE when the whole view
+   is meshed.  The auto fog reads this to sit just past the frontier. */
+float visible_hole_sq[MAX_PLAYERS] = {
+  VISIBLE_HOLE_NONE, VISIBLE_HOLE_NONE, VISIBLE_HOLE_NONE, VISIBLE_HOLE_NONE
+};
 
 /*
  * Every matrix referenced by an RSP display list must remain unchanged until
@@ -94,7 +110,8 @@ static Line2D cull_lines[NUM_CULL_LINES];
 #define CULL_SPAN (2 * CULL_RADIUS + 1)
 static u8 point_sides[CULL_SPAN + 1][CULL_SPAN + 1];
 static Player loading_camera;
-static u32 loading_preview_frame;
+static float loading_preview_elapsed;
+static OSTime loading_preview_last_time;
 static float idle_sway_phase[MAX_PLAYERS];
 static float idle_sway_amount[MAX_PLAYERS];
 
@@ -263,6 +280,7 @@ static void updateVisibleColumnsFor(u8 player_num, Player *player,
   /* A full window is 256 columns, which does not fit the u8 this used to be. */
   u16 visible_count = 0;
   u16 far_count = 0;
+  float nearest_hole_sq = VISIBLE_HOLE_NONE;
   float dx, dz, farthest_distance;
   u8 multiplayer = view_mode == CAMERA_VIEW_TWO_PLAYER ||
     view_mode == CAMERA_VIEW_FOUR_PLAYER;
@@ -355,6 +373,18 @@ static void updateVisibleColumnsFor(u8 player_num, Player *player,
       if (multiplayer && dx * dx + dz * dz > 1600) {
         visible = FALSE;
       }
+      /* A frustum cell the mesh cannot fill yet is where this view meets
+         the void; note the nearest so the auto fog can cover it.  Tested
+         before the residency override, which is itself one of the two ways
+         a cell can be a hole. */
+      if (visible && (!windowColumnResident(world_cx, world_cz) ||
+          graphicsColumnMissingMesh(world_cx, world_cz))) {
+        float hole_sq = dx * dx + dz * dz;
+
+        if (hole_sq < nearest_hole_sq) {
+          nearest_hole_sq = hole_sq;
+        }
+      }
       /* An unbound slot has no mesh behind it. */
       if (!windowColumnResident(world_cx, world_cz)) {
         visible = FALSE;
@@ -413,6 +443,7 @@ static void updateVisibleColumnsFor(u8 player_num, Player *player,
     }
   }
   visible_far_count[player_num] = far_count;
+  visible_hole_sq[player_num] = nearest_hole_sq;
 }
 
 void updateVisibleColumns(u8 player_num) {
@@ -446,7 +477,27 @@ void updateCameraMatrices(u8 player_num) {
 }
 
 void beginLoadingPreview() {
-  loading_preview_frame = 0;
+  loading_preview_elapsed = 0.f;
+  /* The world build that precedes the reveal renders nothing, so its whole
+     duration would otherwise arrive as the first frame's delta. */
+  loading_preview_last_time = osGetTime();
+}
+
+/* Seconds since the previous rendered preview frame. */
+static float loadingPreviewDelta() {
+  OSTime now = osGetTime();
+  float delta;
+
+  if (loading_preview_last_time == 0) {
+    loading_preview_last_time = now;
+    return 0.f;
+  }
+  delta = (u32) OS_CYCLES_TO_USEC(now - loading_preview_last_time) / 1000000.f;
+  loading_preview_last_time = now;
+  if (delta > LOADING_MAX_FRAME_SECONDS) {
+    delta = LOADING_MAX_FRAME_SECONDS;
+  }
+  return delta;
 }
 
 void updateLoadingCamera() {
@@ -454,15 +505,16 @@ void updateLoadingCamera() {
   float low_orbit;
   Vector3 camera_position;
 
+  loading_preview_elapsed += loadingPreviewDelta();
   if (current_screen == LOADING_PREVIEW) {
     /* A steady camera gives the eye enough motion to blend individual N64
        frames. Easing from a crawl made the terrain read as a tick-tock
        slideshow on displays where the render cadence is not perfectly even. */
-    angle = loading_preview_frame * LOADING_ORBIT_DEGREES_PER_FRAME;
+    angle = loading_preview_elapsed * LOADING_ORBIT_DEGREES_PER_SECOND;
   } else {
     /* The world picker may remain open for minutes, so keep its orbit a
        calm, continuous carousel rather than reusing the loading reveal. */
-    angle = loading_preview_frame * MENU_ORBIT_DEGREES_PER_FRAME;
+    angle = loading_preview_elapsed * MENU_ORBIT_DEGREES_PER_SECOND;
   }
   low_orbit = sinf(angle * .5f * M_DTOR);
 
@@ -493,18 +545,17 @@ void updateLoadingCamera() {
   updateVisibleColumnsFor(0, &loading_camera, camera_position,
     CAMERA_VIEW_LOADING);
   updateCameraMatricesFor(0, &loading_camera, camera_position, FALSE);
-  loading_preview_frame++;
 }
 
 u8 loadingPreviewFinished() {
-  return loading_preview_frame >= LOADING_PREVIEW_FRAMES;
+  return loading_preview_elapsed >= LOADING_PREVIEW_SECONDS;
 }
 
 u8 loadingPreviewProgress() {
-  if (loading_preview_frame >= LOADING_PREVIEW_FRAMES) {
+  if (loading_preview_elapsed >= LOADING_PREVIEW_SECONDS) {
     return 100;
   }
-  return loading_preview_frame * 100 / LOADING_PREVIEW_FRAMES;
+  return (u8) (loading_preview_elapsed * 100.f / LOADING_PREVIEW_SECONDS);
 }
 
 static u8 cameraProjectionMode() {

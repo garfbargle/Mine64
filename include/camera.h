@@ -23,6 +23,11 @@ extern u16 solo_max_visible_columns;
 /* Visible columns that reach the fog band, per viewer; zero lets the
    terrain pass skip the two-cycle fogged half entirely. */
 extern u16 visible_far_count[MAX_PLAYERS];
+/* Squared block distance to the nearest frustum cell with no geometry
+   behind it, or VISIBLE_HOLE_NONE when the view is fully meshed.  The
+   auto fog slides its band in to end where this says the void begins. */
+#define VISIBLE_HOLE_NONE 1.0e9f
+extern float visible_hole_sq[MAX_PLAYERS];
 
 void initCamera();
 /* Advances a small first-person resting sway.  Kept in camera state so it

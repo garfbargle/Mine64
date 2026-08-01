@@ -286,11 +286,19 @@ static void stepGameplayStreaming(OSTime work_start, u32 budget_usec,
 }
 
 /* The ungated slice's budgets.  A retrace period is 16.7 ms and the same
-   callback still has to run player physics, so these stay comfortably
-   inside one field -- overrunning would delay the message that tells the
-   next callback the frame finished. */
-#define STREAM_OVERLAP_USEC 8000
+   callback still has to run player physics, so these stay inside one field
+   -- overrunning would delay the message that tells the next callback the
+   frame finished.  They are deliberately larger than the gated budgets
+   below: work done here overlaps the running RSP task for free, while
+   every gated millisecond lands directly on the displayed frame time. */
+#define STREAM_OVERLAP_USEC 12000
 #define STREAM_OVERLAP_URGENT_USEC 14000
+/* The gated slice's budgets.  At 30 fps the whole frame is 33 ms and the
+   task takes most of it, so the gated callback only tops up what the
+   overlap slices could not finish; the urgent case (a hole within two
+   chunks) still gets a real bite without the 25 ms stall it used to be. */
+#define STREAM_GATED_USEC 8000
+#define STREAM_GATED_URGENT_USEC 15000
 
 void callbackGfx(int pendingGfx) {
   static OSTime last_callback_time;
@@ -373,7 +381,8 @@ void callbackGfx(int pendingGfx) {
        * only fight the camera.
        */
       diagPaintPhase(DIAG_PHASE_STREAMING);
-      stepGameplayStreaming(gated_start, 10000, 25000);
+      stepGameplayStreaming(gated_start, STREAM_GATED_USEC,
+        STREAM_GATED_URGENT_USEC);
     }
     /* A mesh arena can only be recycled when no submitted task can still
        reference its display lists. */

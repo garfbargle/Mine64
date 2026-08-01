@@ -74,14 +74,18 @@ extern u32 diag_position_glitches;
    hang, key corruption, position snap) switches it on automatically.  The
    watchdog and SD post-mortem are never gated on it. */
 extern u8 diagnostics_visible;
-/* Sky-matched distance fog over the gameplay terrain pass.  The start is a
-   screen-depth value tuned on hardware: with the overlay up, Z + D-pad
-   Left/Right moves it (P row shows it) and Z + D-pad Down toggles fog.
-   The range covers the distances that exist: see the table in graphics.c,
-   985 is ten blocks out and 999 is past the mesh ring, while the old floor
-   of 900 was a block and a half in front of the player's face. */
+/* Sky-matched distance fog that hugs the streaming frontier: parked past
+   the mesh ring (where it costs nothing) while the view is fully meshed,
+   slid inward by updateAutoFog to cover the void whenever the player
+   outruns the mesher.  fog_start is the live screen-depth value the
+   controller lands on (the P row shows it; see the distance table in
+   graphics.c -- 985 is ten blocks out, 999 past the ring).  With the
+   overlay up, Z + D-pad Left/Right walk fog_auto_bias, which offsets
+   where the band rests relative to the hole, and Z + D-pad Down toggles
+   fog outright. */
 extern u8 fog_enabled;
 extern u16 fog_start;
+extern s8 fog_auto_bias;
 #define FOG_START_MIN 985
 #define FOG_START_MAX 999
 /* Full-detail LOD radii, runtime for the Z + C-left preset chord: the near

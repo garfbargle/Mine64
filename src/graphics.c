@@ -306,17 +306,23 @@ u8 diagnostics_visible = FALSE;
  */
 u8 fog_enabled = TRUE;
 /*
- * 999 puts the fog onset at ~91 blocks -- past the ~80-block mesh ring, so
- * in the shipped configuration nothing ever reaches the band: culling
- * classifies every column NEAR, the two-cycle far pass never runs, and fog
- * costs exactly nothing (measured at 5 fps on hardware when it covered the
- * ring).  The deliberate trade is a bare streaming frontier when the
- * player outruns the mesher; the answer to that is preloading harder in
- * the direction of travel, not hazing the view the wide ring exists to
- * provide.  Z + D-pad Left still pulls the band in for anyone who prefers
- * the haze, and the near/far split keeps whatever it covers cheap.
+ * Fog hugs the streaming frontier instead of standing at a fixed distance.
+ *
+ * At rest it parks at 999 (~91 blocks, past the mesh ring): every column
+ * classifies NEAR, the two-cycle far pass is skipped outright, and fog
+ * costs exactly nothing -- its old fixed placement measured 5 fps on
+ * hardware.  When culling reports a frustum cell with no geometry behind
+ * it (the player outrunning the mesher), updateAutoFog slides the band in
+ * so full opacity lands at that hole and terrain pops in behind haze
+ * instead of out of the void.  It tightens fast and relaxes slowly as the
+ * mesher catches up, and the near/far split confines the two-cycle cost
+ * to whatever the band actually covers while it is in.
+ *
+ * Z + D-pad Left/Right bias where the band rests relative to the hole
+ * (fog_auto_bias, in screen-depth steps); Z + D-pad Down toggles fog.
  */
 u16 fog_start = 999;
+s8 fog_auto_bias;
 #define FOG_BAND 4
 
 /* Times a runaway loop guard fired in player collision code.  A rising L row
@@ -4518,6 +4524,65 @@ void drawHUD() {
 
 }
 
+/*
+ * Slide fog_start toward wherever the view currently meets the void.
+ *
+ * Culling reported each viewer's nearest unmeshed frustum cell last frame;
+ * the target start puts the band's fully opaque end at that distance, so
+ * the frontier and its pop-in stay behind haze while everything meshed
+ * stays clear.  With no hole in any view the target is the parked maximum,
+ * where the band lies beyond the mesh ring and costs nothing.
+ *
+ * Runs before this frame's culling so the NEAR/FAR classification and the
+ * drawn band always agree; the hole data being one frame old only matters
+ * for one frame of slide.  Tighten fast (a fresh void should be covered
+ * within a second) and relax slowly (meshed-in terrain fades clear instead
+ * of snapping).
+ */
+static void updateAutoFog(void) {
+  float nearest = VISIBLE_HOLE_NONE;
+  u16 target = FOG_START_MAX;
+  static u8 relax_divider;
+  u8 i;
+
+  for (i = 0; i < active_player_count; i++) {
+    if (visible_hole_sq[i] < nearest) {
+      nearest = visible_hole_sq[i];
+    }
+  }
+  if (nearest < VISIBLE_HOLE_NONE) {
+    /* v(d), the screen-depth mapping documented over fog_start, at the
+       co-op or solo far plane; minus the band, so the band *ends* at the
+       hole.  The distance floor keeps a hole at the player's feet -- a
+       fresh spawn, an urgent stream gap -- from fogging the screen white. */
+    float far_plane = active_player_count > 1 ? 8000.f : 14000.f;
+    float d = sqrtf(nearest);
+    float v;
+
+    if (d < 14.f) {
+      d = 14.f;
+    }
+    v = 1000.f * far_plane * (64.f * d - 10.f) /
+      (64.f * d * (far_plane - 10.f));
+    v -= FOG_BAND;
+    v += fog_auto_bias;
+    if (v < FOG_START_MIN) {
+      v = FOG_START_MIN;
+    }
+    if (v > FOG_START_MAX) {
+      v = FOG_START_MAX;
+    }
+    target = (u16) v;
+  }
+
+  if (target < fog_start) {
+    fog_start -= fog_start - target > 6 ? 3 : 1;
+  } else if (target > fog_start && ++relax_divider >= 4) {
+    relax_divider = 0;
+    fog_start++;
+  }
+}
+
 void draw(int can_reclaim_mesh_arena) {
   Gfx *frame_start = &frame_display_lists[dl_no][0];
 
@@ -4531,6 +4596,9 @@ void draw(int can_reclaim_mesh_arena) {
 
   if (current_screen == GAME) {
     u8 player_num;
+    if (fog_enabled) {
+      updateAutoFog();
+    }
     for (player_num = 0; player_num < active_player_count; player_num++) {
       updateVisibleColumns(player_num);
       updateCameraMatrices(player_num);

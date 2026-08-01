@@ -1908,11 +1908,16 @@ void updatePlayers() {
       diagnostics_visible = !diagnostics_visible;
     }
     if (diagnostics_visible) {
-      if ((cont_data[i].trigger & L_JPAD) && fog_start > FOG_START_MIN) {
-        fog_start--;
+      /* Fog places itself against the streaming frontier now; these bias
+         where the band rests relative to the hole rather than moving a
+         fixed start.  Negative pulls the haze closer (more cover, less
+         view), positive pushes it out.  The P row still shows the live
+         start the controller lands on. */
+      if ((cont_data[i].trigger & L_JPAD) && fog_auto_bias > -8) {
+        fog_auto_bias--;
       }
-      if ((cont_data[i].trigger & R_JPAD) && fog_start < FOG_START_MAX) {
-        fog_start++;
+      if ((cont_data[i].trigger & R_JPAD) && fog_auto_bias < 8) {
+        fog_auto_bias++;
       }
       if (cont_data[i].trigger & D_JPAD) {
         fog_enabled = !fog_enabled;

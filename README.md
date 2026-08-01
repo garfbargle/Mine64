@@ -28,12 +28,14 @@ unmodified 4 MiB console.
   replaced a double-buffered pair plus a stop-the-world compaction pass,
   and later absorbed the 128 KiB per-block matrix table whose retirement
   let every column bake its vertices.
-* **Distance fog matched to the sky** is available but parked past the
-  mesh ring by default: fog's two-cycle pass measured 5 fps on hardware,
-  and the shipped choice is a clear view with harder directional
-  preloading instead of haze. Culling classifies columns against the live
-  fog start, so pulling the band in with Z + D-pad Left re-engages it —
-  and only the columns that actually reach it pay the two-cycle rate.
+* **Distance fog hugs the streaming frontier.** While the view is fully
+  meshed the band parks past the mesh ring, where it costs nothing (its
+  old fixed placement measured 5 fps on hardware). The moment culling sees
+  a frustum cell with no geometry behind it — a player outrunning the
+  mesher — the band slides in so terrain pops in behind full haze instead
+  of out of the void, then relaxes back out as meshing catches up. Only
+  the columns that actually reach the band pay fog's two-cycle rate, and
+  Z + D-pad Left/Right bias where it rests relative to the hole.
 * **Deferred underground.** Far columns generate surface-only; the cave and
   ore carve runs within five chunks of the player. Caves never breach their
   three-block roof, so the surface is identical either way and the frontier
@@ -428,7 +430,8 @@ watchdog thread.
 **On-screen diagnostics** (left edge, single player; off by default —
 **Z + D-pad Up** toggles it, and it switches itself on whenever an
 integrity counter ticks, so an absorbed anomaly is never silent.  With the
-overlay up, **Z + D-pad Left/Right** walk the fog start — the `P` row —
+overlay up, **Z + D-pad Left/Right** bias the auto fog's resting point
+against the frontier — the `P` row shows the live start it lands on —
 **Z + D-pad Down** toggles fog for an A/B against the bare streaming
 edge, and **Z + C-left** cycles the LOD/visibility presets — the `E`
 readout beside the `B` row, promote radius × 1000 + solo visible-column
@@ -440,7 +443,7 @@ blocks / terrain-pending), `W`/`B` worst frame gap and worst gated-CPU cost in
 tenths of a millisecond over ~2 s (W 166 is clean 60 Hz; B tracking W
 blames callback CPU work, W high with B low blames the RSP/RDP), `L`
 runaway-loop guard trips, `G` position-sanity snaps, `K` corrupted window
-keys caught and repaired, `P` the fog start.
+keys caught and repaired, `P` the live fog start.
 
 Two rows are borrowed while a specific fault is being reproduced: once the
 collision boundary marcher's guard has fired, `C` and `K` are replaced by `S`
