@@ -149,12 +149,14 @@ And outside BSS, **code and read-only data is about 365 KiB**. Only 8 KiB of
 that is textures — the atlas is not a memory problem — and 6 KiB is the one
 graphics microcode still linked, down from 35 KiB across six.
 
-## What we should absolutely do
+## What was reclaimed
 
-All three were built and run before being written down here. See *Verified how*
-at the end of this section for what that test did and did not cover.
+Three things the game was paying for at the SDK's default size rather than its
+own. All three are in, and each was built and run before being written down
+here — see *Verified how* at the end of the section for what that test did and
+did not cover.
 
-### 1. Stop linking five microcodes we never run — 29 KiB, both builds · **done, `5f8979d`**
+### 1. Five microcodes that never ran — 29 KiB, both builds · `5f8979d`
 
 "Microcode" is the program the RSP runs. The SDK ships several variants for
 different tradeoffs, and the spec files link **six** of them.
@@ -177,7 +179,7 @@ resolving while the real bodies leave the ROM.
 stopped. The five stubs are 8 bytes each; `gspF3DEX2_fifoTextStart` is still its
 full 5,008 bytes.
 
-### 2. Supply our own RDP FIFO — 64 KiB, both builds · **done**
+### 2. Our own RDP FIFO — 64 KiB, both builds · `d972dcb`
 
 *This was originally filed under "could consider", on the assumption it needed
 an SDK rebuild. It does not.*
@@ -204,7 +206,7 @@ after.
 **Measured:** `nuRDPOutputBuf` is 65,536 bytes in the linked image, down from
 131,072. `make` reached 128 KiB free.
 
-### 3. Stop reserving 320 KiB of audio heap we don't use — ~224 KiB, audio build · **done**
+### 3. An audio heap sized for this game — ~224 KiB, audio build · `d972dcb`
 
 This is the whole reason `make audio` is broken.
 
@@ -260,9 +262,11 @@ audio output, and RDP timing generally. Items 1 and 3 are structural and the
 emulator run is good evidence. Item 2 is a performance change and only hardware
 can sign it off — check `W`/`B` before and after.
 
-## What we could consider
+## What is still on the table
 
-None of these are free. They cost either performance or a chunk of work.
+Neither of these is free — both trade frame time for memory, and Mine64 has more
+memory than frame time now. Listed because the analysis found them, not because
+they are next.
 
 ### Narrow the index — up to 64 KiB, both builds
 
