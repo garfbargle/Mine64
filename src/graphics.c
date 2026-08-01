@@ -3597,7 +3597,37 @@ static void drawObjectivePanel(Player *player) {
   gDPPipeSync(dlp++);
 }
 
-static void drawCompass() {
+/* The compass is a ribbon that slides under a fixed pointer rather than a
+   dial that snaps between the four cardinals.  The window spans a 120 degree
+   arc across 40 pixels: wide enough that two cardinal letters stay readable
+   while the player faces an intercardinal, tight enough that a single degree
+   of turn still moves the marks a third of a pixel, so they creep rather than
+   jump at any turn rate the stick can produce. */
+#define COMPASS_INNER_LEFT 128
+#define COMPASS_INNER_RIGHT 167
+#define COMPASS_CENTER_X 147.5f
+#define COMPASS_PIXELS_PER_DEGREE (40.f / 120.f)
+
+/* Pixel column the ribbon mark for a world bearing lands on.  Gameplay yaw
+   runs the opposite way round the compass -- yaw 0 faces north but yaw 90
+   faces west -- which is why bearing and yaw add rather than subtract.  The
+   difference wraps into +/-180 so marks behind the player reappear from the
+   far edge instead of piling up against one end. */
+static s32 compassMarkX(float bearing, float yaw) {
+  float delta = bearing + yaw;
+
+  while (delta >= 180.f) {
+    delta -= 360.f;
+  }
+  while (delta < -180.f) {
+    delta += 360.f;
+  }
+  return (s32)(COMPASS_CENTER_X + delta * COMPASS_PIXELS_PER_DEGREE + 0.5f);
+}
+
+static void drawCompass(Player *player) {
+  u8 mark;
+
   gDPPipeSync(dlp++);
   gDPSetCycleType(dlp++, G_CYC_FILL);
   gDPSetRenderMode(dlp++, G_RM_NOOP, G_RM_NOOP2);
@@ -3607,9 +3637,24 @@ static void drawCompass() {
   gDPFillRectangle(dlp++, 126, 8, 169, 18);
   setHudFillColor(25, 31, 35);
   gDPFillRectangle(dlp++, 128, 9, 167, 17);
-  setHudFillColor(91, 98, 98);
-  gDPFillRectangle(dlp++, 134, 10, 134, 13);
-  gDPFillRectangle(dlp++, 161, 10, 161, 13);
+
+  /* One tick every 15 degrees, taller on the intercardinals.  The cardinals
+     are skipped: drawCompassLabels lays their letters in the same lane. */
+  for (mark = 0; mark < 24; mark++) {
+    s32 x = compassMarkX(mark * 15.f, player->yaw);
+
+    if (mark % 6 == 0 || x <= COMPASS_INNER_LEFT ||
+        x >= COMPASS_INNER_RIGHT) {
+      continue;
+    }
+    if (mark % 3 == 0) {
+      setHudFillColor(146, 153, 153);
+      gDPFillRectangle(dlp++, x, 10, x, 16);
+    } else {
+      setHudFillColor(91, 98, 98);
+      gDPFillRectangle(dlp++, x, 13, x, 16);
+    }
+  }
   setHudFillColor(238, 194, 67);
   gDPFillRectangle(dlp++, 147, 15, 148, 19);
   gDPPipeSync(dlp++);
@@ -3659,13 +3704,6 @@ static void drawActionGuide(Player *player) {
   setHudFillColor(116, 121, 118);
   gDPFillRectangle(dlp++, 266, 188, 277, 193);
   gDPPipeSync(dlp++);
-}
-
-static const char *playerHeading(Player *player) {
-  if (player->yaw >= 45.f && player->yaw < 135.f) return "W";
-  if (player->yaw >= 135.f && player->yaw < 225.f) return "S";
-  if (player->yaw >= 225.f && player->yaw < 315.f) return "E";
-  return "N";
 }
 
 /* A compact, deliberately chunky version of the Minecraft hotbar.  It uses
@@ -4125,6 +4163,35 @@ static void setHudTextColor(u8 red, u8 green, u8 blue) {
   gDPSetPrimColor(dlp++, 0, 0, red, green, blue, 255);
 }
 
+/* The cardinal glyphs ride the ribbon drawCompass laid down, so they scroll
+   with the ticks instead of cutting from one letter to the next.  A scissor
+   clipped to the strip lets the letter arriving at an edge come in a column
+   at a time rather than popping in whole; north gets the warm tint so a
+   glance still finds it without reading the glyph. */
+static void drawCompassLabels(Player *player) {
+  static const char cardinals[4] = { 'N', 'E', 'S', 'W' };
+  u8 i;
+
+  gDPPipeSync(dlp++);
+  gDPSetScissor(dlp++, G_SC_NON_INTERLACE, COMPASS_INNER_LEFT + 1, 9,
+    COMPASS_INNER_RIGHT, 18);
+  for (i = 0; i < 4; i++) {
+    s32 x = compassMarkX(i * 90.f, player->yaw) - 3;
+
+    if (x + 8 <= COMPASS_INNER_LEFT || x >= COMPASS_INNER_RIGHT) {
+      continue;
+    }
+    if (i == 0) {
+      setHudTextColor(246, 214, 128);
+    } else {
+      setHudTextColor(241, 241, 232);
+    }
+    drawChar(cardinals[i], (u32)x, 10);
+  }
+  gDPPipeSync(dlp++);
+  gDPSetScissor(dlp++, G_SC_NON_INTERLACE, 0, 0, SCREEN_WD, SCREEN_HT);
+}
+
 static const char *shortIngredientName(u8 item) {
   if (item == COBBLESTONE) return "Cobble";
   if (item == IRON_CHUNK) return "Iron";
@@ -4437,10 +4504,8 @@ static void drawGameText() {
       }
       if (active_player_count == 1) {
         u32 name_width;
-        const char *heading = playerHeading(&players[player_num]);
 
-        setHudTextColor(241, 241, 232);
-        drawString(heading, 148 - hudStringWidth(heading) / 2, 10);
+        drawCompassLabels(&players[player_num]);
         setHudTextColor(241, 195, 58);
         drawString(playerObjectiveTitle(&players[player_num]),
           players[player_num].objective_time > 0 ? 181 : 197, 12);
@@ -4508,7 +4573,7 @@ void drawHUD() {
       drawHotbar(player_num);
       drawHealth(player_num);
       if (active_player_count == 1) {
-        drawCompass();
+        drawCompass(&players[player_num]);
         drawObjectivePanel(&players[player_num]);
         drawCButtonGuide(&players[player_num]);
         drawActionGuide(&players[player_num]);
