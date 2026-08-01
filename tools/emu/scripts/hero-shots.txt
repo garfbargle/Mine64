@@ -1,0 +1,109 @@
+# HERO SHOTS: the frames the README is illustrated with.
+#
+# Deliberately different from animals.txt, which tips the camera twenty-five
+# degrees down to centre a knee-high sheep and therefore fills the frame with
+# grass.  A picture meant to sell the game wants the horizon in it, so this
+# tilts about fifteen degrees -- enough to keep an animal above the hotbar,
+# not enough to lose the sky -- and then turns all the way round taking a
+# frame every few degrees.
+#
+# Nothing here is reproducible shot-for-shot: there is no seed entry on the
+# setup card, so the world and the herd differ every run.  That is the point
+# of the wide sweep.  Run it, look at what came out, keep the good ones.
+#
+# BONUS KIT is switched on so the hotbar has something in it; an empty one
+# photographs as a row of grey boxes.
+
+wait 960
+press A 8
+wait 40
+
+# Nine rows below CLASSIC is BONUS KIT.
+press DDOWN 8
+wait 5
+press DDOWN 8
+wait 5
+press DDOWN 8
+wait 5
+press DDOWN 8
+wait 5
+press DDOWN 8
+wait 5
+press DDOWN 8
+wait 5
+press DDOWN 8
+wait 5
+press DDOWN 8
+wait 5
+press DDOWN 8
+wait 20
+press A 8
+wait 20
+
+press START 8
+wait 60
+press START 8
+wait 12
+wait 300
+shot spawn
+
+# Roughly fifteen degrees down: an animal clears the hotbar, the sky stays.
+stick 0 -60 3 Z
+wait 20
+shot level
+
+stick 55 0 10
+wait 45
+shot turn-01
+stick 55 0 10
+wait 45
+shot turn-02
+stick 55 0 10
+wait 45
+shot turn-03
+stick 55 0 10
+wait 45
+shot turn-04
+stick 55 0 10
+wait 45
+shot turn-05
+stick 55 0 10
+wait 45
+shot turn-06
+stick 55 0 10
+wait 45
+shot turn-07
+stick 55 0 10
+wait 45
+shot turn-08
+stick 55 0 10
+wait 45
+shot turn-09
+stick 55 0 10
+wait 45
+shot turn-10
+stick 55 0 10
+wait 45
+shot turn-11
+stick 55 0 10
+wait 45
+shot turn-12
+
+# Walk out into whatever the sweep was pointing at, for a shot with depth in
+# it rather than one taken from the spawn point.
+stick 0 70 90
+wait 30
+shot walked
+stick 0 70 90
+wait 30
+shot walked-2
+
+# Third person: the avatar, the swing, and the world behind it.
+press CUP 8
+wait 40
+shot third
+stick 0 70 60
+wait 30
+shot third-walking
+
+stop
