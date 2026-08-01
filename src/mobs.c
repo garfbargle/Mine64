@@ -145,7 +145,7 @@ static u8 mobCanStandAt(u8 type, int x, int ground_y, int z) {
   /* Grazers stay on grass.  Monsters and their knockback are allowed across
      player-built floors, stone, and sand, which keeps combat around a base
      from looking like an invisible navigation wall. */
-  if (0 && !mobTypeIsHostile(type) && ground != GRASS) { /*TESTFIXTURE*/
+  if (!mobTypeIsHostile(type) && ground != GRASS) {
     return FALSE;
   }
   return blockGet(x, ground_y + 1, z) == AIR &&
@@ -228,7 +228,7 @@ static u8 mobTooClose(Mob *self, float x, float z) {
   float player_distance;
 
   nearestPlayer(x, z, &player_distance);
-  if (player_distance < (BLOCK_SIZE * 3.f) * (BLOCK_SIZE * 3.f)) { /*TESTFIXTURE*/
+  if (player_distance < (BLOCK_SIZE * 7.f) * (BLOCK_SIZE * 7.f)) {
     return TRUE;
   }
   for (index = 0; index < MAX_MOBS; index++) {
@@ -259,8 +259,8 @@ static u8 spawnMob(Mob *mob, u8 type) {
   origin_x = floor(anchor->position.x / BLOCK_SIZE);
   origin_z = floor(anchor->position.z / BLOCK_SIZE);
   for (attempt = 0; attempt < 96; attempt++) {
-    int x = origin_x + (int) random(13) - 6; /*TESTFIXTURE*/
-    int z = origin_z + (int) random(13) - 6;
+    int x = origin_x + (int) random(53) - 26;
+    int z = origin_z + (int) random(53) - 26;
     int ground_y;
     float world_x;
     float world_z;
@@ -325,12 +325,8 @@ void initMobs() {
       (u8) (MOB_PASSIVE_BUDGET - reserve) : 0;
 
     for (index = 0; index < seeded; index++) {
-      static const u8 opening_herd[6] = {MOB_SHEEP, MOB_SHEEP, MOB_CHICKEN,
-        MOB_CHICKEN, MOB_PIG, MOB_PIG}; /*TESTFIXTURE*/
-      spawnMob(&mobs[index], opening_herd[index % 6]);
-      if (index < 4) {
-        mobs[index].love_time = MOB_LOVE_DURATION * 8.f;
-      }
+      static const u8 opening_herd[3] = {MOB_SHEEP, MOB_CHICKEN, MOB_PIG};
+      spawnMob(&mobs[index], opening_herd[index % 3]);
     }
   }
 }
@@ -564,13 +560,16 @@ static u8 breedMobs(Mob *first, Mob *second) {
       break;
     }
   }
+  if (calf == NULL) {
+    /* A full pool is a reason to wait, not a reason to charge the player two
+       apples for nothing: leave both animals in love and let the mood run out
+       on its own if no slot ever frees. */
+    return FALSE;
+  }
   first->love_time = 0;
   second->love_time = 0;
   first->breed_time = MOB_BREED_COOLDOWN;
   second->breed_time = MOB_BREED_COOLDOWN;
-  if (calf == NULL) {
-    return FALSE;
-  }
 
   /* Between the parents, on the ground one of them is standing on: the
      midpoint of two animals that just walked to each other is reachable by
@@ -601,9 +600,14 @@ static u8 breedMobs(Mob *first, Mob *second) {
   return TRUE;
 }
 
-/* Called only for an animal that is already in love, so the scan is over the
-   handful of frames after a successful feeding rather than every frame. */
-static void seekMate(Mob *mob) {
+/*
+ * Called only for an animal that is already in love, so the scan is over the
+ * handful of seconds after a successful feeding rather than every frame.
+ * FALSE means there is nobody to walk to, and the caller should let the
+ * animal go back to whatever it was doing -- a lone fed animal that took the
+ * mate-seeking branch anyway would simply march off in a straight line.
+ */
+static u8 seekMate(Mob *mob) {
   u8 index;
 
   for (index = 0; index < MAX_MOBS; index++) {
@@ -619,13 +623,14 @@ static void seekMate(Mob *mob) {
     dz = other->position.z - mob->position.z;
     if (dx * dx + dz * dz < MOB_BREED_RANGE * MOB_BREED_RANGE) {
       breedMobs(mob, other);
-      return;
+      return TRUE;
     }
     /* Not there yet: walk toward each other.  Both partners run this branch
        on the same frame, so neither has to lead. */
     faceDirection(mob, (Vector3) {dx, 0, dz});
-    return;
+    return TRUE;
   }
+  return FALSE;
 }
 
 /* One pass per player per frame, shared by the HUD prompt and the A button so
@@ -979,13 +984,13 @@ void updateMobs(float delta) {
         beginMobWindup(mob, nearest);
         speed = 0;
       }
-    } else if (mob->state != MOB_FLEE && mob->love_time > 0) {
+    } else if (mob->state != MOB_FLEE && mob->love_time > 0 &&
+        seekMate(mob)) {
       /* A fed animal has one thing on its mind and it is not the player.
          Ahead of the temptation branch on purpose: otherwise feeding the
          second of a pair would immediately pull both back to the hand that
          fed them and the two would never reach each other. */
       mob->state = MOB_CHASE;
-      seekMate(mob);
       speed = MOB_TEMPT_SPEED;
     } else if (mob->state != MOB_FLEE && mobTypeIsFarmAnimal(mob->type) &&
         vertical_distance < BLOCK_SIZE * 2.f &&
