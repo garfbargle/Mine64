@@ -2219,13 +2219,23 @@ void drawTextured(u8 texture, u8 player_num) {
    */
   for (slot = 0; slot < WINDOW_SLOTS; slot++) {
     if (visible_columns[player_num][slot]) {
+      Gfx *start = column_starts[texture][slot];
+
+      /* Most columns use only a few of the sixteen banks, so most of these
+         branches would jump straight to the shared empty list.  Each one
+         still costs the RSP a command fetch and a return DMA, and across
+         ~120 visible columns they were the majority of the terrain pass's
+         commands.  The pointer compare answers it for free. */
+      if (start == empty_column_display_list) {
+        continue;
+      }
       /* Dropping the most distant terrain is survivable; overrunning the
          frame buffer is not. */
       if (dlp >= frame_dlp_limit) {
         frame_overflows++;
         return;
       }
-      gSPDisplayList(dlp++, column_starts[texture][slot]);
+      gSPDisplayList(dlp++, start);
     }
   }
 }
