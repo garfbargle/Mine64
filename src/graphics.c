@@ -5669,27 +5669,23 @@ static void drawInventoryText() {
     }
   }
 
+  /* The other half of the footer drawInventory laid out.  Same tables, same
+     inventoryLegendX, so the words land on the icons. */
   setHudTextColor(242, 242, 233);
   if (player->inventory_area == INVENTORY_AREA_OUTPUT) {
-    drawChar('A', 21, 213);
-    drawString("CRAFT ONE", 36, 213);
-    drawString("CU", 114, 213);
-    drawString("CRAFT MAX", 137, 213);
-    drawChar('B', 243, 213);
-    drawString("BACK", 258, 213);
+    drawLegendLabels(inventory_output_legend,
+      LEGEND_COUNT(inventory_output_legend),
+      inventoryLegendX(inventory_output_legend,
+        LEGEND_COUNT(inventory_output_legend)), INVENTORY_OUTPUT_ROW_Y);
   } else {
-    drawChar('A', 21, 194);
-    drawString("MOVE STACK", 36, 194);
-    drawChar('B', 118, 194);
-    drawString("BACK", 133, 194);
-    drawString("CL", 22, 214);
-    drawString("ONE", 44, 214);
-    drawString("CR", 97, 214);
-    drawString("QUICK", 120, 214);
-    drawString("CU", 182, 214);
-    drawString("ALL", 205, 214);
-    drawString("CD", 252, 214);
-    drawString("DROP", 275, 214);
+    drawLegendLabels(inventory_items_legend,
+      LEGEND_COUNT(inventory_items_legend),
+      inventoryLegendX(inventory_items_legend,
+        LEGEND_COUNT(inventory_items_legend)), INVENTORY_ITEMS_ROW_Y);
+    drawLegendLabels(inventory_move_legend,
+      LEGEND_COUNT(inventory_move_legend),
+      inventoryLegendX(inventory_move_legend,
+        LEGEND_COUNT(inventory_move_legend)), INVENTORY_MOVE_ROW_Y);
   }
   setHudTextColor(255, 255, 255);
 }
