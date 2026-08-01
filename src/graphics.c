@@ -291,11 +291,14 @@ u8 diagnostics_visible = FALSE;
  * Left/Right moves the start and Z + D-pad Down toggles fog outright for an
  * A/B against the bare edge.  The P row shows the current start.
  *
- * Fog also forces the terrain pass into two-cycle mode -- roughly half the
- * RDP's pixel rate -- which is why it is confined to the gameplay terrain
- * and water pass and switched back off before entities and HUD.  Entities
- * are therefore unfogged at any distance; they are small and near, and the
- * alternative is a second two-cycle pass.
+ * Fog also forces its pass into two-cycle mode -- roughly half the RDP's
+ * pixel rate -- which is why it is confined to the *far* half of the
+ * gameplay terrain: culling classifies each visible column against the
+ * distance where the band begins (see COLUMN_VISIBLE_NEAR in camera.h), and
+ * columns that cannot reach the band draw first in single-cycle with fog
+ * off and identical output.  It is switched back off before entities and
+ * HUD.  Entities are therefore unfogged at any distance; they are small and
+ * near, and the alternative is a second two-cycle pass.
  */
 u8 fog_enabled = TRUE;
 u16 fog_start = 995;
@@ -2202,7 +2205,9 @@ static void processColumnDisplayListUpdates(int can_reclaim_mesh_arena) {
   }
 }
 
-void drawTextured(u8 texture, u8 player_num) {
+/* class_mask selects which fog classes draw: COLUMN_VISIBLE_NEAR,
+   COLUMN_VISIBLE_FAR, or their OR for a single unfogged pass. */
+void drawTextured(u8 texture, u8 player_num, u8 class_mask) {
   u16 slot;
 
   /*
@@ -2218,7 +2223,7 @@ void drawTextured(u8 texture, u8 player_num) {
    * way, just about a different axis.
    */
   for (slot = 0; slot < WINDOW_SLOTS; slot++) {
-    if (visible_columns[player_num][slot]) {
+    if (visible_columns[player_num][slot] & class_mask) {
       Gfx *start = column_starts[texture][slot];
 
       /* Most columns use only a few of the sixteen banks, so most of these
@@ -3237,31 +3242,14 @@ void drawWorld() {
          the pipe before reconfiguring for terrain -- attributes changing
          under a primitive still in flight is the README's lockup. */
       gDPPipeSync(dlp++);
-      if (fogged) {
-        /*
-         * Fog blended toward the sky clear color makes the terrain edge and
-         * the streamed-in pop both happen behind haze.  Fog needs two-cycle
-         * mode: cycle one runs the fog blender, cycle two the ordinary
-         * opaque z-buffered write; the combiner's second cycle passes the
-         * first cycle's texture result through untouched.
-         */
-        gDPSetCycleType(dlp++, G_CYC_2CYCLE);
-        gDPSetRenderMode(dlp++, G_RM_FOG_SHADE_A, G_RM_ZB_OPA_SURF2);
-        gDPSetFogColor(dlp++, sky.r, sky.g, sky.b, 255);
-        gSPFogPosition(dlp++, fog_start, fog_start + FOG_BAND);
-        gSPSetGeometryMode(dlp++, G_FOG);
-      } else {
-        /* Celestial sprites use AA texture-edge mode.  Terrain must
-           explicitly restore its opaque no-read render mode afterwards. */
-        gDPSetRenderMode(dlp++, G_RM_ZB_OPA_SURF, G_RM_ZB_OPA_SURF2);
-      }
+      /* Celestial sprites use AA texture-edge mode.  Terrain must
+         explicitly restore its opaque no-read render mode afterwards.
+         When fog is on this is the near pass's mode; the far pass
+         reconfigures below. */
+      gDPSetRenderMode(dlp++, G_RM_ZB_OPA_SURF, G_RM_ZB_OPA_SURF2);
     }
     gSPSetGeometryMode(dlp++, G_CULL_BACK | G_LIGHTING);
-    if (fogged) {
-      gDPSetCombineMode(dlp++, G_CC_MODULATERGB, G_CC_PASS2);
-    } else {
-      gDPSetCombineMode(dlp++, G_CC_MODULATERGB, G_CC_MODULATERGB);
-    }
+    gDPSetCombineMode(dlp++, G_CC_MODULATERGB, G_CC_MODULATERGB);
     if (cinematic) {
       setPreviewLight();
       gSPSetLights0(dlp++, preview_lights[dl_no]);
@@ -3272,9 +3260,45 @@ void drawWorld() {
     /* Water no longer needs an unlit exception here: its surface vertices
        carry an upward normal like every other top face, so the whole terrain
        bank goes through the one light. */
-    for (i = 0; i < NUM_TEXTURES; i++) {
-      loadTexture(textures[i]->texture);
-      drawTextured(i, player_num);
+    if (fogged) {
+      /*
+       * Terrain in two passes split at the distance where fog begins
+       * (culling classified each visible column against the live fog_start).
+       *
+       * Fog needs two-cycle mode: cycle one runs the fog blender, cycle two
+       * the ordinary opaque z-buffered write; the combiner's second cycle
+       * passes the first cycle's texture result through untouched.  Two-cycle
+       * is also roughly half the RDP's pixel rate, and perspective means the
+       * near columns are most of the terrain's filled pixels -- pixels the
+       * fog band cannot touch by construction.  So the near pass runs in
+       * single-cycle with fog off and identical output, and only the far
+       * pass, whose columns actually reach into the band, pays the two-cycle
+       * rate.  Fog blended toward the sky clear color still makes the
+       * terrain edge and the streamed-in pop both happen behind haze.
+       */
+      for (i = 0; i < NUM_TEXTURES; i++) {
+        loadTexture(textures[i]->texture);
+        drawTextured(i, player_num, COLUMN_VISIBLE_NEAR);
+      }
+      /* Reconfiguring cycle type and render mode under near-pass primitives
+         still in flight is the README's lockup; drain the pipe first. */
+      gDPPipeSync(dlp++);
+      gDPSetCycleType(dlp++, G_CYC_2CYCLE);
+      gDPSetRenderMode(dlp++, G_RM_FOG_SHADE_A, G_RM_ZB_OPA_SURF2);
+      gDPSetFogColor(dlp++, sky.r, sky.g, sky.b, 255);
+      gSPFogPosition(dlp++, fog_start, fog_start + FOG_BAND);
+      gSPSetGeometryMode(dlp++, G_FOG);
+      gDPSetCombineMode(dlp++, G_CC_MODULATERGB, G_CC_PASS2);
+      for (i = 0; i < NUM_TEXTURES; i++) {
+        loadTexture(textures[i]->texture);
+        drawTextured(i, player_num, COLUMN_VISIBLE_FAR);
+      }
+    } else {
+      for (i = 0; i < NUM_TEXTURES; i++) {
+        loadTexture(textures[i]->texture);
+        drawTextured(i, player_num,
+          COLUMN_VISIBLE_NEAR | COLUMN_VISIBLE_FAR);
+      }
     }
     if (!cinematic) {
       if (fogged) {

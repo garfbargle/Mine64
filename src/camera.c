@@ -262,6 +262,27 @@ static void updateVisibleColumnsFor(u8 player_num, Player *player,
     (multiplayer ? FOV_Y_COOP : FOV_Y);
   float fov_x = fov_y * (view_mode == CAMERA_VIEW_FOUR_PLAYER ?
     FOUR_PLAYER_FOV_RATIO : (multiplayer ? COOP_FOV_RATIO : FOV_RATIO));
+  /*
+   * The block distance where fog begins, inverted from the screen-depth
+   * mapping documented over fog_start in graphics.c:
+   *
+   *     v(d) = 1000 * far * (64d - near) / (64d * (far - near))
+   *
+   * with the near plane at 10 and the far plane per projection.  A column
+   * whose farthest point is still closer than this renders identically with
+   * fog off, and saying so here lets the terrain pass draw it in
+   * single-cycle mode at twice the RDP pixel rate.  Half a column diagonal
+   * (~6 blocks) converts the centre distance the loop below measures into
+   * that farthest point.  Derived from the live fog_start so the Z + D-pad
+   * fog tuning moves the near/far boundary with it.
+   */
+  float fog_far_plane = multiplayer ? 8000.f : 14000.f;
+  float fog_begin_denom = fog_far_plane -
+    (float) fog_start * (fog_far_plane - 10.f) * .001f;
+  float fog_near_blocks = fog_begin_denom > 0.f ?
+    (fog_far_plane * 10.f) / (64.f * fog_begin_denom) - 6.f : 0.f;
+  float fog_near_sq = fog_near_blocks > 0.f ?
+    fog_near_blocks * fog_near_blocks : 0.f;
 
   makeHorizontalCullLine(&cull_lines[0], -1, player, camera_position, fov_x);
   makeHorizontalCullLine(&cull_lines[1], 1, player, camera_position, fov_x);
@@ -326,7 +347,9 @@ static void updateVisibleColumnsFor(u8 player_num, Player *player,
       if (!windowColumnResident(world_cx, world_cz)) {
         visible = FALSE;
       }
-      visible_columns[player_num][WINDOW_SLOT(world_cx, world_cz)] = visible;
+      visible_columns[player_num][WINDOW_SLOT(world_cx, world_cz)] =
+        visible ? (dx * dx + dz * dz <= fog_near_sq ?
+          COLUMN_VISIBLE_NEAR : COLUMN_VISIBLE_FAR) : FALSE;
       if (visible) visible_count++;
     }
   }
