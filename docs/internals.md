@@ -219,5 +219,9 @@ Biomes made it obvious — a desert became a forest between sessions.
   nothing calls them, deliberately: the per-chunk diff format will move every
   offset in the file, and the party belongs in that version bump. See *Not
   wired yet* in [64MON](64mon.md).
-* **Sword tier specials are unreachable.** `useMobWeaponSpecial` and its effect
-  rendering exist and are simulated, but nothing triggers them.
+* ~~**Sword tier specials are unreachable.**~~ Bound to **L + B** in the swing
+  handler, with a charge bar between the health and food meters and a
+  translucent plate for each move (`buildSpecialFlash`). The plate's dimensions
+  are `SPECIAL_*` defines in `graphics.c` so `tools/preview/special.py` can
+  frame them against the game's real FOV and eye height — which is how the
+  first attempt's grey-floor cleave and out-of-frustum shockwave were caught.

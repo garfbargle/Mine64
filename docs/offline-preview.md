@@ -43,6 +43,23 @@ tools/preview/hand.py iron_sword --reach 0.5
 tools/preview/hand.py wood_axe --strip
 ```
 
+`special.py` frames a sword special from the eye it lands in front of, which is
+the whole reason it exists: `buildSpecialFlash` puts a plate about two blocks
+ahead of a camera at `PLAYER_EYE_HEIGHT`, and the two ways that goes wrong are
+covering the crosshair and missing the frustum entirely. Both happened on the
+first attempt -- a flat cleave read as a grey floor across the view, and a
+shockwave centred on the player put its brightest part under the camera where
+nothing could see it. Every dimension is a `SPECIAL_*` define in `graphics.c`:
+
+```sh
+tools/preview/special.py                 # every tier, opening and half gone
+tools/preview/special.py iron --at 0.4
+```
+
+It rasterises opaque, so the plate is drawn at full strength and the picture is
+the worst case for coverage; the real one peaks at `SPECIAL_FLASH_ALPHA` in the
+middle and falls to nothing around the rim.
+
 `person.py` poses a person -- a player, a 64MON trainer or a villager, which
 are all one body now. The boxes, the eight anchor offsets and the look table
 come out of `src/humanoid.c`, and the garment colours are applied the way the

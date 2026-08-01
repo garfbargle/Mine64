@@ -163,6 +163,11 @@ MobSpecialEffect mob_special_effects[MAX_PLAYERS];
 
 static float mob_respawn_time;
 static float special_cooldowns[MAX_PLAYERS];
+/* What that cooldown started at.  The three tiers recharge over very different
+   spans, so the fraction the charge meter draws cannot be derived from the
+   remaining frames alone -- and swapping swords mid-recharge must not make the
+   bar jump, which it would if the denominator came from the held item. */
+static float special_cooldown_spans[MAX_PLAYERS];
 /* Resolved once per frame by updateMobs; see mobFeedTarget. */
 static u8 feed_targets[MAX_PLAYERS];
 
@@ -446,6 +451,7 @@ void initMobs() {
   }
   for (index = 0; index < MAX_PLAYERS; index++) {
     special_cooldowns[index] = 0;
+    special_cooldown_spans[index] = 0;
     feed_targets[index] = MAX_MOBS;
     mob_special_effects[index].origin = (Vector3) {0, 0, 0};
     mob_special_effects[index].yaw = 0;
@@ -2037,15 +2043,27 @@ u8 useMobWeaponSpecial(u8 attacker_num) {
       -2.f, 7, 20.f, SPECIAL_SHOCKWAVE_TARGETS);
   }
 
+  /* One place, after the branch that chose it, rather than beside each of the
+     three assignments: the span is by definition whatever the cooldown was
+     just set to. */
+  special_cooldown_spans[attacker_num] = special_cooldowns[attacker_num];
+
   effect->hit_count = hit_count;
   attacker->attack_time = PLAYER_ATTACK_DURATION * 1.5f;
   playSound(SOUND_PUNCH);
   return TRUE;
 }
 
-float mobWeaponSpecialCooldown(u8 attacker_num) {
+u8 mobWeaponSpecialCharge(u8 attacker_num) {
+  float span;
+
   if (attacker_num >= MAX_PLAYERS) {
-    return 0;
+    return MOB_SPECIAL_CHARGE_FULL;
   }
-  return special_cooldowns[attacker_num];
+  span = special_cooldown_spans[attacker_num];
+  if (special_cooldowns[attacker_num] <= 0 || span <= 0) {
+    return MOB_SPECIAL_CHARGE_FULL;
+  }
+  return (u8) ((span - special_cooldowns[attacker_num]) *
+    MOB_SPECIAL_CHARGE_FULL / span);
 }

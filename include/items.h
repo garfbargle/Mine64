@@ -38,7 +38,14 @@
 #define FENCE_GATE     42
 #define LADDER         43
 #define BED            44
-#define ITEM_TYPE_COUNT BED
+/* Cooking is the crafting table plus coal, the same stand-in for a furnace
+   that fires glass.  These sit at the end of the namespace rather than beside
+   their raw forms because a save file stores the ID: inserting one in the
+   middle would silently turn every stack above it into something else. */
+#define COOKED_PORK    45
+#define COOKED_MUTTON  46
+#define COOKED_CHICKEN 47
+#define ITEM_TYPE_COUNT COOKED_CHICKEN
 #define ITEM_IS_VALID(item) \
   ((item) <= BLOCK_TYPE_COUNT || \
    ((item) >= STICK && (item) <= ITEM_TYPE_COUNT))
@@ -66,6 +73,10 @@ u8 itemIsSword(u8 item);
 u8 itemIsPickaxe(u8 item);
 u8 itemIsAxe(u8 item);
 u8 itemIsDetail(u8 item);
+/* Hunger points the item restores when eaten, or zero when it is not food.
+   One table so the A button, the recipe browser and the HUD cannot disagree
+   about what a thing is worth. */
+u8 itemNourishment(u8 item);
 u8 rollLeafDrop(u8 *item);
 void initDroppedItems();
 u8 spawnDroppedItem(u8 item, u8 count, int x, u8 y, int z);

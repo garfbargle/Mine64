@@ -34,13 +34,52 @@ const char *itemName(u8 item) {
     "Stone Axe", "Apple", "Raw Mutton", "Raw Pork", "Slime Gel",
     "Iron Sword", "Iron Pickaxe", "Iron Axe", "Torch", "Wood Stairs",
     "Stone Stairs", "Wood Door", "Lattice Window", "Raw Chicken",
-    "Feather", "Fence", "Fence Gate", "Ladder", "Bed"
+    "Feather", "Fence", "Fence Gate", "Ladder", "Bed",
+    "Cooked Pork", "Cooked Mutton", "Cooked Chicken"
   };
+
+  /*
+   * The table is positional -- names[item - 5] for everything above the block
+   * namespace, because the five inventory-only IDs start where the sixteen
+   * terrain ones stop.  Forgetting a name therefore does not read as a missing
+   * name; it shifts every entry after it by one and quietly renames half the
+   * game.  Adding an ID without its string is a compile error rather than a
+   * bug someone finds in the pack, and it costs nothing in the ROM.
+   */
+  typedef char names_cover_every_item[
+    (sizeof(names) / sizeof(names[0]) == ITEM_TYPE_COUNT - 4) ? 1 : -1]
+    __attribute__((unused));
 
   if (item <= CRAFTING_TABLE) {
     return names[item];
   }
   return ITEM_IS_VALID(item) ? names[item - 5] : "Unknown";
+}
+
+/*
+ * Cooking roughly doubles a cut of meat.
+ *
+ * The numbers are chosen against the well-fed threshold rather than against
+ * each other: health only regenerates above 16 of 20 hunger, and no raw food
+ * in the game carries a player from a working hunger bar up over that line in
+ * one meal.  A cooked one does, which is the entire point of spending the coal
+ * -- it turns meat from a way of not starving into a way of healing.
+ *
+ * The apple stays where it was.  It is the food that is found rather than
+ * farmed, and it keeps its own small emergency identity (see consumeHeldFood,
+ * which heals a half heart on top of this).
+ */
+u8 itemNourishment(u8 item) {
+  switch (item) {
+    case APPLE:          return 4;
+    case RAW_PORK:       return 4;
+    case RAW_MUTTON:     return 3;
+    case RAW_CHICKEN:    return 3;
+    case COOKED_PORK:    return 8;
+    case COOKED_MUTTON:  return 7;
+    case COOKED_CHICKEN: return 6;
+    default:             return 0;
+  }
 }
 
 u8 itemIsSword(u8 item) {

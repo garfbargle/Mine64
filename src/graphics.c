@@ -1193,6 +1193,36 @@ static Vtx pork_verts[] = {
   STEVE_VERTEX(-9, -9, -7, 112, 52, 59), STEVE_VERTEX(9, -9, -7, 112, 52, 59)
 };
 
+/*
+ * The three cooked cuts.
+ *
+ * Each is its raw form shrunk by roughly a sixth and browned: meat loses water
+ * over a fire, and a smaller, darker version of a silhouette the player already
+ * knows says "this is that, cooked" without a second shape to learn.  Keeping
+ * the proportions means a glance at the ground still tells pork from mutton
+ * from chicken, which is the job the raw three already do.
+ */
+static Vtx cooked_pork_verts[] = {
+  STEVE_VERTEX(-10, 7, 7, 167, 96, 62), STEVE_VERTEX(9, 7, 7, 167, 96, 62),
+  STEVE_VERTEX(8, -7, 6, 148, 80, 52), STEVE_VERTEX(-8, -7, 6, 148, 80, 52),
+  STEVE_VERTEX(9, 7, -7, 116, 63, 41), STEVE_VERTEX(-10, 7, -7, 116, 63, 41),
+  STEVE_VERTEX(-8, -7, -6, 90, 48, 32), STEVE_VERTEX(8, -7, -6, 90, 48, 32)
+};
+
+static Vtx cooked_mutton_verts[] = {
+  STEVE_VERTEX(-11, 7, 6, 140, 82, 54), STEVE_VERTEX(10, 7, 6, 140, 82, 54),
+  STEVE_VERTEX(7, -7, 6, 124, 70, 46), STEVE_VERTEX(-8, -7, 6, 124, 70, 46),
+  STEVE_VERTEX(10, 7, -6, 96, 55, 36), STEVE_VERTEX(-11, 7, -6, 96, 55, 36),
+  STEVE_VERTEX(-8, -7, -6, 74, 42, 28), STEVE_VERTEX(7, -7, -6, 74, 42, 28)
+};
+
+static Vtx cooked_chicken_verts[] = {
+  STEVE_VERTEX(-9, 7, 6, 198, 152, 96), STEVE_VERTEX(8, 7, 6, 198, 152, 96),
+  STEVE_VERTEX(6, -7, 5, 178, 133, 82), STEVE_VERTEX(-7, -7, 5, 178, 133, 82),
+  STEVE_VERTEX(8, 7, -6, 148, 110, 68), STEVE_VERTEX(-9, 7, -6, 148, 110, 68),
+  STEVE_VERTEX(-7, -7, -5, 118, 87, 54), STEVE_VERTEX(6, -7, -5, 118, 87, 54)
+};
+
 /* First person needs the forearm as well as the blade; otherwise a floating
    sword loses the "held" feeling that makes an attack easy to read.  Its hand
    ends at the same origin as the sword hilt. */
@@ -3608,6 +3638,12 @@ static void drawLooseItemGeometry(u8 item) {
     body = item == RAW_PORK ? pork_verts : mutton_verts;
   } else if (item == RAW_CHICKEN) {
     body = raw_chicken_verts;
+  } else if (item == COOKED_PORK) {
+    body = cooked_pork_verts;
+  } else if (item == COOKED_MUTTON) {
+    body = cooked_mutton_verts;
+  } else if (item == COOKED_CHICKEN) {
+    body = cooked_chicken_verts;
   } else if (item == FEATHER) {
     gSPVertex(dlp++, feather_quill_verts, 8, 0);
     gSPDisplayList(dlp++, box_display_list);
@@ -4094,6 +4130,193 @@ static void drawGroundShadows(void) {
   gSPSetGeometryMode(dlp++, G_CULL_BACK);
 }
 
+/*
+ * The sword specials, drawn as one soft translucent plate lying where the
+ * swing landed.
+ *
+ * This is the whole visual, and it is the shadow blob's machinery reused
+ * outright: a 3x3 grid of vertices, opaque in the middle and transparent all
+ * the way round the rim, which reads as a soft-edged sweep for eight triangles
+ * and no texture at all.  It borrows the shadow pass's display list and its
+ * identity modelview too -- these coordinates are origin-relative world space
+ * for the same reason the shadows' are.
+ *
+ * The three moves differ in the shape, attitude and placement of that plate,
+ * which is enough to tell them apart at a glance: the rush is an upright lance
+ * thrown out ahead, the cleave a wide flat bar swept across the front at chest
+ * height, and the shockwave a sheet lying on the ground that grows outward.
+ * Anything richer would have meant per-effect geometry, and none of the three
+ * is on screen for more than four tenths of a second.
+ *
+ * The two attitudes are not decoration.  A plate lying flat below eye level
+ * reads as floor no matter what colour it is, so the two moves that happen in
+ * the air are upright and only the ground wave is flat -- which is also the
+ * one difference a player can name without being told.
+ *
+ * Every dimension below was framed in tools/preview/special.py against the
+ * game's own FOV, eye height and duration, on two criteria: the plate must
+ * leave the crosshair clear, and it must not fall outside the frustum.  Both
+ * failed on the first pass -- an early flat cleave was a grey floor across the
+ * whole view, and a shockwave centred on the player put its brightest part
+ * under the camera where nothing could ever see it.  Retune there, not here.
+ *
+ * `origin` is captured at the moment the move fires and never updated, so the
+ * plate stays where the blow was struck while the player follows through.
+ */
+#define SPECIAL_FLASH_VERTS 9
+#define SPECIAL_FLASH_RENDER_DISTANCE (BLOCK_SIZE * 30.f)
+
+/*
+ * The plates, in blocks: half width across, half of the second axis, how far
+ * ahead the middle sits, how high off the feet, and the size it opens and
+ * closes at as a fraction of the above.  Plain numbers rather than expressions
+ * so tools/preview/special.py can read them and frame the real thing.
+ */
+#define SPECIAL_RUSH_SIDE 0.26
+#define SPECIAL_RUSH_SPAN 0.38
+#define SPECIAL_RUSH_REACH 1.95
+#define SPECIAL_RUSH_HEIGHT 1.05
+#define SPECIAL_CLEAVE_SIDE 1.05
+#define SPECIAL_CLEAVE_SPAN 0.21
+#define SPECIAL_CLEAVE_REACH 2.00
+#define SPECIAL_CLEAVE_HEIGHT 1.16
+/* Both blades open at nearly full size and grow a little as they fade. */
+#define SPECIAL_BLADE_SCALE_MIN 0.85
+#define SPECIAL_BLADE_SCALE_SPAN 0.25
+#define SPECIAL_WAVE_SIDE 2.20
+#define SPECIAL_WAVE_SPAN 1.80
+#define SPECIAL_WAVE_REACH 2.00
+#define SPECIAL_WAVE_HEIGHT 0.45
+/* The wave instead grows from almost nothing, which is the whole read. */
+#define SPECIAL_WAVE_SCALE_MIN 0.25
+#define SPECIAL_WAVE_SCALE_SPAN 0.75
+/* Peak opacity of the plate's middle.  See the alpha comment below. */
+#define SPECIAL_FLASH_ALPHA 0.70
+
+static Vtx special_flash_verts[NUM_DISPLAY_LISTS][MAX_PLAYERS]
+  [SPECIAL_FLASH_VERTS];
+
+static void buildSpecialFlash(Vtx *verts, const MobSpecialEffect *effect) {
+  /* 0 the frame it fires, 1 as it disappears. */
+  float progress = 1.f - effect->time / MOB_SPECIAL_EFFECT_DURATION;
+  Vector3 forward = rotateY((Vector3) {0, 0, -1}, -effect->yaw);
+  float feet = effect->origin.y - PLAYER_EYE_HEIGHT * BLOCK_SIZE;
+  /* `span` is the plate's second axis: upright plates spend it on height,
+     the ground sheet spends it on depth. */
+  float half_side, half_span, reach, height, scale, alpha;
+  u8 upright;
+  u8 r, g, b;
+  u8 i;
+
+  if (effect->type == MOB_SPECIAL_WOOD_RUSH) {
+    upright = TRUE;
+    half_side = BLOCK_SIZE * SPECIAL_RUSH_SIDE;
+    half_span = BLOCK_SIZE * SPECIAL_RUSH_SPAN;
+    reach = BLOCK_SIZE * SPECIAL_RUSH_REACH;
+    height = BLOCK_SIZE * SPECIAL_RUSH_HEIGHT;
+    scale = SPECIAL_BLADE_SCALE_MIN + SPECIAL_BLADE_SCALE_SPAN * progress;
+    r = 238; g = 216; b = 170;
+  } else if (effect->type == MOB_SPECIAL_STONE_CLEAVE) {
+    upright = TRUE;
+    half_side = BLOCK_SIZE * SPECIAL_CLEAVE_SIDE;
+    half_span = BLOCK_SIZE * SPECIAL_CLEAVE_SPAN;
+    reach = BLOCK_SIZE * SPECIAL_CLEAVE_REACH;
+    height = BLOCK_SIZE * SPECIAL_CLEAVE_HEIGHT;
+    scale = SPECIAL_BLADE_SCALE_MIN + SPECIAL_BLADE_SCALE_SPAN * progress;
+    r = 214; g = 222; b = 234;
+  } else {
+    /* Low and flat, and it grows from almost nothing: the iron move is the one
+       that does not care which way the player was facing, so what sells it is
+       ground being covered rather than a blade going anywhere. */
+    upright = FALSE;
+    half_side = BLOCK_SIZE * SPECIAL_WAVE_SIDE;
+    half_span = BLOCK_SIZE * SPECIAL_WAVE_SPAN;
+    reach = BLOCK_SIZE * SPECIAL_WAVE_REACH;
+    height = BLOCK_SIZE * SPECIAL_WAVE_HEIGHT;
+    scale = SPECIAL_WAVE_SCALE_MIN + SPECIAL_WAVE_SCALE_SPAN * progress;
+    r = 172; g = 226; b = 248;
+  }
+  half_side *= scale;
+  half_span *= scale;
+  /* Never solid: this lands in front of a first-person camera, and an opaque
+     plate there would be a blindfold rather than a flourish. */
+  alpha = (effect->time / MOB_SPECIAL_EFFECT_DURATION) * SPECIAL_FLASH_ALPHA;
+
+  for (i = 0; i < SPECIAL_FLASH_VERTS; i++) {
+    static const float grid[3] = {-1.f, 0.f, 1.f};
+    u8 col = i % 3;
+    u8 row = i / 3;
+    u8 edge = (col == 1) + (row == 1);
+    float side = grid[col] * half_side;
+    float span = grid[row] * half_span;
+    float ahead = upright ? reach : reach + span;
+
+    /* (forward.z, -forward.x) is forward turned a quarter turn, which is the
+       plate's side axis; both are unit, so the two scale independently. */
+    verts[i].v.ob[0] = effect->origin.x + forward.x * ahead +
+      forward.z * side - render_origin_units_x;
+    verts[i].v.ob[1] = feet + height + (upright ? span : 0);
+    verts[i].v.ob[2] = effect->origin.z + forward.z * ahead -
+      forward.x * side - render_origin_units_z;
+    verts[i].v.flag = 0;
+    verts[i].v.tc[0] = 0;
+    verts[i].v.tc[1] = 0;
+    verts[i].v.cn[0] = r;
+    verts[i].v.cn[1] = g;
+    verts[i].v.cn[2] = b;
+    /* edge == 2 is the centre, 1 the four side midpoints, 0 the corners. */
+    verts[i].v.cn[3] = edge == 2 ? (u8) (alpha * 255.f) :
+      (edge == 1 ? (u8) (alpha * 150.f) : 0);
+  }
+}
+
+static void drawSpecialEffects(u8 viewer_num) {
+  u8 slots[MAX_PLAYERS];
+  u8 count = 0;
+  u8 index;
+
+  for (index = 0; index < active_player_count; index++) {
+    MobSpecialEffect *effect = &mob_special_effects[index];
+
+    if (effect->time <= 0 || effect->type == MOB_SPECIAL_NONE) {
+      continue;
+    }
+    if (!pointVisibleToPlayer(viewer_num, effect->origin,
+        SPECIAL_FLASH_RENDER_DISTANCE)) {
+      continue;
+    }
+    /* Rebuilt per viewport rather than once per frame.  The inputs cannot
+       change between two viewports of the same frame, so a second viewport
+       writes the identical bytes over vertices the first one's commands
+       already reference -- which is why this is safe as well as cheap. */
+    buildSpecialFlash(special_flash_verts[dl_no][index], effect);
+    slots[count++] = index;
+  }
+  if (count == 0) {
+    return;
+  }
+
+  gDPPipeSync(dlp++);
+  gDPSetCombineMode(dlp++, G_CC_SHADE, G_CC_SHADE);
+  gDPSetRenderMode(dlp++, G_RM_ZB_XLU_SURF, G_RM_ZB_XLU_SURF2);
+  gSPClearGeometryMode(dlp++, G_CULL_BACK | G_LIGHTING);
+  gSPMatrix(dlp++, osVirtualToPhysical(&shadow_model),
+    G_MTX_MODELVIEW | G_MTX_LOAD | G_MTX_NOPUSH);
+  for (index = 0; index < count; index++) {
+    gSPVertex(dlp++, special_flash_verts[dl_no][slots[index]],
+      SPECIAL_FLASH_VERTS, 0);
+    gSPDisplayList(dlp++, shadow_blob_display_list);
+  }
+
+  /* Hand back exactly what drawGroundShadows hands back, for the same reason:
+     the passes after this one expect an opaque surface mode and set their own
+     combiner. */
+  gDPPipeSync(dlp++);
+  gDPSetRenderMode(dlp++, G_RM_ZB_OPA_SURF, G_RM_ZB_OPA_SURF2);
+  gDPSetCombineMode(dlp++, G_CC_MODULATEI_PRIM, G_CC_MODULATEI_PRIM);
+  gSPSetGeometryMode(dlp++, G_CULL_BACK);
+}
+
 void drawWorld() {
   u8 i, player_num;
   u8 cinematic = screenShowsPreview(current_screen);
@@ -4252,6 +4475,10 @@ void drawWorld() {
       /* The people who live in the hamlets, after the creatures: in a 64MON
          world a trainer on the road is the one you have to be able to see. */
       villagersDrawForPlayer(player_num);
+      /* Last of the world passes, so a sweep lies over the mobs it just threw
+         rather than behind them, and still under the first-person hand that
+         swung it. */
+      drawSpecialEffects(player_num);
     }
     if (!cinematic && (active_player_count > 1 ||
         players[player_num].camera_mode == CAMERA_THIRD_PERSON)) {
@@ -4616,10 +4843,76 @@ static void drawHudMeter(const HudMeterStyle *style, u32 x, u32 y, u8 value,
 }
 
 /*
+ * The sword charge, between the two meters.
+ *
+ * Not a HudMeterStyle: those draw a row of discrete symbols, and this is one
+ * continuous bar -- a sword is either ready or it is not, and the interesting
+ * reading is how close the next one is, which half a heart's granularity would
+ * throw away.  It costs the same three fill colours, in the same three passes
+ * and for the same reason (see drawHudMeter).
+ *
+ * Drawn only while a sword is actually in hand.  A bar that sat there empty
+ * while the player held a pickaxe would be describing an action the B button
+ * cannot currently take.
+ */
+/*
+ * Twenty by five, and that is not a taste decision: the two meters own their
+ * ends of the row, and with PLAYER_MAX_HEALTH and PLAYER_MAX_HUNGER at 20 each
+ * they leave exactly 24 pixels between them at 320 wide.  Twenty plus a pixel
+ * of outline on each side fills it with one pixel to spare per end.  Widen
+ * either meter, or this bar, and tools/preview/hud.py will show them touching.
+ */
+#define SPECIAL_BAR_WIDTH 20
+#define SPECIAL_BAR_HEIGHT 5
+
+static void drawSpecialCharge(u8 player_num, u32 center_x, u32 row_y,
+    u8 row_height) {
+  ItemStack *held = &players[player_num].inventory[INVENTORY_HOTBAR_START +
+    players[player_num].selected_hotbar_slot];
+  u32 x = center_x - SPECIAL_BAR_WIDTH / 2;
+  u32 y = row_y + (row_height - SPECIAL_BAR_HEIGHT) / 2;
+  u8 charge;
+  u32 filled;
+
+  if (held->count == 0 || !itemIsSword(held->item)) {
+    return;
+  }
+  charge = mobWeaponSpecialCharge(player_num);
+  filled = charge * SPECIAL_BAR_WIDTH / MOB_SPECIAL_CHARGE_FULL;
+
+  /* Steel rather than the food row's amber: the two sit on the same line, and
+     the whole job of this bar is to not be mistaken for either meter beside
+     it. */
+  gDPPipeSync(dlp++);
+  setHudFillColor(10, 14, 18);
+  gDPFillRectangle(dlp++, x - 1, y - 1, x + SPECIAL_BAR_WIDTH,
+    y + SPECIAL_BAR_HEIGHT);
+
+  gDPPipeSync(dlp++);
+  setHudFillColor(34, 46, 55);
+  gDPFillRectangle(dlp++, x, y, x + SPECIAL_BAR_WIDTH - 1,
+    y + SPECIAL_BAR_HEIGHT - 1);
+
+  if (filled == 0) {
+    return;
+  }
+  gDPPipeSync(dlp++);
+  /* Ready is a brighter colour, not merely a longer bar.  On a CRT across a
+     room the length of a nearly-full bar and a full one are the same length;
+     the step in brightness is what carries. */
+  if (charge >= MOB_SPECIAL_CHARGE_FULL) {
+    setHudFillColor(214, 240, 252);
+  } else {
+    setHudFillColor(84, 138, 166);
+  }
+  gDPFillRectangle(dlp++, x, y, x + filled - 1, y + SPECIAL_BAR_HEIGHT - 1);
+}
+
+/*
  * Health rides the leading edge of the item bar's top rim and food the
  * trailing edge, both aligned to the rim rather than to the slots so the two
- * rows read as part of the bar.  The middle stays clear for the held-item
- * name that prints just above it.
+ * rows read as part of the bar.  The middle carries the sword charge, under
+ * the held-item name that prints a row above it.
  */
 static void drawHealth(u8 player_num) {
   u8 compact = usesFourPlayerLayout();
@@ -4643,6 +4936,12 @@ static void drawHealth(u8 player_num) {
     PLAYER_MAX_HEALTH);
   drawHudMeter(food, rim_right - hudMeterWidth(food, PLAYER_MAX_HUNGER) + 1,
     y, players[player_num].hunger, PLAYER_MAX_HUNGER);
+  /* Four-way split has no room for it: the two compact meters leave about a
+     dozen pixels between them, and a twelve-pixel bar reads as neither full
+     nor empty. */
+  if (!compact) {
+    drawSpecialCharge(player_num, bar.x + bar.width / 2, y, health->height);
+  }
   gDPPipeSync(dlp++);
   gDPSetCycleType(dlp++, G_CYC_1CYCLE);
   gDPSetRenderMode(dlp++, G_RM_NOOP, G_RM_NOOP2);
@@ -5773,6 +6072,20 @@ static void drawItemIcon(u8 item, u32 x, u32 y, u32 size) {
     gDPFillRectangle(dlp++, x + 2, y + 4, x + size - 3, y + size - 3);
     setHudFillColor(243, 224, 210);
     gDPFillRectangle(dlp++, x + 4, y + 4, x + size - 5, y + 5);
+  } else if (item == COOKED_PORK || item == COOKED_MUTTON ||
+      item == COOKED_CHICKEN) {
+    /* A cut inset by a pixel on every side against the raw one, browned, and
+       with the raw versions' pale highlight replaced by a seared crust along
+       the top.  Inset and crust together are what read at sixteen pixels: at
+       this size a colour shift alone is a slot the player has to squint at. */
+    setHudFillColor(item == COOKED_CHICKEN ? 178 : 148,
+      item == COOKED_CHICKEN ? 133 : (item == COOKED_PORK ? 84 : 74),
+      item == COOKED_CHICKEN ? 82 : (item == COOKED_PORK ? 55 : 48));
+    gDPFillRectangle(dlp++, x + 3, y + 5, x + size - 4, y + size - 3);
+    setHudFillColor(item == COOKED_CHICKEN ? 116 : 92,
+      item == COOKED_CHICKEN ? 86 : (item == COOKED_PORK ? 50 : 44),
+      item == COOKED_CHICKEN ? 53 : (item == COOKED_PORK ? 33 : 29));
+    gDPFillRectangle(dlp++, x + 3, y + 4, x + size - 4, y + 5);
   } else if (item == FEATHER) {
     setHudFillColor(238, 237, 232);
     gDPFillRectangle(dlp++, x + 3, y + 2, x + size - 3, y + size - 5);

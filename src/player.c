@@ -185,7 +185,19 @@ const CraftRecipe craft_recipes[CRAFT_RECIPE_COUNT] = {
      anything was taking up an inventory slot. */
   {BED, 1, {WOOL, PLANKS}, {3, 3}},
   /* Coal stands in for firing until the furnace interface lands. */
-  {GLASS_WINDOW, 2, {SAND, COAL}, {4, 1}}
+  {GLASS_WINDOW, 2, {SAND, COAL}, {4, 1}},
+  /*
+   * Cooking, on the same stand-in.  Three cuts to a lump of coal, matching the
+   * batch the glass recipe above buys with one: a single lump firing a single
+   * chop would price a meal at a torch, and coal is the only fuel in the game.
+   *
+   * Doing it in threes is also what makes the animals worth keeping rather
+   * than clearing.  A wild pig drops one to three; a bred herd is what reliably
+   * fills the recipe.
+   */
+  {COOKED_PORK, 3, {RAW_PORK, COAL}, {3, 1}},
+  {COOKED_MUTTON, 3, {RAW_MUTTON, COAL}, {3, 1}},
+  {COOKED_CHICKEN, 3, {RAW_CHICKEN, COAL}, {3, 1}}
 };
 
 static void resetInventoryNavigation(void) {
@@ -1380,9 +1392,7 @@ static u8 consumeHeldFood(Player *player) {
        player->health >= PLAYER_MAX_HEALTH)) {
     return FALSE;
   }
-  nourishment = held->item == APPLE ? 4 :
-    (held->item == RAW_PORK ? 4 : (held->item == RAW_MUTTON ? 3 :
-    (held->item == RAW_CHICKEN ? 3 : 0)));
+  nourishment = itemNourishment(held->item);
   if (nourishment == 0) {
     return FALSE;
   }
@@ -2243,7 +2253,19 @@ static u8 updatePlayer(u8 player_num, float delta, float look_delta) {
   }
   if (cont->trigger & B_BUTTON) {
     attacked = TRUE;
-    if (punchMob(player_num) || swingSword(player_num)) {
+    /*
+     * L + B is the sword's tier special.  L is already the sprint modifier, so
+     * this is the swing a player is making anyway as they close on something,
+     * and it collides with nothing: L + R is the vault, and B alone stays the
+     * punch and the pickaxe.
+     *
+     * It is deliberately first and deliberately falls through.  Every reason
+     * useMobWeaponSpecial declines -- still recharging, not holding a sword,
+     * mid-swing -- leaves the press to the ordinary attack below, so holding L
+     * never costs a player the hit they meant to throw.
+     */
+    if (((cont->button & L_TRIG) && useMobWeaponSpecial(player_num)) ||
+        punchMob(player_num) || swingSword(player_num)) {
       resetBreaking(player);
     } else {
       /* A tap should always read as a punch, even if it hits air or starts

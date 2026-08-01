@@ -31,6 +31,8 @@ console — no Expansion Pak, no Minecraft assets, terrain generated as you walk
 
 - Mine, place, and craft — no puzzle grid, ingredients come from your pack
 - Wood/stone/iron tool tiers, each with its own in-hand silhouette
+- Each sword tier has a special on **L + B**: a lunge, a wide cleave, a shockwave
+- Cook meat over coal — a cooked cut is worth roughly twice a raw one
 - Torches, doors, stairs, glass windows
 - Hearts and hunger, fall damage, sprinting, swimming, ledge vaulting
 - Hostile mobs at night that wind up visibly before they strike
@@ -55,6 +57,7 @@ console — no Expansion Pak, no Minecraft assets, terrain generated as you walk
 | Z + C-up | Swap steering for strafing |
 | A | Place, open door, use table, feed animal, eat |
 | B | Hold to mine, tap to punch |
+| L + B | Sword special — lunge, cleave or shockwave by tier |
 | R | Jump; hold to swim up |
 | L + R while moving | Vault a one-block ledge |
 | C-up | First / third person |

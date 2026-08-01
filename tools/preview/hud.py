@@ -155,6 +155,8 @@ class Hud:
         suffix = "_compact_style" if compact else "_style"
         self.health = _style(src, "health" + suffix)
         self.food = _style(src, "food" + suffix)
+        self.special_w = _define(src, "SPECIAL_BAR_WIDTH")
+        self.special_h = _define(src, "SPECIAL_BAR_HEIGHT")
         self.view_w = SCREEN_WD // 2 if compact else SCREEN_WD
         self.view_h = SCREEN_HT // 2 if compact else SCREEN_HT
         self.bar_width = self.slot_count * self.slot_size
@@ -165,7 +167,27 @@ class Hud:
         with open(os.path.join(ROOT, "include", "player.h")) as handle:
             return _define(handle.read(), name)
 
-    def draw(self, canvas, health, hunger, y_base=0):
+    def draw_special(self, canvas, charge, y):
+        """drawSpecialCharge: the sword bar between the two meters.
+
+        Its whole risk is horizontal -- the meters grow from both ends of the
+        same row, and this fills what is left.  Drawing it here is what makes a
+        collision visible instead of shipping."""
+        if self.compact:
+            return  # drawHealth suppresses it on the four-way split.
+        x = self.bar_x + self.bar_width // 2 - self.special_w // 2
+        y += (self.health["height"] - self.special_h) // 2
+        canvas.fill_rect(x - 1, y - 1, x + self.special_w,
+                         y + self.special_h, (10, 14, 18))
+        canvas.fill_rect(x, y, x + self.special_w - 1,
+                         y + self.special_h - 1, (34, 46, 55))
+        filled = int(charge * self.special_w)
+        if filled:
+            ready = charge >= 1.0
+            canvas.fill_rect(x, y, x + filled - 1, y + self.special_h - 1,
+                             (214, 240, 252) if ready else (84, 138, 166))
+
+    def draw(self, canvas, health, hunger, y_base=0, charge=None):
         bar_y = self.bar_y + y_base
         # The item bar, drawn the way drawHotbar draws it, for context.
         canvas.fill_rect(self.bar_x - 2, bar_y - 2, self.bar_x + self.bar_width + 1,
@@ -187,6 +209,8 @@ class Hud:
                    self.bar_x + self.bar_width + 1
                    - meter_width(self.food, self.max_hunger) + 1,
                    y, hunger, self.max_hunger)
+        if charge is not None:
+            self.draw_special(canvas, charge, y)
 
 
 def crt(img):
@@ -214,6 +238,8 @@ def main():
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--health", type=int, default=20)
     ap.add_argument("--food", type=int, default=20)
+    ap.add_argument("--charge", type=float, default=None,
+                    help="sword charge 0..1; omit for no sword in hand")
     ap.add_argument("--compact", action="store_true",
                     help="the four-player sprites, in a quarter viewport")
     ap.add_argument("--sheet", action="store_true",
@@ -228,16 +254,17 @@ def main():
     strip_h = hud.slot_size + hud.margin + 24
 
     if args.sheet:
-        rows = [(20, 20), (17, 20), (13, 11), (7, 5), (1, 0), (0, 0)]
+        rows = [(20, 20, 1.0), (17, 20, .75), (13, 11, .4), (7, 5, .1),
+                (1, 0, 0.0), (0, 0, None)]
         canvas = Canvas(hud.view_w, strip_h * len(rows))
-        for i, (health, hunger) in enumerate(rows):
+        for i, (health, hunger, charge) in enumerate(rows):
             hud.draw(canvas, health, hunger,
                      y_base=strip_h * i - hud.bar_y + strip_h - hud.slot_size
-                     - hud.margin)
+                     - hud.margin, charge=charge)
     else:
         canvas = Canvas(hud.view_w, strip_h)
         hud.draw(canvas, args.health, args.food,
-                 y_base=strip_h - hud.view_h)
+                 y_base=strip_h - hud.view_h, charge=args.charge)
 
     img = Image.fromarray(canvas.px)
     if args.crt:

@@ -217,10 +217,15 @@ u8 punchMob(u8 attacker_num);
 /* Trigger the held sword's tier special.  A successful start returns TRUE
    even on a whiff, so controls can consume the press and play its animation.
    Wood rushes forward, stone cleaves a broad arc, and iron emits a short
-   wall-occluded shockwave.  Every attack scans only the fixed mob pool. */
+   wall-occluded shockwave.  Every attack scans only the fixed mob pool.
+   Bound to L + B: see the swing handler in player.c. */
 u8 useMobWeaponSpecial(u8 attacker_num);
 
-/* Remaining simulation frames; zero means the player's special is ready. */
-float mobWeaponSpecialCooldown(u8 attacker_num);
+/* How far the player's special has recharged, 0 through MOB_SPECIAL_CHARGE_FULL.
+   The HUD asks for this rather than for the raw cooldown so the three tiers'
+   very different recharge times stay inside mobs.c -- a bar that read the
+   frames directly would have to know them to scale itself. */
+#define MOB_SPECIAL_CHARGE_FULL 32
+u8 mobWeaponSpecialCharge(u8 attacker_num);
 
 #endif /* MOBS_H */
