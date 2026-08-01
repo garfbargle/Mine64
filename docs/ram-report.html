@@ -85,6 +85,11 @@ h1 {
   margin: 0;
 }
 h1 em { font-style: normal; color: var(--ink-3); font-weight: 400; }
+.sub {
+  font-family: var(--mono); font-size: 11.5px; color: var(--ink-3);
+  margin: 4px 0 0; font-variant-numeric: tabular-nums;
+}
+.flags h2:not(:first-child) { margin-top: 30px; }
 .controls { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .verdict {
   font-family: var(--mono);
@@ -95,6 +100,7 @@ h1 em { font-style: normal; color: var(--ink-3); font-weight: 400; }
   white-space: nowrap;
 }
 .verdict b { font-size: 15px; font-weight: 600; }
+.verdict--ok   { background: var(--accent-soft); color: var(--accent); }
 .verdict--warn { background: var(--warn-soft); color: var(--warn); }
 .verdict--crit { background: var(--crit-soft); color: var(--crit); }
 .toggle { display: inline-flex; border: 1px solid var(--rule); background: var(--surface-2); padding: 2px; }
@@ -239,6 +245,7 @@ code { font-family: var(--mono); font-size: .9em; color: var(--ink); }
 <div class="top">
   <div>
     <h1>Mine64 <em>/</em> 4 MiB RDRAM</h1>
+    <p class="sub" id="sub"></p>
   </div>
   <div class="controls">
     <div class="verdict" id="verdict"></div>
@@ -254,45 +261,74 @@ code { font-family: var(--mono); font-size: .9em; color: var(--ink); }
 <div class="legend" id="legend"></div>
 
 <div class="flags">
-  <h2>Reclaimable</h2>
+  <h2>Reclaimed</h2>
 
   <div class="flag" style="--fc: var(--good)">
-    <b>29.2 KiB</b>
-    <p><strong>Five of six microcodes are linked and never run.</strong>
-    <code>src/graphics.c</code> holds the only <code>nuGfxTaskStart</code> call and
-    always passes F3DEX2. Dropping the rest needs ten stub symbols, because
-    <code>nuGfxInit_ex2</code> holds a static table of all six.</p>
+    <b>29 KiB</b>
+    <p><strong>Five of six microcodes stopped being linked.</strong> Since the
+    world, wireframe and HUD passes were collapsed into one RSP task, only
+    F3DEX2 is ever selected — the rest sat resident and never ran.
+    <code>src/ucode_stubs.c</code> keeps NuSystem's table resolving without
+    them.</p>
   </div>
 
   <div class="flag" style="--fc: var(--good)">
-    <b>~224 KiB</b>
-    <p><strong>The audio heap is a game parameter, not a reservation.</strong>
-    <code>src/audio.c</code> passes address and size to <code>nuAuMgrInit</code>
-    itself. 320 KiB is the SDK default; this game's voice and DMA config needs
-    about 73 KiB. Confirm with <code>nuAuHeapGetUsed()</code> first.</p>
-  </div>
-
-  <div class="flag" style="--fc: var(--warn)">
     <b>64 KiB</b>
-    <p><strong>The RDP FIFO is the SDK's 128 KiB.</strong> Its size is baked into
-    <code>nusys.o</code>, so halving it means rebuilding libnusys. With the fifo
-    microcode a short buffer costs throughput, not correctness.</p>
+    <p><strong>Mine64 supplies its own RDP FIFO.</strong> The SDK's is 128 KiB
+    and is the only symbol in its archive member, so defining it in
+    <code>src/rdp_fifo.c</code> replaces it outright — no SDK rebuild.
+    <code>nuGfxInit</code> registers the SDK's size constant rather than
+    <code>sizeof</code>, so the real size has to be re-registered after it.</p>
   </div>
 
-  <div class="flag" style="--fc: var(--warn)">
-    <b>~22 KiB</b>
-    <p><strong>rmon and the thread profiler are in the release build.</strong>
-    <code>rmonIOStack</code> and friends are linked against plain
-    <code>-lultra</code>. Worth checking how this SDK builds libultra.</p>
+  <div class="flag" style="--fc: var(--good)">
+    <b>224 KiB</b>
+    <p><strong>The audio heap is sized for this game.</strong> 320 KiB was the
+    SDK default for a full sequence player; Mine64 runs four voices.
+    <code>src/audio.c</code> reserves 96 KiB. That is still the SDK formula's
+    estimate rather than a reading — the <code>U</code> diagnostic row reports
+    what is actually used.</p>
   </div>
+
+  <h2>Still on the table</h2>
+
+  <div class="flag" style="--fc: var(--s3)">
+    <b>~64 KiB</b>
+    <p><strong>The per-texture index is stored at full width.</strong>
+    <code>column_starts</code> and <code>staged_starts</code> hold a 32-bit
+    pointer per texture per slot, and most point at the same shared "nothing
+    here" list. A block number plus a 16-bit offset would halve both — at the
+    cost of one more indirection in the loop that already dominates a standing
+    frame.</p>
+  </div>
+
+  <div class="flag" style="--fc: var(--s3)">
+    <b>64 KiB</b>
+    <p><strong><code>c_models</code> spends 64 bytes per slot on a
+    translation.</strong> Baking each column's offset into its vertices would
+    delete the array and a matrix push per column per frame, but would weld
+    every mesh to the render origin — a rebase would then mean a full remesh.
+    Probably not worth it.</p>
+  </div>
+
+  <h2>Not reclaimable</h2>
 
   <div class="flag" style="--fc: var(--s2)">
     <b>480 KiB</b>
-    <p><strong>Paid for, not reclaimable.</strong> The window is 32 x 32 slots
-    because lookup must be a mask, but a stream radius of 12 spans 25 columns —
-    so 399 slots of <code>window_blocks</code> and 78 KiB of per-slot tables can
-    never be occupied. Spending it means more view distance, which costs frame
-    time, not RDRAM.</p>
+    <p><strong>The window is bigger than the stream radius can fill.</strong>
+    32 × 32 slots, because slot lookup must be a mask; a radius of 12 spans 25
+    columns. So 399 slots of <code>window_blocks</code> and 78 KiB of per-slot
+    tables can never be occupied. Spending it means more view distance, which
+    costs frame time rather than RDRAM.</p>
+  </div>
+
+  <div class="flag" style="--fc: var(--s7)">
+    <b>22 KiB</b>
+    <p><strong>libultra's debug monitor cannot be switched off.</strong>
+    <code>threadprofile.o</code> and <code>rmonsio.o</code> are pulled in by
+    <code>exceptasm.o</code> and <code>createthread.o</code>, which are on every
+    link. It is also not the debugger this project uses — the freeze-forensics
+    rig is, and that one is already toggleable.</p>
   </div>
 </div>
 
@@ -301,7 +337,7 @@ code { font-family: var(--mono); font-size: .9em; color: var(--ink); }
 <div id="tip" aria-hidden="true"></div>
 
 <script>
-const DATA = {"nonaudio":{"c":[{"n":"Z buffer","v":153600,"k":"resv","d":"NU_GFX_ZBUFFER_ADDR. The image starts immediately above it, so none of it is wasted."},{"n":"Code + data","v":404080,"k":"code","c":[{"n":"Game code","v":305804},{"n":"Microcode","v":36160,"k":"flag","d":"Six graphics microcodes are linked. Exactly one is ever selected."},{"n":"Read-only data","v":56206},{"n":"padding","v":5910,"f":1}]},{"n":"BSS","v":3138288,"k":"bss","c":[{"n":"Mesh arena","v":1215105,"c":[{"n":"mesh_arena","v":1179648,"d":"147,456 Gfx of column meshes, first-fit with relocation defrag. 37% of BSS."},{"n":"mesh_blocks","v":32768,"d":"2,048 allocation records: every live column plus every staged replacement."},{"n":"mesh_cache","v":2673,"d":""},{"n":"6 smaller","v":16,"f":1}]},{"n":"Terrain window","v":1067167,"c":[{"n":"window_blocks","v":1048576,"d":"1,024 column slots x 1 KiB. The stream radius can fill 625 of them."},{"n":"details","v":6144,"d":""},{"n":"trees","v":4480,"d":""},{"n":"window_keys","v":4096,"d":""},{"n":"28 smaller","v":3871,"f":1}]},{"n":"Per-slot render tables","v":205824,"c":[{"n":"column_starts","v":65536,"d":"Gfx* per texture bank per slot, for the generation on screen."},{"n":"staged_starts","v":65536,"d":"The same table again, for a world build in flight."},{"n":"c_models","v":65536,"d":"One 64-byte Mtx per slot holding nothing but a translation."},{"n":"visible_columns","v":4096,"d":""},{"n":"5 smaller","v":5120,"f":1}]},{"n":"Home store","v":203049,"c":[{"n":"home_blocks","v":200704,"d":"The 112x32x112 save extent kept whole, so building is never rationed."},{"n":"9 smaller","v":2345,"f":1}]},{"n":"NuSystem / RSP","v":163563,"c":[{"n":"nuRDPOutputBuf","v":131072,"d":"The SDK's RDP command FIFO. Sized by nusys.o, not by this game."},{"n":"nuScStack","v":8192,"d":""},{"n":"nuScAudioStack","v":8192,"d":""},{"n":"nuScGraphicsStack","v":8192,"d":""},{"n":"nuYieldBuf","v":3088,"d":""},{"n":"41 smaller","v":4827,"f":1}]},{"n":"Frame display lists","v":131314,"c":[{"n":"frame_display_lists","v":106496,"d":"2 x 6,656 Gfx. World, targeting and HUD share one RSP task."},{"n":"column_quads","v":12480,"d":""},{"n":"column_baked","v":12288,"d":""},{"n":"6 smaller","v":50,"f":1}]},{"n":"Threads & debug","v":89429,"c":[{"n":"rmonIOStack","v":16384,"d":"libultra's remote debug monitor, present in a release build."},{"n":"IdleStack","v":8192,"d":""},{"n":"GfxTaskMgrStack","v":8192,"d":""},{"n":"GfxStack","v":8192,"d":""},{"n":"siMgrStack","v":8192,"d":""},{"n":"nuMainStack","v":8192,"d":""},{"n":"piThreadStack","v":4096,"d":""},{"n":"viThreadStack","v":4096,"d":""},{"n":"250 smaller","v":23893,"f":1}]},{"n":"Entity matrices","v":62444,"c":[{"n":"mob_translate","v":7168,"d":""},{"n":"mob_rotate","v":6144,"d":""},{"n":"creature_verts","v":5632,"d":""},{"n":"water_top_verts","v":4096,"d":""},{"n":"steve_translate","v":3584,"d":""},{"n":"steve_rotate","v":3584,"d":""},{"n":"shadow_verts","v":3456,"d":""},{"n":"falling_tree_box_translate","v":3072,"d":""},{"n":"24 smaller","v":25708,"f":1}]},{"n":"padding","v":393,"f":1}]},{"n":"Free","v":36512,"k":"free","d":"Headroom before the framebuffers. check_ram.py warns below 64 KiB."},{"n":"Framebuffers","v":460800,"k":"resv","d":"Three 320x240 16bpp buffers, pinned at the top of RDRAM."}],"end":2151180640,"limit":2151217152,"slack":36512,"bss":3138288,"text":404080,"fns":794,"objs":405},"audio":{"c":[{"n":"Z buffer","v":153600,"k":"resv","d":"NU_GFX_ZBUFFER_ADDR. The image starts immediately above it, so none of it is wasted."},{"n":"Code + data","v":428544,"k":"code","c":[{"n":"Game code","v":326012},{"n":"Microcode","v":40480,"k":"flag","d":"Six graphics microcodes are linked. Exactly one is ever selected."},{"n":"Read-only data","v":55716},{"n":"padding","v":6336,"f":1}]},{"n":"BSS","v":3140208,"k":"bss","c":[{"n":"Mesh arena","v":1215105,"c":[{"n":"mesh_arena","v":1179648,"d":"147,456 Gfx of column meshes, first-fit with relocation defrag. 37% of BSS."},{"n":"mesh_blocks","v":32768,"d":"2,048 allocation records: every live column plus every staged replacement."},{"n":"mesh_cache","v":2673,"d":""},{"n":"6 smaller","v":16,"f":1}]},{"n":"Terrain window","v":1067167,"c":[{"n":"window_blocks","v":1048576,"d":"1,024 column slots x 1 KiB. The stream radius can fill 625 of them."},{"n":"details","v":6144,"d":""},{"n":"trees","v":4480,"d":""},{"n":"window_keys","v":4096,"d":""},{"n":"28 smaller","v":3871,"f":1}]},{"n":"Per-slot render tables","v":205824,"c":[{"n":"column_starts","v":65536,"d":"Gfx* per texture bank per slot, for the generation on screen."},{"n":"staged_starts","v":65536,"d":"The same table again, for a world build in flight."},{"n":"c_models","v":65536,"d":"One 64-byte Mtx per slot holding nothing but a translation."},{"n":"visible_columns","v":4096,"d":""},{"n":"5 smaller","v":5120,"f":1}]},{"n":"Home store","v":203049,"c":[{"n":"home_blocks","v":200704,"d":"The 112x32x112 save extent kept whole, so building is never rationed."},{"n":"9 smaller","v":2345,"f":1}]},{"n":"NuSystem / RSP","v":165164,"c":[{"n":"nuRDPOutputBuf","v":131072,"d":"The SDK's RDP command FIFO. Sized by nusys.o, not by this game."},{"n":"nuScStack","v":8192,"d":""},{"n":"nuScAudioStack","v":8192,"d":""},{"n":"nuScGraphicsStack","v":8192,"d":""},{"n":"nuYieldBuf","v":3088,"d":""},{"n":"67 smaller","v":6428,"f":1}]},{"n":"Frame display lists","v":131314,"c":[{"n":"frame_display_lists","v":106496,"d":"2 x 6,656 Gfx. World, targeting and HUD share one RSP task."},{"n":"column_quads","v":12480,"d":""},{"n":"column_baked","v":12288,"d":""},{"n":"6 smaller","v":50,"f":1}]},{"n":"Threads & debug","v":89714,"c":[{"n":"rmonIOStack","v":16384,"d":"libultra's remote debug monitor, present in a release build."},{"n":"IdleStack","v":8192,"d":""},{"n":"GfxTaskMgrStack","v":8192,"d":""},{"n":"GfxStack","v":8192,"d":""},{"n":"siMgrStack","v":8192,"d":""},{"n":"nuMainStack","v":8192,"d":""},{"n":"piThreadStack","v":4096,"d":""},{"n":"viThreadStack","v":4096,"d":""},{"n":"269 smaller","v":24178,"f":1}]},{"n":"Entity matrices","v":62444,"c":[{"n":"mob_translate","v":7168,"d":""},{"n":"mob_rotate","v":6144,"d":""},{"n":"creature_verts","v":5632,"d":""},{"n":"water_top_verts","v":4096,"d":""},{"n":"steve_translate","v":3584,"d":""},{"n":"steve_rotate","v":3584,"d":""},{"n":"shadow_verts","v":3456,"d":""},{"n":"falling_tree_box_translate","v":3072,"d":""},{"n":"24 smaller","v":25708,"f":1}]},{"n":"padding","v":427,"f":1}]},{"n":"Overrun","v":317552,"k":"crash","d":"BSS and the audio heap claim the same addresses. Corrupt audio or video, on hardware only."},{"n":"Audio heap","v":327680,"k":"warn","d":"NU_AU_HEAP_SIZE, the SDK default. src/audio.c passes it explicitly, so the size is Mine64's choice. Its own config needs about 73 KiB."},{"n":"Framebuffers","v":460800,"k":"resv","d":"Three 320x240 16bpp buffers, pinned at the top of RDRAM."}],"end":2151207024,"limit":2150889472,"slack":-317552,"bss":3140208,"text":428544,"fns":896,"objs":450}};
+const DATA = {"nonaudio":{"c":[{"n":"Z buffer","v":153600,"k":"resv","d":"NU_GFX_ZBUFFER_ADDR. The image starts immediately above it, so none of it is wasted."},{"n":"Code + data","v":374272,"k":"code","c":[{"n":"Game code","v":305828},{"n":"Microcode","v":6352,"d":"One graphics microcode now, down from six. 29 KiB reclaimed."},{"n":"Read-only data","v":56206},{"n":"padding","v":5886,"f":1}]},{"n":"BSS","v":3072752,"k":"bss","c":[{"n":"Mesh arena","v":1215105,"c":[{"n":"mesh_arena","v":1179648,"d":"147,456 Gfx of column meshes, first-fit with relocation defrag. Still 39% of BSS."},{"n":"mesh_blocks","v":32768,"d":"2,048 allocation records: every live column plus every staged replacement."},{"n":"mesh_cache","v":2673,"d":""},{"n":"6 smaller","v":16,"f":1}]},{"n":"Terrain window","v":1067167,"c":[{"n":"window_blocks","v":1048576,"d":"1,024 column slots x 1 KiB. The stream radius can fill 625 of them."},{"n":"details","v":6144,"d":""},{"n":"trees","v":4480,"d":""},{"n":"window_keys","v":4096,"d":""},{"n":"28 smaller","v":3871,"f":1}]},{"n":"Per-slot render tables","v":205824,"c":[{"n":"column_starts","v":65536,"d":"Gfx* per texture bank per slot, for the generation on screen."},{"n":"staged_starts","v":65536,"d":"The same table again, for a world build in flight."},{"n":"c_models","v":65536,"d":"One 64-byte Mtx per slot holding nothing but a translation."},{"n":"visible_columns","v":4096,"d":""},{"n":"5 smaller","v":5120,"f":1}]},{"n":"Home store","v":203049,"c":[{"n":"home_blocks","v":200704,"d":"The 112x32x112 save extent kept whole, so building is never rationed."},{"n":"9 smaller","v":2345,"f":1}]},{"n":"Frame display lists","v":131314,"c":[{"n":"frame_display_lists","v":106496,"d":"2 x 6,656 Gfx. World, targeting and HUD share one RSP task."},{"n":"column_quads","v":12480,"d":""},{"n":"column_baked","v":12288,"d":""},{"n":"6 smaller","v":50,"f":1}]},{"n":"NuSystem / RSP","v":98027,"c":[{"n":"nuRDPOutputBuf","v":65536,"d":"Mine64's own RDP FIFO, half the SDK's 128 KiB. src/rdp_fifo.c."},{"n":"nuScStack","v":8192,"d":""},{"n":"nuScAudioStack","v":8192,"d":""},{"n":"nuScGraphicsStack","v":8192,"d":""},{"n":"nuYieldBuf","v":3088,"d":""},{"n":"41 smaller","v":4827,"f":1}]},{"n":"Threads & debug","v":89429,"c":[{"n":"rmonIOStack","v":16384,"d":"libultra's remote debug monitor. Welded to the exception handler; not removable from here."},{"n":"IdleStack","v":8192,"d":""},{"n":"GfxTaskMgrStack","v":8192,"d":""},{"n":"GfxStack","v":8192,"d":""},{"n":"siMgrStack","v":8192,"d":""},{"n":"nuMainStack","v":8192,"d":""},{"n":"piThreadStack","v":4096,"d":""},{"n":"viThreadStack","v":4096,"d":""},{"n":"250 smaller","v":23893,"f":1}]},{"n":"Entity matrices","v":62444,"c":[{"n":"mob_translate","v":7168,"d":""},{"n":"mob_rotate","v":6144,"d":""},{"n":"creature_verts","v":5632,"d":""},{"n":"water_top_verts","v":4096,"d":""},{"n":"steve_translate","v":3584,"d":""},{"n":"steve_rotate","v":3584,"d":""},{"n":"shadow_verts","v":3456,"d":""},{"n":"falling_tree_box_translate","v":3072,"d":""},{"n":"24 smaller","v":25708,"f":1}]},{"n":"padding","v":393,"f":1}]},{"n":"Free","v":131856,"k":"free","d":"Headroom before the framebuffers."},{"n":"Framebuffers","v":460800,"k":"resv","d":"Three 320x240 16bpp buffers, pinned at the top of RDRAM."}],"end":2151085296,"limit":2151217152,"slack":131856,"bss":3072752,"text":374272,"fns":790,"objs":405},"audio":{"c":[{"n":"Z buffer","v":153600,"k":"resv","d":"NU_GFX_ZBUFFER_ADDR. The image starts immediately above it, so none of it is wasted."},{"n":"Code + data","v":403184,"k":"code","c":[{"n":"Game code","v":328564},{"n":"Microcode","v":10672,"d":"One graphics microcode now, down from six. 29 KiB reclaimed."},{"n":"Read-only data","v":57652},{"n":"padding","v":6296,"f":1}]},{"n":"BSS","v":3074672,"k":"bss","c":[{"n":"Mesh arena","v":1215105,"c":[{"n":"mesh_arena","v":1179648,"d":"147,456 Gfx of column meshes, first-fit with relocation defrag. Still 39% of BSS."},{"n":"mesh_blocks","v":32768,"d":"2,048 allocation records: every live column plus every staged replacement."},{"n":"mesh_cache","v":2673,"d":""},{"n":"6 smaller","v":16,"f":1}]},{"n":"Terrain window","v":1067167,"c":[{"n":"window_blocks","v":1048576,"d":"1,024 column slots x 1 KiB. The stream radius can fill 625 of them."},{"n":"details","v":6144,"d":""},{"n":"trees","v":4480,"d":""},{"n":"window_keys","v":4096,"d":""},{"n":"28 smaller","v":3871,"f":1}]},{"n":"Per-slot render tables","v":205824,"c":[{"n":"column_starts","v":65536,"d":"Gfx* per texture bank per slot, for the generation on screen."},{"n":"staged_starts","v":65536,"d":"The same table again, for a world build in flight."},{"n":"c_models","v":65536,"d":"One 64-byte Mtx per slot holding nothing but a translation."},{"n":"visible_columns","v":4096,"d":""},{"n":"5 smaller","v":5120,"f":1}]},{"n":"Home store","v":203049,"c":[{"n":"home_blocks","v":200704,"d":"The 112x32x112 save extent kept whole, so building is never rationed."},{"n":"9 smaller","v":2345,"f":1}]},{"n":"Frame display lists","v":131314,"c":[{"n":"frame_display_lists","v":106496,"d":"2 x 6,656 Gfx. World, targeting and HUD share one RSP task."},{"n":"column_quads","v":12480,"d":""},{"n":"column_baked","v":12288,"d":""},{"n":"6 smaller","v":50,"f":1}]},{"n":"NuSystem / RSP","v":99628,"c":[{"n":"nuRDPOutputBuf","v":65536,"d":"Mine64's own RDP FIFO, half the SDK's 128 KiB. src/rdp_fifo.c."},{"n":"nuScStack","v":8192,"d":""},{"n":"nuScAudioStack","v":8192,"d":""},{"n":"nuScGraphicsStack","v":8192,"d":""},{"n":"nuYieldBuf","v":3088,"d":""},{"n":"67 smaller","v":6428,"f":1}]},{"n":"Threads & debug","v":89714,"c":[{"n":"rmonIOStack","v":16384,"d":"libultra's remote debug monitor. Welded to the exception handler; not removable from here."},{"n":"IdleStack","v":8192,"d":""},{"n":"GfxTaskMgrStack","v":8192,"d":""},{"n":"GfxStack","v":8192,"d":""},{"n":"siMgrStack","v":8192,"d":""},{"n":"nuMainStack","v":8192,"d":""},{"n":"piThreadStack","v":4096,"d":""},{"n":"viThreadStack","v":4096,"d":""},{"n":"269 smaller","v":24178,"f":1}]},{"n":"Entity matrices","v":62444,"c":[{"n":"mob_translate","v":7168,"d":""},{"n":"mob_rotate","v":6144,"d":""},{"n":"creature_verts","v":5632,"d":""},{"n":"water_top_verts","v":4096,"d":""},{"n":"steve_translate","v":3584,"d":""},{"n":"steve_rotate","v":3584,"d":""},{"n":"shadow_verts","v":3456,"d":""},{"n":"falling_tree_box_translate","v":3072,"d":""},{"n":"24 smaller","v":25708,"f":1}]},{"n":"padding","v":427,"f":1}]},{"n":"Free","v":2720,"k":"free","d":"Headroom before the audio heap. A link-time fact, not a runtime margin -- correct, but nothing to build on."},{"n":"Audio heap","v":98304,"k":"warn","d":"96 KiB, sized from the SDK's own formula for four voices. The U diagnostic row reports what is really used."},{"n":"Framebuffers","v":460800,"k":"resv","d":"Three 320x240 16bpp buffers, pinned at the top of RDRAM."}],"end":2151116128,"limit":2151118848,"slack":2720,"bss":3074672,"text":403184,"fns":896,"objs":450}};
 
 const KIND = {
   resv:  "--resv",  code: "--code",
@@ -491,14 +527,23 @@ function draw() {
   /* header numbers */
   const b = DATA[build];
   const claimed = b.c.reduce((s, n) => s + n.v, 0);
+  $("#sub").textContent =
+    kib(b.text) + " KiB code+data · " + kib(b.bss) + " KiB BSS · " +
+    b.objs + " static objects · " + b.fns + " functions";
+
+  const ceiling = build === "audio" ? "the audio heap" : "the framebuffers";
   const v = $("#verdict");
-  if (b.slack >= 0) {
-    v.className = "verdict verdict--warn";
-    v.innerHTML = "<b>" + kib(b.slack) + " KiB</b> free before the framebuffers";
-  } else {
+  if (b.slack < 0) {
     v.className = "verdict verdict--crit";
-    v.innerHTML = "<b>" + kib(-b.slack) + " KiB</b> past the audio heap · claims " +
+    v.innerHTML = "<b>" + kib(-b.slack) + " KiB</b> past " + ceiling + " · claims " +
       (claimed / 1048576).toFixed(2) + " MiB of 4.00";
+  } else if (b.slack < 64 * 1024) {
+    /* check_ram.py's own warning threshold. */
+    v.className = "verdict verdict--warn";
+    v.innerHTML = "<b>" + kib(b.slack) + " KiB</b> free before " + ceiling + " · thin";
+  } else {
+    v.className = "verdict verdict--ok";
+    v.innerHTML = "<b>" + kib(b.slack) + " KiB</b> free before " + ceiling;
   }
 }
 
