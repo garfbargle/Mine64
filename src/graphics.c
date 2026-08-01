@@ -4083,6 +4083,20 @@ static void buildGroundShadows(void) {
       BLOCK_SIZE * radius * size, strength);
   }
 
+  /* Creatures and trainers, when the mod is on.  They cost the pass nothing
+     it was not already spending: the slots they take here are the mob slots
+     mon64RoamerReserve took out of the pool above, which is the same trade
+     the whole feature is built on. */
+  for (i = 0; i < MON_MAX_ROAMERS && shadow_count < SHADOW_SLOTS; i++) {
+    Vector3 position;
+    float height;
+    float radius;
+
+    if (mon64ShadowCaster((u8) i, &position, &height, &radius)) {
+      addGroundShadow(position, height, radius, strength);
+    }
+  }
+
   for (i = 0; i < MAX_DROPPED_ITEMS && shadow_count < SHADOW_SLOTS; i++) {
     if (!dropped_items[i].active) {
       continue;

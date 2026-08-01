@@ -134,14 +134,26 @@ static const u8 *toneColor(const CreatureSkin *skin, u8 tone) {
  * the translation the box was going to need anyway.
  */
 static void poseOffset(const MonPart *part, const CreaturePose *pose,
-    u8 scale, float *out_x, float *out_y, float *out_z) {
+    u8 scale, u8 bulk, float *out_x, float *out_y, float *out_z) {
   float step = sinf(pose->walk_time) * 3.f * pose->gait;
   float breathe = sinf(pose->walk_time * .3f) * 1.2f;
   float shake = pose->hurt > 0 ?
     sinf(pose->hurt * 90.f * M_DTOR) * 4.f : 0;
-  float x = (float) part->x * scale / 100.f;
+  /*
+   * Bulk has to move the offsets it widens, not only the extents.
+   *
+   * A part is placed relative to a body whose faces bulk has already pushed
+   * outward; leaving the offset on plain scale leaves the part where the
+   * thinner body used to be, which is inside the fatter one.  That is how the
+   * two most heavily built elders came to have no eyes at all -- the frog's
+   * and the eel's had been swallowed whole by their own bodies, and nothing
+   * about it was visible in the table.  Height is exempt for the same reason
+   * it is exempt in the extents: an elder is heavier, not taller.
+   */
+  float wide = (float) scale * (float) bulk / 10000.f;
+  float x = (float) part->x * wide;
   float y = (float) part->y * scale / 100.f;
-  float z = (float) part->z * scale / 100.f;
+  float z = (float) part->z * wide;
 
   switch (part->role) {
     case MON_ROLE_BODY:
@@ -237,7 +249,7 @@ static void drawCreature(u8 slot, u8 species_id, Vector3 position, float yaw,
     if (sz < 1) sz = 1;
     buildBox(verts, (s16) -sx, (s16) -sy, (s16) -sz, sx, sy, sz, color);
 
-    poseOffset(part, pose, skin.scale, &ox, &oy, &oz);
+    poseOffset(part, pose, skin.scale, skin.bulk, &ox, &oy, &oz);
     offset.x = ox;
     offset.y = oy;
     offset.z = oz;

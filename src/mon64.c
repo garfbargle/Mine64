@@ -94,6 +94,82 @@ u8 mon64BattleActive(void) {
   return mon_battle.active;
 }
 
+/*
+ * The footprint a species stands on: how tall it is and how wide a shadow it
+ * throws, both from the two numbers its model is already built from.
+ *
+ * A cub's blob shrinks with the cub.  An adult-sized shadow under a small
+ * animal is the tell that gives a scaled model away, which is exactly the
+ * trade the mob pool already makes for its calves and lambs.
+ */
+static void creatureFootprint(u8 species_id, float *height, float *radius) {
+  const MonSpecies *species = &mon_species[species_id];
+
+  *height = (float) mon_rigs[species->rig].height * species->scale / 100.f;
+  /* Seven tenths of the standing height, widened by bulk: it puts a young
+     bear on the same footprint the pig it is sharing a field with already
+     has, which is the only calibration this number needs to pass. */
+  *radius = *height * .7f * (float) species->bulk / 100.f;
+}
+
+/*
+ * One creature's ground shadow, whether it is roaming or squared up in a
+ * fight.
+ *
+ * Creatures were the one thing on the ground casting nothing: trees, players,
+ * mobs and even dropped items all had a blob, and an animal standing among
+ * them with none reads as pasted on rather than as standing there.  This is
+ * what the rig's authored height has always been for -- written down six
+ * times and never once read.
+ *
+ * A battle takes over the indices because a battle takes over the pool: the
+ * roamer that started it is deactivated the moment it does, and the two
+ * fighters are then the only creatures standing in the world.  Keeping both
+ * cases behind one call is what lets the shadow pass stay a single loop that
+ * knows nothing about either.
+ *
+ * FALSE for a slot with nothing standing in it.
+ */
+u8 mon64ShadowCaster(u8 index, Vector3 *position, float *height,
+    float *radius) {
+  const MonRoamer *roamer;
+
+  if (index >= MON_MAX_ROAMERS || !mon64Enabled()) {
+    return FALSE;
+  }
+  if (mon_battle.active) {
+    const MonFighter *fighter;
+
+    if (index >= 2) {
+      return FALSE;
+    }
+    fighter = &mon_battle.fighter[index];
+    /* A creature on its way down has already sunk into the floor; its blob
+       should go with it rather than outlive it. */
+    if (fighter->species >= MON_SPECIES_COUNT || fighter->hp == 0) {
+      return FALSE;
+    }
+    *position = mon_battle.stand[index];
+    creatureFootprint(fighter->species, height, radius);
+    return TRUE;
+  }
+  roamer = &mon_roamers[index];
+  if (!roamer->active || roamer->species >= MON_SPECIES_COUNT) {
+    return FALSE;
+  }
+  *position = roamer->position;
+  if (roamer->kind == MON_ROAMER_TRAINER) {
+    /* A trainer is drawn as a person and casts a person's blob.  The species
+       they spawned beside is never on screen, so it must not be on the
+       ground either. */
+    *height = BLOCK_SIZE * .9f;
+    *radius = BLOCK_SIZE * .42f;
+    return TRUE;
+  }
+  creatureFootprint(roamer->species, height, radius);
+  return TRUE;
+}
+
 /* ------------------------------------------------------------------ */
 /* Derived statistics.  Integer, pure, and safe to call from the renderer.   */
 /* ------------------------------------------------------------------ */
@@ -166,6 +242,38 @@ u8 monKnownMoves(u8 species, u8 level, u8 *out) {
     count = 1;
   }
   return count;
+}
+
+/*
+ * The species a family member grew out of, and the level it did so at.
+ *
+ * Both are walked out of the roster rather than stored in it.  A `min_level`
+ * column would be a second place the same fact lives, and eighteen rows is
+ * short enough that the scan costs less than the byte would: this runs on a
+ * spawn attempt and when a trainer's team is built, never in a frame that is
+ * drawing anything.
+ */
+static u8 monParentSpecies(u8 species) {
+  u8 index;
+
+  for (index = 0; index < MON_SPECIES_COUNT; index++) {
+    if (mon_species[index].evolves_to == species) {
+      return index;
+    }
+  }
+  return MON_NONE;
+}
+
+/* The lowest level a creature of this species can honestly be: zero for a
+   young form, and its parent's evolution threshold for anything later. */
+static u8 monMinLevel(u8 species) {
+  u8 parent;
+
+  if (species >= MON_SPECIES_COUNT) {
+    return 0;
+  }
+  parent = monParentSpecies(species);
+  return parent == MON_NONE ? 0 : mon_species[parent].evolve_level;
 }
 
 u8 monPartyCount(u8 player_num) {
@@ -357,6 +465,51 @@ static void loadFighter(u8 side, u8 species, u8 level, u16 hp,
   mon_battle.faint[side] = 0;
 }
 
+/*
+ * Re-derive a fighter that has just levelled up or evolved, in place.
+ *
+ * Deliberately not loadFighter.  That rebuilds a fighter from nothing, which
+ * across a knockout hands back every point of power the fight has cost and
+ * wipes the stat changes it earned -- a free refill after every faint in a
+ * trainer battle, and a CHARGE thrown away for winning with it.  A knockout is
+ * not a rest, so only the numbers the new level actually changed move here.
+ *
+ * A move carried over keeps what is left of it; one that arrives with the new
+ * level or the new species arrives full.  Matching is by move id rather than
+ * by slot, because an evolution reorders the learnset.
+ */
+static void refreshFighter(u8 side, u8 species, u8 level, u16 hp) {
+  MonFighter *f = &mon_battle.fighter[side];
+  u8 move[MON_MOVES];
+  u8 pp[MON_MOVES];
+  u8 count;
+  u8 index;
+  u8 old;
+
+  count = monKnownMoves(species, level, move);
+  for (index = 0; index < count; index++) {
+    pp[index] = mon_moves[move[index]].pp;
+    for (old = 0; old < f->move_count; old++) {
+      if (f->move[old] == move[index]) {
+        pp[index] = f->pp[old];
+        break;
+      }
+    }
+  }
+  for (index = 0; index < MON_MOVES; index++) {
+    f->move[index] = index < count ? move[index] : 0;
+    f->pp[index] = index < count ? pp[index] : 0;
+  }
+  f->move_count = count;
+  f->species = species;
+  f->level = level;
+  f->max_hp = monMaxHealth(species, level);
+  f->hp = hp > f->max_hp ? f->max_hp : hp;
+  f->attack = monAttack(species, level);
+  f->defense = monDefense(species, level);
+  f->speed = monSpeed(species, level);
+}
+
 /* Write a player side's remaining health back to the party record.  Called
    whenever a fighter leaves the field, so the party is never a turn behind
    what the battle shows. */
@@ -511,31 +664,42 @@ static u8 habitatAt(int x, int ground_y, int z) {
 }
 
 /*
- * Pick a species for a pad.  Weighted by rarity within the habitats the pad
- * actually satisfies, so a beach and a cave floor draw from genuinely
- * different rosters without a biome map existing anywhere.
+ * Is this species something a pad at this level may produce?
+ *
+ * The habitat half is rarity: a beach and a cave floor draw from genuinely
+ * different rosters without a biome map existing anywhere.  The level half is
+ * the evolution table told back to the world -- a creature the player could
+ * only reach by raising one to fourteen has no business standing in a meadow
+ * at level four, whatever its weight says.  Both loops below ask this one
+ * question so the weighted total can never disagree with the draw.
  */
-static u8 pickSpecies(u8 habitat) {
+static u8 speciesFitsPad(const MonSpecies *s, u8 habitat, u8 night, u8 level) {
+  if (s->spawn_weight == 0) {
+    return FALSE;
+  }
+  if ((s->habitat & habitat & 0x0F) == 0) {
+    return FALSE;
+  }
+  if ((s->habitat & MON_HAB_DAY) && night) {
+    return FALSE;
+  }
+  if ((s->habitat & MON_HAB_NIGHT) && !night) {
+    return FALSE;
+  }
+  return level >= monMinLevel((u8) (s - mon_species));
+}
+
+/* Pick a species for a pad that has already rolled its level. */
+static u8 pickSpecies(u8 habitat, u8 level) {
   u32 total = 0;
   u32 roll;
   u8 index;
   u8 night = (habitat & MON_HAB_NIGHT) != 0;
 
   for (index = 0; index < MON_SPECIES_COUNT; index++) {
-    const MonSpecies *s = &mon_species[index];
-    if (s->spawn_weight == 0) {
-      continue;
+    if (speciesFitsPad(&mon_species[index], habitat, night, level)) {
+      total += mon_species[index].spawn_weight;
     }
-    if ((s->habitat & habitat & 0x0F) == 0) {
-      continue;
-    }
-    if ((s->habitat & MON_HAB_DAY) && night) {
-      continue;
-    }
-    if ((s->habitat & MON_HAB_NIGHT) && !night) {
-      continue;
-    }
-    total += s->spawn_weight;
   }
   if (total == 0) {
     return MON_NONE;
@@ -543,16 +707,7 @@ static u8 pickSpecies(u8 habitat) {
   roll = random((u32) total);
   for (index = 0; index < MON_SPECIES_COUNT; index++) {
     const MonSpecies *s = &mon_species[index];
-    if (s->spawn_weight == 0) {
-      continue;
-    }
-    if ((s->habitat & habitat & 0x0F) == 0) {
-      continue;
-    }
-    if ((s->habitat & MON_HAB_DAY) && night) {
-      continue;
-    }
-    if ((s->habitat & MON_HAB_NIGHT) && !night) {
+    if (!speciesFitsPad(s, habitat, night, level)) {
       continue;
     }
     if (roll < s->spawn_weight) {
@@ -646,6 +801,7 @@ static u8 trySpawnRoamer(void) {
   int ground_y;
   u8 habitat;
   u8 species;
+  u8 level;
   u8 index;
   float x;
   float z;
@@ -687,7 +843,11 @@ static u8 trySpawnRoamer(void) {
     return FALSE;
   }
   habitat = habitatAt(block_x, ground_y, block_z);
-  species = pickSpecies(habitat);
+  /* Level first: it is an input to which species may stand here, not a
+     decoration applied to whichever one was drawn.  Nothing about the roll
+     depends on the species, so the order costs nothing to swap. */
+  level = encounterLevel(anchor_num, block_x, block_z);
+  species = pickSpecies(habitat, level);
   if (species == MON_NONE) {
     return FALSE;
   }
@@ -705,7 +865,7 @@ static u8 trySpawnRoamer(void) {
     roamer->notice_time = 0;
     roamer->ground_y = (s8) ground_y;
     roamer->species = species;
-    roamer->level = encounterLevel(anchor_num, block_x, block_z);
+    roamer->level = level;
     roamer->state = ROAM_WANDER;
     roamer->seed = (u32) block_x * 0x9E3779B9u ^
       ((u32) block_z * 0x85EBCA6Bu) ^ world_seed;
@@ -992,24 +1152,29 @@ static void buildTrainerTeam(u32 seed, u8 level) {
     u8 species = (u8) (draw % MON_SPECIES_COUNT);
     u8 mon_level;
 
-    /* Trainers do not lead with a final stage the player could not have
-       reached yet; a species that never spawns wild is stepped back to the
-       family it evolves from by walking the table. */
-    if (mon_species[species].spawn_weight == 0 && level < 25) {
-      u8 search;
-      for (search = 0; search < MON_SPECIES_COUNT; search++) {
-        if (mon_species[search].evolves_to == species) {
-          species = search;
-          break;
-        }
-      }
-    }
     mon_level = (u8) (level - 1 + (draw >> 8) % 3u);
     if (mon_level < 2) {
       mon_level = 2;
     }
     if (mon_level > MON_MAX_LEVEL) {
       mon_level = MON_MAX_LEVEL;
+    }
+    /*
+     * Trainers field nothing the player could not be holding at the same
+     * level, so a drawn species walks back down its family until its own
+     * threshold is one this level has passed.
+     *
+     * A single step used to do this, gated on level 25.  One step off a final
+     * stage lands on a middle stage, which is exactly the thing a low-level
+     * trainer should not have either -- two thirds of an early team came out
+     * a stage too old.  The loop runs at most twice: a family is three deep.
+     */
+    while (monMinLevel(species) > mon_level) {
+      u8 parent = monParentSpecies(species);
+      if (parent == MON_NONE) {
+        break;
+      }
+      species = parent;
     }
     mon_battle.npc_party[index].species = species;
     mon_battle.npc_party[index].level = mon_level;
@@ -1287,6 +1452,10 @@ static void performMove(u8 attacker, u8 defender) {
   u8 critical = FALSE;
   u8 hits = 1;
   u8 hit;
+  /* Swings that actually landed, which is not `hits`: the loop stops early on
+     a knockout, and announcing a second blow that never fell is the log
+     describing a fight the player did not watch. */
+  u8 landed = 0;
   u32 total = 0;
 
   if (slot >= att->move_count) {
@@ -1370,13 +1539,14 @@ static void performMove(u8 attacker, u8 defender) {
       damage = 1;
     }
     total += damage;
+    landed++;
     applyDamage(defender, (u16) damage);
     if (def->hp == 0) {
       break;
     }
   }
 
-  if (hits > 1) {
+  if (landed > 1) {
     pushMessage("IT HIT TWICE!");
   }
   if (critical) {
@@ -1398,6 +1568,29 @@ static void performMove(u8 attacker, u8 defender) {
 }
 
 /*
+ * A random move among the ones that still have power behind them.
+ *
+ * The player is stopped at the move menu from picking an empty one, so an
+ * opponent that could pick it anyway is playing a different game.  Scanning
+ * from a random start keeps the choice uniform over what is left without
+ * building a candidate list.  If nothing has power the first slot comes back
+ * regardless, on the same grounds monKnownMoves guarantees a first move:
+ * a turn a creature cannot take is worse than a rule bent once.
+ */
+static u8 randomAbleMove(const MonFighter *f) {
+  u8 start = (u8) random(f->move_count);
+  u8 offset;
+
+  for (offset = 0; offset < f->move_count; offset++) {
+    u8 index = (u8) ((start + offset) % f->move_count);
+    if (f->pp[index] > 0) {
+      return index;
+    }
+  }
+  return start;
+}
+
+/*
  * The opponent's choice.
  *
  * Trainers score every move they know by what it would actually do -- power
@@ -1413,7 +1606,7 @@ static u8 chooseNpcMove(void) {
   u8 index;
 
   if (mon_battle.kind == MON_BATTLE_WILD || random(5) == 0) {
-    return (u8) random(npc->move_count);
+    return randomAbleMove(npc);
   }
   for (index = 0; index < npc->move_count; index++) {
     const MonMove *move = &mon_moves[npc->move[index]];
@@ -1440,7 +1633,9 @@ static u8 chooseNpcMove(void) {
       best = index;
     }
   }
-  return best;
+  /* Every move empty: nothing was scored, so fall through to the same last
+     resort the random branch uses rather than defaulting to slot zero. */
+  return best_score == 0 ? randomAbleMove(npc) : best;
 }
 
 static u8 firstAbleSlot(u8 player_num, u8 except) {
@@ -1468,6 +1663,9 @@ static void awardExperience(u8 side) {
   }
   mon = &mon_party[player_num][winner->party_slot];
   if (mon->level >= MON_MAX_LEVEL) {
+    /* Nothing left to earn, but a knockout that says nothing at all reads as
+       a dropped line rather than as a creature that is already finished. */
+    pushNamed(fighterName(side), " HAS NOTHING LEFT TO LEARN.");
     return;
   }
   gain = ((u32) mon_species[loser->species].xp_yield * loser->level) / 4u;
@@ -1529,8 +1727,9 @@ static void awardExperience(u8 side) {
       playSound(SOUND_PICKUP);
     }
   }
-  /* Reload the fighter so the panel and the next turn use the new numbers. */
-  loadFighter(side, mon->species, mon->level, mon->hp, winner->party_slot);
+  /* Re-derive the fighter so the panel and the next turn use the new numbers,
+     without giving back the power and the stat changes the fight has spent. */
+  refreshFighter(side, mon->species, mon->level, mon->hp);
 }
 
 static void endBattle(const char *line) {
@@ -1674,6 +1873,10 @@ static void resolveStep(void) {
     u8 player_num = mon_battle.side_player[0];
     u8 replacement = firstAbleSlot(player_num, MON_PARTY_SIZE);
 
+    /* The mirror of the branch above.  Only a player side ever collects, so
+       this is a no-op in a wild or trainer fight and the whole of player
+       two's experience in a PVP one -- which used to be nothing at all. */
+    awardExperience(1);
     if (replacement != MON_NONE) {
       PartyMon *mon = &mon_party[player_num][replacement];
       loadFighter(0, mon->species, mon->level, mon->hp, replacement);

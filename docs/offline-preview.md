@@ -17,7 +17,7 @@ different on every run. Reach for the preview first, and keep the emulator for
 what only it can show: the interface in its real framebuffer, and behaviour
 that involves the game actually running.
 
-## The three scenes that exist
+## The scenes that exist
 
 `mob.py` poses a quadruped exactly as `drawQuadrupedMob` does -- four
 rotations, seven anchors -- with the joint offsets read out of the
@@ -108,6 +108,28 @@ composite cable does. It is a sanity check on whether a one-pixel border is
 still a border by the time it reaches a television -- not a television.
 Anything with a menu, a font or a state machine in it still belongs in
 `tools/emu`.
+
+`mon.py` draws 64MON's creatures. They are the one thing in the game whose
+geometry is not a `Vtx` array: a rig is a table of boxes in `mon64_data.c`,
+sized per species by a scale and a bulk percentage and gated per stage by a
+maturity threshold, so this reads that table and applies the same arithmetic
+`drawCreature` does -- including `buildBox`'s front-lit, back-darkened shading,
+which is not the top-lit shading a preview reaches for by reflex.
+
+```sh
+tools/preview/mon.py thundowl
+tools/preview/mon.py --family bird     # a family, side by side
+tools/preview/mon.py --roster
+tools/preview/mon.py --audit           # invariants, no picture
+```
+
+`--audit` is the part worth running in anger. It fails on a part that has
+ended up entirely inside another, on a rig that does not stand on the floor,
+on a move levelled past the point its species evolves away, and on a rig whose
+authored height has drifted from the silhouette it describes. Every one of
+those had happened, none of them was visible in the table, and none of them
+was something a player could have named -- two elders had spent the whole
+feature's life with no eyes.
 
 ## Anything else, in ten lines
 
