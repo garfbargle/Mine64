@@ -78,14 +78,22 @@ def main(argv):
     end = image_end(path)
     slack = limit - end
 
-    print("%s: image ends at 0x%08X, %s begin at 0x%08X (%d KiB free)"
-          % (path, end, limit_name, limit, slack // 1024))
+    # Report the last kilobyte in bytes.  Integer KiB turns a 208-byte overrun
+    # into "-1 KiB free ... overruns by 0 KiB", which reads like a rounding
+    # artefact rather than the corrupted-audio-on-hardware it is.
+    def amount(n):
+        return "%d KiB" % (n // 1024) if n >= 1024 else "%d bytes" % n
+
+    print("%s: image ends at 0x%08X, %s begin at 0x%08X (%s)"
+          % (path, end, limit_name, limit,
+             "%s free" % amount(slack) if slack >= 0
+             else "%s OVER" % amount(-slack)))
 
     if slack < 0:
         raise SystemExit(
-            "ERROR: image overruns the %s by %d KiB.  Reduce DISPLAY_LIST_SIZE,"
+            "ERROR: image overruns the %s by %s.  Reduce DISPLAY_LIST_SIZE,"
             " FRAME_DISPLAY_LIST_SIZE, or world dimensions."
-            % (limit_name, -slack // 1024))
+            % (limit_name, amount(-slack)))
     if slack < 64 * 1024:
         print("WARNING: under 64 KiB of headroom before the %s." % limit_name,
               file=sys.stderr)

@@ -177,11 +177,11 @@ eighty-eight vertex writes per creature per frame, there are never more than
 two on screen, and it buys per-species size, bulk and colour for nothing. The draw path itself is exactly the mob path — two
 matrices, one `gSPVertex`, one shared display list per box.
 
-Measured cost of the whole feature: about 55 KiB of the link, leaving
-~96 KiB free below NuSystem's framebuffer reservation. Roughly 30 KiB of that
-is code, 11 KiB is the render slots' matrices and vertex scratch, and under
-2 KiB is tables and live state. This does eat into the headroom the
-audio variant is waiting on; see *Known gaps* in the README.
+Measured cost of the whole feature: about 55 KiB of the link, of which roughly
+30 KiB is code, 11 KiB is the render slots' matrices and vertex scratch, and
+under 2 KiB is tables and live state. It ate into the headroom the audio
+variant is waiting on, and that variant no longer links; the current figures
+for both builds are in [RAM budget](ram-budget.md).
 
 ## Where the code is
 
