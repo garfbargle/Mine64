@@ -665,31 +665,31 @@ static Vtx torch_flame_verts[] = {
 /* Head, torso, arms, and legs.  Limbs start at y = 0 so their rotation has a
    convincing shoulder/hip pivot instead of spinning around their middles. */
 static Vtx steve_head_verts[] = {
-  STEVE_VERTEX(-16, 16, 16, 198, 137, 90), STEVE_VERTEX(16, 16, 16, 198, 137, 90),
-  STEVE_VERTEX(16, -16, 16, 198, 137, 90), STEVE_VERTEX(-16, -16, 16, 198, 137, 90),
-  STEVE_VERTEX(16, 16, -16, 198, 137, 90), STEVE_VERTEX(-16, 16, -16, 198, 137, 90),
-  STEVE_VERTEX(-16, -16, -16, 198, 137, 90), STEVE_VERTEX(16, -16, -16, 198, 137, 90)
+  STEVE_VERTEX(-16, 16, 16, 172, 111, 74), STEVE_VERTEX(16, 16, 16, 172, 111, 74),
+  STEVE_VERTEX(16, -16, 16, 172, 111, 74), STEVE_VERTEX(-16, -16, 16, 172, 111, 74),
+  STEVE_VERTEX(16, 16, -16, 205, 145, 98), STEVE_VERTEX(-16, 16, -16, 205, 145, 98),
+  STEVE_VERTEX(-16, -16, -16, 205, 145, 98), STEVE_VERTEX(16, -16, -16, 205, 145, 98)
 };
 
 static Vtx steve_body_verts[] = {
-  STEVE_VERTEX(-18, 22, 9, 54, 140, 190), STEVE_VERTEX(18, 22, 9, 54, 140, 190),
-  STEVE_VERTEX(18, -22, 9, 54, 140, 190), STEVE_VERTEX(-18, -22, 9, 54, 140, 190),
-  STEVE_VERTEX(18, 22, -9, 54, 140, 190), STEVE_VERTEX(-18, 22, -9, 54, 140, 190),
-  STEVE_VERTEX(-18, -22, -9, 54, 140, 190), STEVE_VERTEX(18, -22, -9, 54, 140, 190)
+  STEVE_VERTEX(-18, 22, 9, 35, 100, 150), STEVE_VERTEX(18, 22, 9, 35, 100, 150),
+  STEVE_VERTEX(18, -22, 9, 35, 100, 150), STEVE_VERTEX(-18, -22, 9, 35, 100, 150),
+  STEVE_VERTEX(18, 22, -9, 64, 150, 198), STEVE_VERTEX(-18, 22, -9, 64, 150, 198),
+  STEVE_VERTEX(-18, -22, -9, 64, 150, 198), STEVE_VERTEX(18, -22, -9, 64, 150, 198)
 };
 
 static Vtx steve_arm_verts[] = {
-  STEVE_VERTEX(-7, 0, 7, 198, 137, 90), STEVE_VERTEX(7, 0, 7, 198, 137, 90),
-  STEVE_VERTEX(7, -44, 7, 198, 137, 90), STEVE_VERTEX(-7, -44, 7, 198, 137, 90),
-  STEVE_VERTEX(7, 0, -7, 198, 137, 90), STEVE_VERTEX(-7, 0, -7, 198, 137, 90),
-  STEVE_VERTEX(-7, -44, -7, 198, 137, 90), STEVE_VERTEX(7, -44, -7, 198, 137, 90)
+  STEVE_VERTEX(-7, 0, 7, 158, 100, 67), STEVE_VERTEX(7, 0, 7, 158, 100, 67),
+  STEVE_VERTEX(7, -44, 7, 158, 100, 67), STEVE_VERTEX(-7, -44, 7, 158, 100, 67),
+  STEVE_VERTEX(7, 0, -7, 210, 151, 100), STEVE_VERTEX(-7, 0, -7, 210, 151, 100),
+  STEVE_VERTEX(-7, -44, -7, 210, 151, 100), STEVE_VERTEX(7, -44, -7, 210, 151, 100)
 };
 
 static Vtx steve_leg_verts[] = {
-  STEVE_VERTEX(-8, 0, 8, 55, 70, 150), STEVE_VERTEX(8, 0, 8, 55, 70, 150),
-  STEVE_VERTEX(8, -44, 8, 55, 70, 150), STEVE_VERTEX(-8, -44, 8, 55, 70, 150),
-  STEVE_VERTEX(8, 0, -8, 55, 70, 150), STEVE_VERTEX(-8, 0, -8, 55, 70, 150),
-  STEVE_VERTEX(-8, -44, -8, 55, 70, 150), STEVE_VERTEX(8, -44, -8, 55, 70, 150)
+  STEVE_VERTEX(-8, 0, 8, 37, 48, 112), STEVE_VERTEX(8, 0, 8, 37, 48, 112),
+  STEVE_VERTEX(8, -44, 8, 37, 48, 112), STEVE_VERTEX(-8, -44, 8, 37, 48, 112),
+  STEVE_VERTEX(8, 0, -8, 61, 82, 174), STEVE_VERTEX(-8, 0, -8, 61, 82, 174),
+  STEVE_VERTEX(-8, -44, -8, 61, 82, 174), STEVE_VERTEX(8, -44, -8, 61, 82, 174)
 };
 
 /* The sheep is all chunky shaded geometry, matching Steve's inexpensive
@@ -764,13 +764,27 @@ static Vtx slime_gel_verts[] = {
   STEVE_VERTEX(-10, -7, -9, 33, 93, 48), STEVE_VERTEX(10, -6, -8, 33, 93, 48)
 };
 
-/* Two blue eye quads on the local -Z face make it obvious where Steve is
-   looking, even without a character texture. */
-static Vtx steve_eye_verts[] = {
+/*
+ * The body remains six cheap boxes.  Steve's identity comes from this
+ * single 24-vertex face sheet: eyes, a squared-off hairline, sideburns and a
+ * mouth all share the existing head transform and one display-list call.
+ */
+static Vtx steve_face_verts[] = {
+  /* Eyes. */
   STEVE_VERTEX(-11, 8, -17, 55, 125, 210), STEVE_VERTEX(-5, 8, -17, 55, 125, 210),
   STEVE_VERTEX(-5, 2, -17, 55, 125, 210), STEVE_VERTEX(-11, 2, -17, 55, 125, 210),
   STEVE_VERTEX(5, 8, -17, 55, 125, 210), STEVE_VERTEX(11, 8, -17, 55, 125, 210),
-  STEVE_VERTEX(11, 2, -17, 55, 125, 210), STEVE_VERTEX(5, 2, -17, 55, 125, 210)
+  STEVE_VERTEX(11, 2, -17, 55, 125, 210), STEVE_VERTEX(5, 2, -17, 55, 125, 210),
+  /* Hairline and sideburns frame the otherwise intentionally simple face. */
+  STEVE_VERTEX(-15, 15, -17, 72, 48, 28), STEVE_VERTEX(15, 15, -17, 72, 48, 28),
+  STEVE_VERTEX(15, 10, -17, 72, 48, 28), STEVE_VERTEX(-15, 10, -17, 72, 48, 28),
+  STEVE_VERTEX(-15, 10, -17, 72, 48, 28), STEVE_VERTEX(-11, 10, -17, 72, 48, 28),
+  STEVE_VERTEX(-11, -7, -17, 72, 48, 28), STEVE_VERTEX(-15, -7, -17, 72, 48, 28),
+  STEVE_VERTEX(11, 10, -17, 72, 48, 28), STEVE_VERTEX(15, 10, -17, 72, 48, 28),
+  STEVE_VERTEX(15, -7, -17, 72, 48, 28), STEVE_VERTEX(11, -7, -17, 72, 48, 28),
+  /* One subdued mouth keeps the face readable without needing another part. */
+  STEVE_VERTEX(-5, -7, -17, 116, 57, 49), STEVE_VERTEX(5, -7, -17, 116, 57, 49),
+  STEVE_VERTEX(5, -9, -17, 116, 57, 49), STEVE_VERTEX(-5, -9, -17, 116, 57, 49)
 };
 
 /*
@@ -920,9 +934,13 @@ static Gfx sword_blade_display_list[] = {
   gsSPEndDisplayList()
 };
 
-static Gfx steve_eyes_display_list[] = {
+static Gfx steve_face_display_list[] = {
   gsSP2Triangles(0, 1, 2, 0, 0, 2, 3, 0),
   gsSP2Triangles(4, 5, 6, 0, 4, 6, 7, 0),
+  gsSP2Triangles(8, 9, 10, 0, 8, 10, 11, 0),
+  gsSP2Triangles(12, 13, 14, 0, 12, 14, 15, 0),
+  gsSP2Triangles(16, 17, 18, 0, 16, 18, 19, 0),
+  gsSP2Triangles(20, 21, 22, 0, 20, 22, 23, 0),
   gsSPEndDisplayList()
 };
 
@@ -2472,6 +2490,15 @@ static void drawStevePart(u8 player_num, u8 part, Vtx *verts, Gfx *part_dl) {
   gSPDisplayList(dlp++, part_dl);
 }
 
+static void drawSteveFace(u8 player_num) {
+  gSPMatrix(dlp++, OS_K0_TO_PHYSICAL(&steve_translate[dl_no][player_num][STEVE_HEAD]),
+    G_MTX_MODELVIEW | G_MTX_LOAD | G_MTX_NOPUSH);
+  gSPMatrix(dlp++, OS_K0_TO_PHYSICAL(&steve_rotate[dl_no][player_num][STEVE_HEAD]),
+    G_MTX_MODELVIEW | G_MTX_MUL | G_MTX_NOPUSH);
+  gSPVertex(dlp++, steve_face_verts, 24, 0);
+  gSPDisplayList(dlp++, steve_face_display_list);
+}
+
 static void drawSteve(u8 player_num) {
   makeStevePose(player_num);
 
@@ -2492,9 +2519,9 @@ static void drawSteve(u8 player_num) {
   drawStevePart(player_num, STEVE_RIGHT_LEG, steve_leg_verts, steve_box_display_list);
   drawStevePart(player_num, STEVE_HEAD, steve_head_verts, steve_box_display_list);
 
-  /* The eyes share the head transform, so their direction matches its pitch
-     and yaw exactly. */
-  drawStevePart(player_num, STEVE_HEAD, steve_eye_verts, steve_eyes_display_list);
+  /* The face shares the head transform, so its direction matches pitch and
+     yaw exactly without a separate skeleton node. */
+  drawSteveFace(player_num);
 }
 
 /* The first-person arm pivots at the elbow, not at the hand.  Local +Y of
