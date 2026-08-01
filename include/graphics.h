@@ -256,6 +256,28 @@ typedef struct {
 
 #define LEGEND_COUNT(table) ((u8) (sizeof (table) / sizeof (LegendEntry)))
 
+/*
+ * The world setup card's switches, on the same fill-sprite machinery as the
+ * buttons and for the same reasons: a bright border the near-black panel
+ * cannot swallow, a mark two pixels thick, and one grouped pass so eleven
+ * switches cost a handful of pipe syncs rather than thirty.
+ *
+ * `dim` is a row the current world cannot offer.  Fills phase only.
+ */
+#define CHECK_MARK_BOX 0    /* an independent toggle */
+#define CHECK_MARK_RADIO 1  /* one of a mutually exclusive group */
+
+typedef struct {
+  u8 kind;
+  u8 on;
+  u8 dim;
+  u16 x;
+  u16 y;
+} CheckMarkPlacement;
+
+void drawCheckMarks(const CheckMarkPlacement *list, u8 count);
+u32 checkMarkSize(void);
+
 u32 legendEntryWidth(const LegendEntry *entry);
 u32 legendWidth(const LegendEntry *entries, u8 count);
 void drawLegendIcons(const LegendEntry *entries, u8 count, u32 x, u32 y);

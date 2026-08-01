@@ -4843,6 +4843,139 @@ void drawLegendIcons(const LegendEntry *entries, u8 count, u32 x, u32 y) {
   drawButtonIcons(icons, placed);
 }
 
+/*
+ * The world setup card's switches.
+ *
+ * The old pair drew a one-pixel border and a three-step diagonal, and changed
+ * fill colour between them without draining the pipe -- which on hardware is
+ * the same attribute hazard that made a full heart come out half dark, on
+ * features far too thin to survive losing any of.  The radio was worse than
+ * that: it had no border at all and its body was (24, 27, 23) on a (16, 17,
+ * 15) panel, eight levels of luminance apart, which a composite cable simply
+ * does not carry.  It looked fine in an emulator because an emulator hands
+ * you the exact pixel values.
+ *
+ * So: a bright border rather than a dark one -- the panel is already
+ * near-black, and a mark can only be found against it by being lighter -- a
+ * dark well inside it, and a mark two pixels thick everywhere.
+ */
+static const HudSpan check_box_shell_spans[] = {
+  {0, 0, 8, 8}
+};
+
+static const HudSpan check_box_face_spans[] = {
+  {1, 1, 7, 7}
+};
+
+/*   .....XX
+ *   ....XX.
+ *   XX.XX..
+ *   .XXXX..
+ *   ..XX...   */
+static const HudSpan check_tick_spans[] = {
+  {5, 0, 6, 0},
+  {4, 1, 5, 1},
+  {0, 2, 1, 2}, {3, 2, 4, 2},
+  {1, 3, 4, 3},
+  {2, 4, 3, 4}
+};
+
+/* One of a group gets a diamond, so a choice never looks like a toggle. */
+static const HudSpan check_radio_shell_spans[] = {
+  {4, 0, 4, 0},
+  {3, 1, 5, 1},
+  {2, 2, 6, 2},
+  {1, 3, 7, 3},
+  {0, 4, 8, 4},
+  {1, 5, 7, 5},
+  {2, 6, 6, 6},
+  {3, 7, 5, 7},
+  {4, 8, 4, 8}
+};
+
+static const HudSpan check_radio_face_spans[] = {
+  {4, 1, 4, 1},
+  {3, 2, 5, 2},
+  {2, 3, 6, 3},
+  {1, 4, 7, 4},
+  {2, 5, 6, 5},
+  {3, 6, 5, 6},
+  {4, 7, 4, 7}
+};
+
+static const HudSpan check_dot_spans[] = {
+  {3, 0, 5, 0},
+  {2, 1, 6, 1},
+  {3, 2, 5, 2}
+};
+
+#define CHECK_MARK_SIZE 9
+#define CHECK_TICK_X 1
+#define CHECK_TICK_Y 2
+#define CHECK_DOT_X 0
+#define CHECK_DOT_Y 3
+
+u32 checkMarkSize(void) {
+  return CHECK_MARK_SIZE;
+}
+
+/*
+ * Grouped by colour for the same reason every other sprite here is: eleven
+ * switches drawn one at a time would be thirty-odd unsynced fill-colour
+ * changes, which is exactly what they were before.
+ */
+void drawCheckMarks(const CheckMarkPlacement *list, u8 count) {
+  s16 last[3];
+  u8 pass;
+  u8 i;
+
+  for (pass = 0; pass < 3; pass++) {
+    last[0] = last[1] = last[2] = -1;
+    for (i = 0; i < count; i++) {
+      u8 radio = list[i].kind == CHECK_MARK_RADIO;
+      u8 dim = list[i].dim;
+      const HudSpan *spans;
+      u8 spans_count;
+      u32 x = list[i].x;
+      u32 y = list[i].y;
+      u8 color[3];
+
+      if (pass == 0) {
+        spans = radio ? check_radio_shell_spans : check_box_shell_spans;
+        spans_count = radio ? 9 : 1;
+        color[0] = dim ? 70 : 150;
+        color[1] = dim ? 73 : 155;
+        color[2] = dim ? 66 : 140;
+      } else if (pass == 1) {
+        spans = radio ? check_radio_face_spans : check_box_face_spans;
+        spans_count = radio ? 7 : 1;
+        color[0] = 20;
+        color[1] = 23;
+        color[2] = 19;
+      } else {
+        if (!list[i].on) {
+          continue;
+        }
+        spans = radio ? check_dot_spans : check_tick_spans;
+        spans_count = radio ? 3 : 6;
+        x += radio ? CHECK_DOT_X : CHECK_TICK_X;
+        y += radio ? CHECK_DOT_Y : CHECK_TICK_Y;
+        color[0] = dim ? 96 : 232;
+        color[1] = dim ? 99 : 196;
+        color[2] = dim ? 88 : 79;
+      }
+      if (color[0] != last[0] || color[1] != last[1] || color[2] != last[2]) {
+        gDPPipeSync(dlp++);
+        setHudFillColor(color[0], color[1], color[2]);
+        last[0] = color[0];
+        last[1] = color[1];
+        last[2] = color[2];
+      }
+      drawHudSpans(spans, spans_count, x, y, HUD_SPAN_NO_CLIP);
+    }
+  }
+}
+
 /* The width of one entry's icons, without its label: what a column has to
    indent every label by if their left edges are to line up. */
 static u32 legendIconCellWidth(const LegendEntry *entry) {

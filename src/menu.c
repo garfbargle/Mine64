@@ -427,38 +427,6 @@ static u32 setupRowY(u8 index) {
     (u32) (SETUP_TERRAIN_TOP + index * SETUP_ROW_HEIGHT) :
     (u32) SETUP_EXTRAS_TOP + (index - WORLD_MOD_TERRAIN_COUNT) * pitch;
 }
-
-/* A diamond for one-of-four, a box for a switch: the shape carries the rule,
-   so a player who never reads the section headings still cannot expect two
-   terrain shapes at once. */
-static void drawSetupDiamond(u32 x, u32 y, u8 on, u8 dim) {
-  setMenuFillColor(24, 27, 23);
-  gDPFillRectangle(dlp++, x + 2, y, x + 6, y + 8);
-  gDPFillRectangle(dlp++, x, y + 2, x + 8, y + 6);
-  if (!on) {
-    return;
-  }
-  setMenuFillColor(dim ? 92 : 232, dim ? 95 : 196, dim ? 86 : 79);
-  gDPFillRectangle(dlp++, x + 3, y + 2, x + 5, y + 6);
-  gDPFillRectangle(dlp++, x + 2, y + 3, x + 6, y + 5);
-}
-
-static void drawSetupBox(u32 x, u32 y, u8 on, u8 dim) {
-  setMenuFillColor(dim ? 48 : 86, dim ? 50 : 90, dim ? 45 : 80);
-  gDPFillRectangle(dlp++, x, y, x + 8, y + 8);
-  setMenuFillColor(24, 27, 23);
-  gDPFillRectangle(dlp++, x + 1, y + 1, x + 7, y + 7);
-  if (!on) {
-    return;
-  }
-  /* A stepped tick rather than a solid block: at this size a filled square
-     reads as "greyed out" against the unfilled one beside it. */
-  setMenuFillColor(dim ? 92 : 232, dim ? 95 : 196, dim ? 86 : 79);
-  gDPFillRectangle(dlp++, x + 2, y + 4, x + 4, y + 6);
-  gDPFillRectangle(dlp++, x + 3, y + 3, x + 5, y + 5);
-  gDPFillRectangle(dlp++, x + 4, y + 2, x + 6, y + 4);
-}
-
 static void formatSeed(char *out, u32 value) {
   u8 digit;
 
@@ -525,11 +493,23 @@ static void drawWorldSetup() {
       gDPFillRectangle(dlp++, SETUP_PANEL_LEFT + 5, row_y - 1,
         SETUP_PANEL_RIGHT - 5, row_y + 9);
     }
-    if (mod->group == 0) {
-      drawSetupBox(SETUP_MARKER_X, row_y, worldModRowOn(index), dim);
-    } else {
-      drawSetupDiamond(SETUP_MARKER_X, row_y, worldModRowOn(index), dim);
+  }
+  {
+    CheckMarkPlacement marks[WORLD_MOD_COUNT];
+
+    for (index = 0; index < WORLD_MOD_COUNT; index++) {
+      const WorldMod *mod = &world_mod_table[index];
+
+      /* A diamond for one-of-four, a box for a switch: the shape carries the
+         rule, so a player who never reads the section headings still cannot
+         expect two terrain shapes at once. */
+      marks[index].kind = mod->group == 0 ? CHECK_MARK_BOX : CHECK_MARK_RADIO;
+      marks[index].on = worldModRowOn(index);
+      marks[index].dim = !worldModAvailable(mod->bit);
+      marks[index].x = SETUP_MARKER_X;
+      marks[index].y = (u16) setupRowY(index);
     }
+    drawCheckMarks(marks, WORLD_MOD_COUNT);
   }
 
   /* The seed's own slot, cut into the panel like the name slots opposite. */
