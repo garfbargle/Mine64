@@ -1,0 +1,40 @@
+# Does the loading bar actually move, and does it move the whole way?
+#
+# The title screen builds the highlighted slot as soon as the cursor settles,
+# so the shots below are spaced across that build.  Read them in order: the
+# bar should be further along in each one, with no two the same and none of
+# them at zero after the first.
+#
+# Note that an emulator has no flashcart, so every slot is empty here and this
+# exercises the generate path.  The load path needs hardware (or a cart image)
+# to show up at all.
+
+wait 90
+shot gen-start          # bar has just appeared
+
+wait 220
+shot gen-a
+wait 220
+shot gen-b
+wait 220
+shot gen-c
+wait 220
+shot gen-d
+wait 220
+shot gen-e
+
+wait 400
+shot ready              # build finished, flyover orbiting
+
+press START 8
+wait 40
+shot naming             # CREATE WORLD keyboard
+
+press START 8
+wait 20
+shot naming-building    # mesh rebuild, bar in the instruction row's place
+
+wait 300
+shot in-game
+
+stop

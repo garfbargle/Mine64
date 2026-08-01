@@ -117,6 +117,18 @@ void diagNoteFrameSubmitted(void);
 #define DIAG_PHASE_TREES GPACK_RGBA5551(255, 140, 0, 1)      /* orange */
 #define DIAG_PHASE_ITEMS GPACK_RGBA5551(255, 255, 255, 1)    /* white */
 #define DIAG_PHASE_MOBS GPACK_RGBA5551(0, 0, 0, 1)           /* black */
+/*
+ * The world job (see main.c).  Without these a stall anywhere in loading kept
+ * whatever colour the previous callback signed off with -- DONE, blue -- so
+ * the frozen square said only "the last frame ended normally" about the one
+ * part of the program that does seconds of work at a time.  These three
+ * cannot be confused with the gameplay phases above in practice: they are
+ * only ever painted from the title and loading screens, where streaming,
+ * rebasing and the entity passes never run.
+ */
+#define DIAG_PHASE_LOAD GPACK_RGBA5551(255, 0, 128, 1)       /* rose */
+#define DIAG_PHASE_GENERATE GPACK_RGBA5551(128, 255, 0, 1)   /* lime */
+#define DIAG_PHASE_MESH GPACK_RGBA5551(128, 128, 255, 1)     /* periwinkle */
 #define DIAG_PHASE_DONE GPACK_RGBA5551(0, 0, 255, 1)         /* blue */
 /* Stop drawing a slot and drop any pending rebuild for it.  Called when the
    residency window rebinds the slot to a different column. */

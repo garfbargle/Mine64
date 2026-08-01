@@ -197,6 +197,39 @@ static u8 file_buffer[BUFFER_LEN] __attribute__((aligned(16)));
 static u32 cursor_pos = 0;
 static UINT buffer_bytes_read = 0;
 
+/*
+ * Everything a sliced load has to remember between callbacks.
+ *
+ * The header pointers below all alias file_buffer, and the very first payload
+ * read overwrites it -- so every header field the tail of the load still
+ * needs is copied in here while it is still readable.  That is not merely a
+ * convenience for slicing: reading header->world_ticks after the block loop
+ * was folding whatever bytes the file's last page happened to contain into
+ * the checksum, which failed verification on every v10 and v11 save, sent
+ * each load through backup recovery and then through a full blocking world
+ * generation, and left the player with a fresh random world in place of the
+ * one they saved.
+ */
+#define LOAD_STAGE_IDLE 0
+#define LOAD_STAGE_BLOCKS 1
+#define LOAD_STAGE_TREES 2
+
+static struct {
+  FIL file;
+  u8 stage;
+  u8 read_ok;
+  u8 full_inventory_saved;
+  u8 tree_records_saved;
+  u8 legacy_tree_records_saved;
+  u32 version;
+  u32 saved_world_ticks;
+  u32 saved_world_seed;
+  u32 expected_checksum;
+  u32 checksum;
+  int block_x;      /* next x-slab of packed blocks to read */
+  u32 tree_byte;    /* next byte of the trailing tree payload */
+} load_job;
+
 /* The reserved bytes of player zero record the chunk dimensions. */
 static void saveWorldDimensions(Header *header) {
   /* Low five bits hold dimensions; the high bits are gameplay state.  The
@@ -830,8 +863,12 @@ u8 saveGame() {
   return write_ok;
 }
 
-void loadGame() {
-  FIL file;
+/*
+ * The header pass: open the file, validate it, restore the players from the
+ * single 512-byte page it occupies, and claim the extent the payload will be
+ * written into.  One page of cart traffic, so it stays whole.
+ */
+u8 beginLoadGame(void) {
   Header *header = (Header *) file_buffer;
   HeaderV8 *header_v8 = (HeaderV8 *) file_buffer;
   HeaderV7 *header_v7 = (HeaderV7 *) file_buffer;
@@ -841,7 +878,9 @@ void loadGame() {
   LegacyHeader *legacy_header = (LegacyHeader *) file_buffer;
   FRESULT result;
   u8 read_ok;
-  u8 packed;
+  u32 version;
+  u32 saved_world_ticks = 0;
+  u32 saved_world_seed = 0;
   u32 wood_count[2] = {0, 0};
   u32 planks_count[2] = {0, 0};
   u32 crafting_table_count[2] = {0, 0};
@@ -853,24 +892,18 @@ void loadGame() {
   u8 full_inventory_saved = FALSE;
   u8 tree_records_saved = FALSE;
   u8 legacy_tree_records_saved = FALSE;
-  u8 *trees_ptr;
-  u32 tree_byte;
   u8 player_num;
-  int block_x, block_y, block_z;
 
+  load_job.stage = LOAD_STAGE_IDLE;
   if (game_file_num < 1 || game_file_num > 3) {
-    initWorld();
-    initPlayers();
-    return;
+    return LOAD_GENERATE;
   }
-  result = f_open(&file, file_names[game_file_num - 1], FA_READ);
+  result = f_open(&load_job.file, file_names[game_file_num - 1], FA_READ);
   if (result != FR_OK) {
-    initWorld();
-    initPlayers();
     files_present[game_file_num - 1] = FALSE;
-    return;
+    return LOAD_GENERATE;
   }
-  read_ok = readPage(&file);
+  read_ok = readPage(&load_job.file);
   if (!read_ok || legacy_header->magic_num != MAGIC_NUM ||
       legacy_header->version > SAVE_VERSION ||
       (legacy_header->version >= SAVE_VERSION_HEADER &&
@@ -891,18 +924,20 @@ void loadGame() {
         (legacy_header->version < SAVE_VERSION_HEADER &&
          (header_v1->player_count < 1 ||
           header_v1->player_count > LEGACY_MAX_PLAYERS))))) {
-    f_close(&file);
+    f_close(&load_job.file);
     if (recoverBackup(game_file_num - 1)) {
-      loadGame();
-      return;
+      /* The backup is now the current file; start its header pass over.
+         Recovery consumes the backup, so this can only happen once. */
+      return beginLoadGame();
     }
     discardInvalidCurrent(game_file_num - 1);
-    initWorld();
-    initPlayers();
     files_present[game_file_num - 1] = FALSE;
-    return;
+    return LOAD_GENERATE;
   }
 
+  /* Past validation, so the version is trustworthy -- and it must be read out
+     of the buffer now, before the payload overwrites the page it lives on. */
+  version = legacy_header->version;
   save_count = legacy_header->save_count;
   players[0].position = legacy_header->position;
   players[0].pitch = legacy_header->pitch;
@@ -939,9 +974,14 @@ void loadGame() {
     players[player_num].break_progress = 0;
   }
   active_player_count = 1;
-  restoreWorldSeed(legacy_header->version, header);
+  restoreWorldSeed(version, header);
 
-  if (legacy_header->version >= SAVE_VERSION_HEADER) {
+  if (version >= SAVE_VERSION_HEADER) {
+    /* The two scalars the checksum folds in after the world data.  Copy them
+       out with the rest of the header, not at the end of the load, when the
+       struct they came from is long since overwritten. */
+    saved_world_ticks = header->world_ticks;
+    saved_world_seed = header->world_seed;
     expected_checksum = header->checksum;
     computed_checksum = checksumPlayers(header->player, header->player_count,
       MAX_PLAYERS);
@@ -955,7 +995,7 @@ void loadGame() {
     tree_records_saved = TRUE;
     cursor_pos = BUFFER_LEN;
     setDayCycleWorldTicks(header->world_ticks);
-  } else if (legacy_header->version == 8) {
+  } else if (version == 8) {
     expected_checksum = header_v8->checksum;
     computed_checksum = checksumPlayers(header_v8->player,
       header_v8->player_count, MAX_PLAYERS);
@@ -969,7 +1009,7 @@ void loadGame() {
     tree_records_saved = TRUE;
     cursor_pos = BUFFER_LEN;
     setDayCycleWorldTicks(DAY_CYCLE_START_TICK);
-  } else if (legacy_header->version >= 4) {
+  } else if (version >= 4) {
     expected_checksum = header_v7->checksum;
     computed_checksum = checksumPlayers(header_v7->player,
       header_v7->player_count, LEGACY_MAX_PLAYERS);
@@ -983,10 +1023,10 @@ void loadGame() {
       active_player_count = 2;
     }
     full_inventory_saved = TRUE;
-    tree_records_saved = legacy_header->version >= 6;
-    legacy_tree_records_saved = legacy_header->version == 5;
+    tree_records_saved = version >= 6;
+    legacy_tree_records_saved = version == 5;
     cursor_pos = LEGACY_COOP_HEADER_SIZE;
-  } else if (legacy_header->version >= 3 && header_v3->player_count == 2) {
+  } else if (version >= 3 && header_v3->player_count == 2) {
     restorePlayerState(&players[0], header_v3->player[0].position,
       header_v3->player[0].pitch, header_v3->player[0].yaw,
       header_v3->player[0].held_block);
@@ -1011,7 +1051,7 @@ void loadGame() {
      * bytes always begin there, not at sizeof(the versioned header).
      */
     cursor_pos = LEGACY_HEADER_PAGE_SIZE;
-  } else if (legacy_header->version >= 3) {
+  } else if (version >= 3) {
     restorePlayerState(&players[0], header_v3->player[0].position,
       header_v3->player[0].pitch, header_v3->player[0].yaw,
       header_v3->player[0].held_block);
@@ -1022,7 +1062,7 @@ void loadGame() {
     sword_count[0] = header_v3->player[0].sword_count;
     pickaxe_count[0] = header_v3->player[0].pickaxe_count;
     cursor_pos = LEGACY_HEADER_PAGE_SIZE;
-  } else if (legacy_header->version >= 2 && header_v2->player_count == 2) {
+  } else if (version >= 2 && header_v2->player_count == 2) {
     restorePlayerState(&players[0], header_v2->player[0].position,
       header_v2->player[0].pitch, header_v2->player[0].yaw,
       header_v2->player[0].held_block);
@@ -1033,13 +1073,13 @@ void loadGame() {
     wood_count[1] = header_v2->player[1].wood_count;
     active_player_count = 2;
     cursor_pos = LEGACY_HEADER_PAGE_SIZE;
-  } else if (legacy_header->version >= 2) {
+  } else if (version >= 2) {
     restorePlayerState(&players[0], header_v2->player[0].position,
       header_v2->player[0].pitch, header_v2->player[0].yaw,
       header_v2->player[0].held_block);
     wood_count[0] = header_v2->player[0].wood_count;
     cursor_pos = LEGACY_HEADER_PAGE_SIZE;
-  } else if (legacy_header->version >= 1 && header_v1->player_count == 2) {
+  } else if (version >= 1 && header_v1->player_count == 2) {
     players[0].position = header_v1->player[0].position;
     players[0].pitch = header_v1->player[0].pitch;
     players[0].yaw = header_v1->player[0].yaw;
@@ -1058,7 +1098,7 @@ void loadGame() {
     players[1].active = TRUE;
     active_player_count = 2;
     cursor_pos = LEGACY_HEADER_PAGE_SIZE;
-  } else if (legacy_header->version >= 1) {
+  } else if (version >= 1) {
     players[0].position = header_v1->player[0].position;
     players[0].pitch = header_v1->player[0].pitch;
     players[0].yaw = header_v1->player[0].yaw;
@@ -1071,7 +1111,7 @@ void loadGame() {
     cursor_pos = LEGACY_HEADER_PAGE_SIZE;
   }
 
-  if (legacy_header->version < 8) {
+  if (version < 8) {
     setDayCycleWorldTicks(DAY_CYCLE_START_TICK);
   }
 
@@ -1101,16 +1141,13 @@ void loadGame() {
     }
   }
   if (!read_ok) {
-    f_close(&file);
+    f_close(&load_job.file);
     if (recoverBackup(game_file_num - 1)) {
-      loadGame();
-      return;
+      return beginLoadGame();
     }
     discardInvalidCurrent(game_file_num - 1);
-    initWorld();
-    initPlayers();
     files_present[game_file_num - 1] = FALSE;
-    return;
+    return LOAD_GENERATE;
   }
 
   /* Every column of the saved extent needs a slot before blockSet will take
@@ -1120,85 +1157,164 @@ void loadGame() {
   windowClaimFixedExtent();
   worldMarkFixedExtentBuilt();
   graphicsSetRenderOrigin(0, 0);
-  for (block_x = 0; read_ok && block_x < MAX_X; block_x++) {
-    for (block_y = 0; read_ok && block_y < MAX_Y; block_y++) {
-      for (block_z = 0; read_ok && block_z < MAX_Z; block_z += 2) {
-        if (cursor_pos >= buffer_bytes_read) {
-          if (!readPage(&file)) {
-            read_ok = FALSE;
-            break;
-          }
-        }
 
-        packed = file_buffer[cursor_pos++];
+  /* Hand the header's findings to the payload pass before the page they came
+     from is overwritten, and let the caller draw a frame. */
+  load_job.version = version;
+  load_job.saved_world_ticks = saved_world_ticks;
+  load_job.saved_world_seed = saved_world_seed;
+  load_job.expected_checksum = expected_checksum;
+  load_job.checksum = computed_checksum;
+  load_job.full_inventory_saved = full_inventory_saved;
+  load_job.tree_records_saved = tree_records_saved;
+  load_job.legacy_tree_records_saved = legacy_tree_records_saved;
+  load_job.read_ok = TRUE;
+  load_job.block_x = 0;
+  load_job.tree_byte = 0;
+  load_job.stage = LOAD_STAGE_BLOCKS;
+  return LOAD_BUSY;
+}
+
+/*
+ * Close the file, fold in the trailing header scalars, and decide whether
+ * what arrived is a world or a wreck.  Split out so both the normal end of
+ * the payload and a read failure part-way through it land in one place.
+ */
+static u8 finishLoadGame(void) {
+  f_close(&load_job.file);
+  load_job.stage = LOAD_STAGE_IDLE;
+
+  /* Each scalar the header grew is folded in only from the version that
+     started writing it, so an older save still verifies against exactly the
+     bytes it was written with.  These are the copies taken during the header
+     pass: the structs they came from live in file_buffer, which the payload
+     read has long since overwritten. */
+  if (load_job.version >= SAVE_VERSION_HEADER) {
+    load_job.checksum = checksumWord(load_job.checksum,
+      load_job.saved_world_ticks);
+  }
+  if (load_job.version >= SAVE_VERSION_SEED) {
+    load_job.checksum = checksumWord(load_job.checksum,
+      load_job.saved_world_seed);
+  }
+  if (load_job.read_ok &&
+      (!load_job.full_inventory_saved ||
+        load_job.checksum == load_job.expected_checksum) &&
+      (!load_job.tree_records_saved || treesValid())) {
+    return LOAD_DONE;
+  }
+  if (recoverBackup(game_file_num - 1)) {
+    return beginLoadGame();
+  }
+  discardInvalidCurrent(game_file_num - 1);
+  files_present[game_file_num - 1] = FALSE;
+  return LOAD_GENERATE;
+}
+
+/* One byte of payload, or FALSE when the file ran out under us. */
+static u8 nextPayloadByte(u8 *out) {
+  if (cursor_pos >= buffer_bytes_read) {
+    if (!readPage(&load_job.file)) {
+      load_job.read_ok = FALSE;
+      return FALSE;
+    }
+  }
+  *out = file_buffer[cursor_pos++];
+  return TRUE;
+}
+
+/*
+ * `slabs` x-slabs of packed blocks per call, then the trailing tree payload.
+ * A slab is MAX_Y * MAX_Z / 2 bytes -- 1792 here, or three and a half pages
+ * of cart traffic -- which is the granularity the progress bar moves at.
+ */
+u8 stepLoadGame(u16 slabs) {
+  int block_y, block_z;
+  u8 packed;
+
+  if (load_job.stage == LOAD_STAGE_IDLE) {
+    return LOAD_DONE;
+  }
+
+  while (load_job.stage == LOAD_STAGE_BLOCKS && slabs > 0) {
+    for (block_y = 0; block_y < MAX_Y; block_y++) {
+      for (block_z = 0; block_z < MAX_Z; block_z += 2) {
+        if (!nextPayloadByte(&packed)) {
+          return finishLoadGame();
+        }
         if (!BLOCK_IS_VALID(packed >> 4)) {
           packed &= 0x0F;
         }
         if (!BLOCK_IS_VALID(packed & 0x0F)) {
           packed &= 0xF0;
         }
-        blockSet(block_x, block_y, block_z, packed >> 4);
-        blockSet(block_x, block_y, block_z + 1, packed & 0x0F);
-        if (full_inventory_saved) {
-          computed_checksum = checksumByte(computed_checksum, packed >> 4);
-          computed_checksum = checksumByte(computed_checksum, packed & 0x0F);
+        blockSet(load_job.block_x, block_y, block_z, packed >> 4);
+        blockSet(load_job.block_x, block_y, block_z + 1, packed & 0x0F);
+        if (load_job.full_inventory_saved) {
+          load_job.checksum = checksumByte(load_job.checksum, packed >> 4);
+          load_job.checksum = checksumByte(load_job.checksum, packed & 0x0F);
         }
       }
+    }
+    slabs--;
+    if (++load_job.block_x >= MAX_X) {
+      load_job.stage = LOAD_STAGE_TREES;
     }
   }
 
-  if (tree_records_saved) {
+  if (load_job.stage != LOAD_STAGE_TREES) {
+    return LOAD_BUSY;
+  }
+
+  /* The tree payload is 2 KB at most -- a single slice's worth on its own,
+     and the last thing in the file either way. */
+  if (load_job.tree_records_saved) {
     /* Only the frozen 96-record payload is on disk; the rest of the larger
        live pool stays inactive from initTrees. */
-    for (trees_ptr = (u8 *) trees; trees_ptr < (u8 *) trees + TREE_SAVE_BYTES;
-        trees_ptr++) {
-      if (cursor_pos >= buffer_bytes_read) {
-        if (!readPage(&file)) {
-          read_ok = FALSE;
-          break;
-        }
+    u8 *trees_ptr = (u8 *) trees;
+
+    while (load_job.tree_byte < TREE_SAVE_BYTES) {
+      if (!nextPayloadByte(&trees_ptr[load_job.tree_byte])) {
+        return finishLoadGame();
       }
-      *trees_ptr = file_buffer[cursor_pos++];
-      computed_checksum = checksumByte(computed_checksum, *trees_ptr);
+      load_job.checksum = checksumByte(load_job.checksum,
+        trees_ptr[load_job.tree_byte]);
+      load_job.tree_byte++;
     }
   } else {
-    if (legacy_tree_records_saved) {
+    if (load_job.legacy_tree_records_saved) {
       /* V5 files carried the original 96-record pool. */
-      for (tree_byte = 0;
-          tree_byte < sizeof(TreeRecordV5) * TREE_SAVE_COUNT; tree_byte++) {
-        if (cursor_pos >= buffer_bytes_read) {
-          if (!readPage(&file)) {
-            read_ok = FALSE;
-            break;
-          }
+      while (load_job.tree_byte < sizeof(TreeRecordV5) * TREE_SAVE_COUNT) {
+        if (!nextPayloadByte(&packed)) {
+          return finishLoadGame();
         }
-        computed_checksum = checksumByte(computed_checksum,
-          file_buffer[cursor_pos++]);
+        load_job.checksum = checksumByte(load_job.checksum, packed);
+        load_job.tree_byte++;
       }
     }
     recoverTreesFromWorld();
   }
+  return finishLoadGame();
+}
 
-  f_close(&file);
-  /* Each scalar the header grew is folded in only from the version that
-     started writing it, so an older save still verifies against exactly the
-     bytes it was written with. */
-  if (legacy_header->version >= SAVE_VERSION_HEADER) {
-    computed_checksum = checksumWord(computed_checksum, header->world_ticks);
+u8 loadGameProgress(void) {
+  if (load_job.stage == LOAD_STAGE_IDLE) {
+    return 100;
   }
-  if (legacy_header->version >= SAVE_VERSION_SEED) {
-    computed_checksum = checksumWord(computed_checksum, header->world_seed);
+  if (load_job.stage == LOAD_STAGE_TREES) {
+    return 99;
   }
-  if (!read_ok ||
-      (full_inventory_saved && computed_checksum != expected_checksum) ||
-      (tree_records_saved && !treesValid())) {
-    if (recoverBackup(game_file_num - 1)) {
-      loadGame();
-      return;
-    }
-    discardInvalidCurrent(game_file_num - 1);
+  return (u8) ((load_job.block_x * 99) / MAX_X);
+}
+
+void loadGame() {
+  u8 status = beginLoadGame();
+
+  while (status == LOAD_BUSY) {
+    status = stepLoadGame(MAX_X);
+  }
+  if (status == LOAD_GENERATE) {
     initWorld();
     initPlayers();
-    files_present[game_file_num - 1] = FALSE;
   }
 }

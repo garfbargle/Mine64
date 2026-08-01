@@ -107,6 +107,11 @@ interface layout and nothing more:
 - **The two hardware faults in the README do not reproduce.** Both the RDP
   pipe-sync hazard and the priority inversion in `callbackGfx` run cleanly under
   emulation, which is exactly why they cost so much to find.
+- **Nothing that touches a save can be tested here.** mupen64plus emulates no
+  flashcart, so `initStorage` fails, every slot reads as empty, and the title
+  screen always takes the *generate* path. The load path -- `beginLoadGame`,
+  the sliced payload, checksum verification, backup recovery -- never executes
+  under emulation at all. Changes to `src/storage.c` have to go to hardware.
 
 ## 7. Cover the states a fresh save does not reach
 
@@ -117,7 +122,19 @@ something first. This is the general trap: an emulator run only exercises the
 screens the script walks through, and the states it skips are exactly the ones
 that go unreviewed.
 
-## 8. What this has turned up so far
+## 8. Measuring, not just looking
+
+`loading-progress.txt` is the other kind of script: it does not tour screens,
+it samples one thing at a fixed interval so the numbers can be compared. Its
+shots are spaced evenly across a world build, and reading the filled width of
+the bar out of each PNG is what turned "the bar looks stuck" into a measurement
+-- first that the three generation stages take the same wall time as each
+other, then that the bar advances 7-9 points per 55 frames from one end of a
+build to the other. Both of those went straight into the stage weights in
+`worldGenerationProgress` and the `BAR_SHARE` split in `main.c`, which is why
+those comments claim measurement rather than estimation.
+
+## 9. What this has turned up so far
 
 None of these are fixed:
 

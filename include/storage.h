@@ -36,6 +36,30 @@ u8 saveGame();
    usual single-threaded storage assumptions are moot; a failed write costs
    nothing that was not already lost. */
 u8 storageWriteFreezeReport(const char *text, u32 length);
+
+/*
+ * Sliced load, for the same reason world generation is sliced: a save is
+ * 200 KB of packed blocks pulled through a 512-byte window, which is seconds
+ * of cart traffic and cannot happen inside one graphics callback without
+ * stopping the picture, the controller, and the freeze watchdog's heartbeat
+ * along with them.
+ *
+ * beginLoadGame parses the header page and claims the extent; stepLoadGame
+ * streams a bounded number of x-slabs per call and verifies the file when it
+ * runs out.  Both answer with one of the status codes below, so the caller
+ * can keep drawing frames in between and knows when the save turned out to
+ * be unusable.
+ */
+#define LOAD_BUSY 0     /* call stepLoadGame again next frame */
+#define LOAD_DONE 1     /* the world is in memory and verified */
+#define LOAD_GENERATE 2 /* nothing loadable here; generate a fresh world */
+
+u8 beginLoadGame(void);
+u8 stepLoadGame(u16 slabs);
+/* 0..100 across the payload; header work counts as zero and is one page. */
+u8 loadGameProgress(void);
+/* Blocking whole-file load, for callers that cannot yield.  Identical
+   outcome to driving the sliced pair to completion, fresh world included. */
 void loadGame();
 void setWorldName(u8 slot, const char *name);
 

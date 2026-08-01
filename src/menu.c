@@ -222,6 +222,16 @@ static void drawCenteredString(const char *text, u32 y) {
   drawString(text, (SCREEN_WD - stringWidth(text)) / 2, y);
 }
 
+/*
+ * A slim bar rather than a percentage: it reads at a glance from a couch and
+ * costs two fill rectangles.  Drawn from both screens a world can be built
+ * from -- the picker and the naming keyboard -- because the wait is the same
+ * wait, and a naming screen that simply stopped responding to the controller
+ * for several seconds was indistinguishable from a hang.  Defined below,
+ * beside the rest of the menu drawing.
+ */
+static void drawWorldJobBar(u32 y);
+
 static u8 worldNameLength() {
   u8 length = WORLD_NAME_LENGTH;
 
@@ -395,6 +405,21 @@ void beginText() {
   gSPDisplayList(dlp++, menu_setup_display_list);
 }
 
+static void drawWorldJobBar(u32 y) {
+  u32 width = (worldJobProgress() * 120) / 100;
+
+  gDPPipeSync(dlp++);
+  gDPSetCycleType(dlp++, G_CYC_FILL);
+  gDPSetRenderMode(dlp++, G_RM_NOOP, G_RM_NOOP2);
+  setMenuFillColor(24, 27, 23);
+  gDPFillRectangle(dlp++, 99, y, 221, y + 6);
+  setMenuFillColor(143, 148, 133);
+  if (width > 0) {
+    gDPFillRectangle(dlp++, 100, y + 1, 100 + width, y + 5);
+  }
+  gDPPipeSync(dlp++);
+}
+
 void drawMenu() {
   u32 i, j, x, center;
   char chr;
@@ -430,6 +455,21 @@ void drawMenu() {
       y_start = 18;
       break;
     case WORLD_NAMING:
+      /*
+       * START has been pressed and the world is compiling.  The name is
+       * already taken and every key on the card is inert, so leaving it up
+       * makes a dead screen look like a live one -- and it covers the world
+       * that is being built, which is the only thing here worth watching.
+       * The bar sits where the picker puts it, so walking title -> name ->
+       * build never moves it.
+       */
+      if (worldJobActive()) {
+        beginText();
+        drawCenteredString("CREATING WORLD", 132);
+        drawWorldJobBar(147);
+        beginText();
+        return;
+      }
       drawWorldNaming();
       return;
     case GAME:
@@ -535,19 +575,7 @@ void drawMenu() {
     drawChar('>', SCREEN_WD / 2 - 40 - charWidth('>'), option_y);
     drawChar('<', SCREEN_WD / 2 + 40, option_y);
     if (worldJobActive()) {
-      /* A slim bar rather than a percentage: it reads at a glance from a
-         couch and costs two fill rectangles. */
-      u32 width = (worldJobProgress() * 120) / 100;
-      gDPPipeSync(dlp++);
-      gDPSetCycleType(dlp++, G_CYC_FILL);
-      gDPSetRenderMode(dlp++, G_RM_NOOP, G_RM_NOOP2);
-      setMenuFillColor(24, 27, 23);
-      gDPFillRectangle(dlp++, 99, 147, 221, 153);
-      setMenuFillColor(143, 148, 133);
-      if (width > 0) {
-        gDPFillRectangle(dlp++, 100, 148, 100 + width, 152);
-      }
-      gDPPipeSync(dlp++);
+      drawWorldJobBar(147);
       beginText();
     } else if (world_incomplete_message) {
       drawCenteredString("TERRAIN TOO DETAILED TO DRAW", 148);

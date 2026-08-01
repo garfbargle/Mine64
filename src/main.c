@@ -28,8 +28,9 @@
  * its replacement is generated and compiled into the other one.
  */
 #define WORLD_JOB_IDLE 0
-#define WORLD_JOB_GENERATE 1
-#define WORLD_JOB_MESH 2
+#define WORLD_JOB_LOAD 1
+#define WORLD_JOB_GENERATE 2
+#define WORLD_JOB_MESH 3
 
 #define WORLD_JOB_PREVIEW 0
 #define WORLD_JOB_GAME 1
@@ -44,6 +45,29 @@
    8x32x8 column, which is roughly what 48 block columns used to cost. */
 #define WORLD_GEN_COLUMNS_PER_STEP 1
 #define WORLD_MESH_COLUMNS_PER_STEP 3
+/* One x-slab of a save per callback: MAX_Y * MAX_Z / 2 bytes, which is three
+   and a half 512-byte cart reads.  MAX_X slabs at 60 Hz puts a whole save on
+   screen in under two seconds without any single frame paying for it. */
+#define WORLD_LOAD_SLABS_PER_STEP 1
+
+/*
+ * How the progress bar is divided between a job's two halves.
+ *
+ * Every stage costs one callback per step and a loading-screen callback is
+ * dominated by the frame it draws, so callbacks are the honest unit of
+ * "how long is left" -- and the three ways in differ enormously.  Generating
+ * is three passes over every chunk column; reading a save is one pass over
+ * MAX_X slabs; both then compile the same mesh, which is far shorter than
+ * either.  A fixed three-quarters split spent 90% of a generate on the first
+ * 75% of the bar and then covered the last quarter in a second, which reads
+ * as a stall followed by a jump.  Deriving the split from the budgets above
+ * keeps it true when one of them is retuned.
+ */
+#define WORLD_GEN_STEPS (3 * CHUNKS_X * CHUNKS_Z / WORLD_GEN_COLUMNS_PER_STEP)
+#define WORLD_LOAD_STEPS (MAX_X / WORLD_LOAD_SLABS_PER_STEP)
+#define WORLD_MESH_STEPS (CHUNKS_X * CHUNKS_Z / WORLD_MESH_COLUMNS_PER_STEP)
+#define BAR_SHARE(steps) \
+  ((u8) ((steps) * 100 / ((steps) + WORLD_MESH_STEPS)))
 
 /*
  * Streaming budgets, also per graphics callback.  Terrain is the expensive
@@ -84,6 +108,10 @@ static u8 world_job_world;
 #define WORLD_PREVIEW_SETTLE_FRAMES 12
 static u8 world_preview_settle;
 static u8 world_preview_last_world = 0xFF;
+/* The bar only ever moves forwards within one job; see worldJobProgress. */
+static u8 world_job_progress_floor;
+/* Where this job's mesh stage takes over the bar, from BAR_SHARE. */
+static u8 world_job_mesh_start;
 
 static u8 worldGameBuildRequested() {
   return (current_screen == MENU || current_screen == WORLD_NAMING) &&
@@ -99,14 +127,28 @@ u8 worldJobActive() {
 }
 
 u8 worldJobProgress() {
-  if (world_job_stage == WORLD_JOB_GENERATE) {
-    /* Generation dominates, so give it most of the bar. */
-    return (u8) ((worldGenerationProgress() * 3) / 4);
+  u8 share = world_job_mesh_start;
+  u8 progress;
+
+  if (world_job_stage == WORLD_JOB_LOAD) {
+    progress = (u8) ((loadGameProgress() * share) / 100);
+  } else if (world_job_stage == WORLD_JOB_GENERATE) {
+    progress = (u8) ((worldGenerationProgress() * share) / 100);
+  } else if (world_job_stage == WORLD_JOB_MESH) {
+    progress = (u8) (share +
+      (worldMeshBuildProgress() * (100 - share)) / 100);
+  } else {
+    progress = 100;
   }
-  if (world_job_stage == WORLD_JOB_MESH) {
-    return (u8) (75 + worldMeshBuildProgress() / 4);
+  /* A slot that will not load and has to be generated instead is the one job
+     that walks two of these in turn, and its second half starts over at zero.
+     A bar that runs backwards reads as a fault, and the player has no way to
+     know that it is not one. */
+  if (progress < world_job_progress_floor) {
+    progress = world_job_progress_floor;
   }
-  return 100;
+  world_job_progress_floor = progress;
+  return progress;
 }
 
 /* TRUE once the highlighted slot has held still long enough to be worth
@@ -126,12 +168,55 @@ static u8 previewSelectionSettled() {
   return TRUE;
 }
 
+/*
+ * Terrain is in memory; give the world its entities and start compiling the
+ * display lists.  Shared by the two ways of getting there, because a loaded
+ * world and a generated one are the same thing from here on -- except that a
+ * save also restored its players, and a fresh world has to be given some.
+ */
+static void beginWorldMeshStage(u8 place_players) {
+  if (place_players) {
+    /* Spawn placement reads the finished terrain, so it cannot run until
+       generation has completed. */
+    initPlayers();
+  }
+  initDroppedItems();
+  initMobs();
+  initGeometry();
+  world_job_stage = WORLD_JOB_MESH;
+  beginWorldMeshBuild(TRUE);
+}
+
+/*
+ * Route a load status onto the job's next stage.  A save that will not open,
+ * will not verify, and has no usable backup leaves the slot empty rather than
+ * the screen frozen: the job falls through to generating a fresh world, on
+ * the same slices, instead of running initWorld() to completion inside this
+ * one callback.
+ */
+static void applyLoadStatus(u8 status) {
+  if (status == LOAD_BUSY) {
+    world_job_stage = WORLD_JOB_LOAD;
+    return;
+  }
+  if (status == LOAD_DONE) {
+    beginWorldMeshStage(FALSE);
+    return;
+  }
+  beginWorldGeneration();
+  world_job_mesh_start = BAR_SHARE(WORLD_GEN_STEPS);
+  world_job_stage = WORLD_JOB_GENERATE;
+}
+
 static void beginWorldJob() {
+  world_job_progress_floor = 0;
   if (worldGameBuildRequested()) {
     /* The picked world is already generated and loaded -- only its display
        lists are still the reduced scenic mesh, so this recompiles them at full
-       detail without touching the terrain the player chose. */
+       detail without touching the terrain the player chose.  The mesh is the
+       whole job here, so it gets the whole bar. */
     world_job_kind = WORLD_JOB_GAME;
+    world_job_mesh_start = 0;
     world_job_stage = WORLD_JOB_MESH;
     beginWorldMeshBuild(FALSE);
     return;
@@ -145,37 +230,36 @@ static void beginWorldJob() {
   initDetails();
   initWorldEdits();
   if (files_present[world_job_world]) {
-    /* Reading a save is a single bounded cart transfer, not a long compute,
-       so it stays in one piece. */
-    loadGame();
-    initDroppedItems();
-    initMobs();
-    initGeometry();
-    world_job_stage = WORLD_JOB_MESH;
-    beginWorldMeshBuild(TRUE);
+    /* The header page only; the 200 KB of packed blocks behind it arrive a
+       slab at a time from stepWorldJob. */
+    diagPaintPhase(DIAG_PHASE_LOAD);
+    world_job_mesh_start = BAR_SHARE(WORLD_LOAD_STEPS);
+    applyLoadStatus(beginLoadGame());
   } else {
     beginWorldGeneration();
+    world_job_mesh_start = BAR_SHARE(WORLD_GEN_STEPS);
     world_job_stage = WORLD_JOB_GENERATE;
   }
 }
 
 static void stepWorldJob() {
+  if (world_job_stage == WORLD_JOB_LOAD) {
+    diagPaintPhase(DIAG_PHASE_LOAD);
+    applyLoadStatus(stepLoadGame(WORLD_LOAD_SLABS_PER_STEP));
+    return;
+  }
+
   if (world_job_stage == WORLD_JOB_GENERATE) {
+    diagPaintPhase(DIAG_PHASE_GENERATE);
     if (!stepWorldGeneration(WORLD_GEN_COLUMNS_PER_STEP)) {
       return;
     }
-    /* Spawn placement reads the finished terrain, so it cannot run until
-       generation has completed. */
-    initPlayers();
-    initDroppedItems();
-    initMobs();
-    initGeometry();
-    world_job_stage = WORLD_JOB_MESH;
-    beginWorldMeshBuild(TRUE);
+    beginWorldMeshStage(TRUE);
     return;
   }
 
   if (world_job_stage == WORLD_JOB_MESH) {
+    diagPaintPhase(DIAG_PHASE_MESH);
     if (!stepWorldMeshBuild(WORLD_MESH_COLUMNS_PER_STEP)) {
       return;
     }

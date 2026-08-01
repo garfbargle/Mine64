@@ -1694,20 +1694,41 @@ u8 worldGenerationActive() {
   return world_gen_stage != WORLD_GEN_IDLE;
 }
 
+/*
+ * Where each stage's share of the bar begins.
+ *
+ * Equal thirds, which is not a guess at how expensive each pass is but a
+ * measurement of how long each one takes: all three walk the same
+ * CHUNKS_X * CHUNKS_Z columns at the same one-column-per-callback budget, and
+ * on the loading screen the callback is dominated by drawing the frame rather
+ * than by the step inside it.  Timing the emulated title screen puts the
+ * three stages within a few frames of each other, so a third of the bar each
+ * is what makes it advance at a constant rate in seconds -- the only property
+ * a progress bar is actually judged on.
+ */
+static const u8 world_gen_stage_start[] = {
+  0,    /* WORLD_GEN_TERRAIN */
+  33,   /* WORLD_GEN_STRUCTURES */
+  67,   /* WORLD_GEN_TREES */
+  100
+};
+
 u8 worldGenerationProgress() {
+  u32 start, span, done;
+
   if (world_gen_stage == WORLD_GEN_IDLE) {
     return 100;
   }
-  /* Terrain dominates the cost; treat decoration as the last tenth so the bar
-     does not stall visibly at the end.  Both decoration stages walk every
-     column now, so they split that tenth between them. */
-  if (world_gen_stage == WORLD_GEN_TERRAIN) {
-    return (u8) ((world_gen_x * 90) / CHUNKS_X);
-  }
-  if (world_gen_stage == WORLD_GEN_STRUCTURES) {
-    return (u8) (90 + (world_gen_x * 5) / CHUNKS_X);
-  }
-  return (u8) (95 + (world_gen_x * 5) / CHUNKS_X);
+  /*
+   * The cursor walks z fastest, so both halves of it have to count:
+   * world_gen_x alone advances once per CHUNKS_Z columns,
+   * which over a 14x14 extent is fourteen visible steps for the whole of
+   * generation -- a bar that looks stuck between long jumps.
+   */
+  start = world_gen_stage_start[world_gen_stage - WORLD_GEN_TERRAIN];
+  span = world_gen_stage_start[world_gen_stage - WORLD_GEN_TERRAIN + 1] - start;
+  done = (u32) world_gen_x * CHUNKS_Z + world_gen_z;
+  return (u8) (start + (done * span) / (CHUNKS_X * CHUNKS_Z));
 }
 
 /*
