@@ -193,6 +193,97 @@ static void stepWorldJob() {
   }
 }
 
+/*
+ * One slice of the streaming pipeline around player one: claim and generate
+ * terrain, carve the approaching underground, stamp structures, grow trees,
+ * and queue finished columns for meshing.
+ *
+ * This is pure CPU work against window_blocks and the derived record pools.
+ * Nothing in it writes the mesh arena, the chunk matrices, or anything else
+ * an in-flight RSP task reads -- eviction only redirects the per-slot start
+ * pointers (whose old values are already baked into the submitted display
+ * list) and returns arena blocks to a free list that only the gated
+ * compile/defrag path ever writes into.  That is what makes it legal to run
+ * from a callback that found a task still in flight, which used to return
+ * having done nothing: at 20 fps two of every three callbacks were pure
+ * idle time while the RSP ground through the frame.  Streaming there means
+ * walking no longer pays for generation and rendering in series.
+ *
+ * Mesh compilation, arena defrag and the origin rebase are NOT here; they
+ * stay behind the pendingGfx == 0 gate in callbackGfx.
+ */
+static void stepGameplayStreaming(OSTime work_start, u32 budget_usec,
+    u32 urgent_budget_usec) {
+  int player_block_x = floor(players[0].position.x / BLOCK_SIZE);
+  int player_block_z = floor(players[0].position.z / BLOCK_SIZE);
+  int pcx = player_block_x >> CHUNK_SHIFT;
+  int pcz = player_block_z >> CHUNK_SHIFT;
+
+  /* Spread streaming over frames instead of letting one callback spend
+     100+ ms: the run-5 quicksand was B tracking W at ~143 ms, all of it CPU
+     work in this block.
+     The exception is a gap the player is practically standing on: the
+     stage pipeline (terrain, waystones, trees, mesh) at one guaranteed
+     step each per frame takes seconds to finish a fresh row, and that
+     is the "walk to the edge and wait" complaint.  When anything within
+     two chunks of the player is unbuilt or unmeshed, trade a brief
+     hitch for closing the hole at more than double the rate. */
+  {
+    int dx, dz;
+    u8 urgent = FALSE;
+
+    for (dx = -2; dx <= 2 && !urgent; dx++) {
+      for (dz = -2; dz <= 2; dz++) {
+        /* Only genuinely missing terrain or mesh is an emergency.  A
+           pending LOD upgrade is routine -- treating it as urgent made
+           every chunk crossing hitch. */
+        if (worldColumnState(pcx + dx, pcz + dz) < COLUMN_DECORATED ||
+            graphicsColumnMissingMesh(pcx + dx, pcz + dz)) {
+          urgent = TRUE;
+          break;
+        }
+      }
+    }
+    stream_work_deadline = work_start +
+      OS_USEC_TO_CYCLES(urgent ? urgent_budget_usec : budget_usec);
+  }
+
+  /*
+   * Prefetch bias: rank streaming work toward where the player is
+   * heading, from a smoothed per-frame block displacement.  Without it,
+   * nearest-first builds the ring edge directly ahead -- the exact
+   * ground about to be stepped on -- dead last.
+   */
+  {
+    static float heading_x, heading_z;
+    static int prev_block_x, prev_block_z;
+    static u8 heading_valid;
+
+    if (heading_valid) {
+      heading_x = heading_x * .95f +
+        (float) (player_block_x - prev_block_x) * .05f;
+      heading_z = heading_z * .95f +
+        (float) (player_block_z - prev_block_z) * .05f;
+    }
+    prev_block_x = player_block_x;
+    prev_block_z = player_block_z;
+    heading_valid = TRUE;
+    /* A steady walk settles the average near 0.12 blocks a frame; 0.04
+       is fast enough to catch a new direction within a second or so. */
+    worldSetStreamBias(heading_x > .04f ? 2 : (heading_x < -.04f ? -2 : 0),
+      heading_z > .04f ? 2 : (heading_z < -.04f ? -2 : 0));
+  }
+  stepWorldStreaming(pcx, pcz, STREAM_TERRAIN_PER_STEP,
+    STREAM_DECORATE_PER_STEP);
+}
+
+/* The ungated slice's budgets.  A retrace period is 16.7 ms and the same
+   callback still has to run player physics, so these stay comfortably
+   inside one field -- overrunning would delay the message that tells the
+   next callback the frame finished. */
+#define STREAM_OVERLAP_USEC 8000
+#define STREAM_OVERLAP_URGENT_USEC 14000
+
 void callbackGfx(int pendingGfx) {
   static OSTime last_callback_time;
   OSTime callback_time = osGetTime();
@@ -230,37 +321,6 @@ void callbackGfx(int pendingGfx) {
     } else if (current_screen == GAME || current_screen == INVENTORY) {
       int player_block_x = floor(players[0].position.x / BLOCK_SIZE);
       int player_block_z = floor(players[0].position.z / BLOCK_SIZE);
-
-      /* Spread streaming and meshing over frames instead of letting one
-         callback spend 100+ ms: the run-5 quicksand was B tracking W at
-         ~143 ms, all of it CPU work in this block.
-         The exception is a gap the player is practically standing on: the
-         stage pipeline (terrain, waystones, trees, mesh) at one guaranteed
-         step each per frame takes seconds to finish a fresh row, and that
-         is the "walk to the edge and wait" complaint.  When anything within
-         two chunks of the player is unbuilt or unmeshed, trade a brief
-         hitch for closing the hole at more than double the rate. */
-      {
-        int pcx = player_block_x >> CHUNK_SHIFT;
-        int pcz = player_block_z >> CHUNK_SHIFT;
-        int dx, dz;
-        u8 urgent = FALSE;
-
-        for (dx = -2; dx <= 2 && !urgent; dx++) {
-          for (dz = -2; dz <= 2; dz++) {
-            /* Only genuinely missing terrain or mesh is an emergency.  A
-               pending LOD upgrade is routine -- treating it as urgent made
-               every chunk crossing hitch. */
-            if (worldColumnState(pcx + dx, pcz + dz) < COLUMN_DECORATED ||
-                graphicsColumnMissingMesh(pcx + dx, pcz + dz)) {
-              urgent = TRUE;
-              break;
-            }
-          }
-        }
-        stream_work_deadline = gated_start +
-          OS_USEC_TO_CYCLES(urgent ? 25000 : 10000);
-      }
 
       /*
        * Re-centre the render origin before it drifts out of the s15.16 Mtx
@@ -305,40 +365,29 @@ void callbackGfx(int pendingGfx) {
        * only fight the camera.
        */
       diagPaintPhase(DIAG_PHASE_STREAMING);
-      /*
-       * Prefetch bias: rank streaming work toward where the player is
-       * heading, from a smoothed per-frame block displacement.  Without it,
-       * nearest-first builds the ring edge directly ahead -- the exact
-       * ground about to be stepped on -- dead last.
-       */
-      {
-        static float heading_x, heading_z;
-        static int prev_block_x, prev_block_z;
-        static u8 heading_valid;
-
-        if (heading_valid) {
-          heading_x = heading_x * .95f +
-            (float) (player_block_x - prev_block_x) * .05f;
-          heading_z = heading_z * .95f +
-            (float) (player_block_z - prev_block_z) * .05f;
-        }
-        prev_block_x = player_block_x;
-        prev_block_z = player_block_z;
-        heading_valid = TRUE;
-        /* A steady walk settles the average near 0.12 blocks a frame; 0.04
-           is fast enough to catch a new direction within a second or so. */
-        worldSetStreamBias(heading_x > .04f ? 2 : (heading_x < -.04f ? -2 : 0),
-          heading_z > .04f ? 2 : (heading_z < -.04f ? -2 : 0));
-      }
-      stepWorldStreaming(player_block_x >> CHUNK_SHIFT,
-        player_block_z >> CHUNK_SHIFT,
-        STREAM_TERRAIN_PER_STEP, STREAM_DECORATE_PER_STEP);
+      stepGameplayStreaming(gated_start, 10000, 25000);
     }
     /* A mesh arena can only be recycled when no submitted task can still
        reference its display lists. */
     diagPaintPhase(DIAG_PHASE_DRAW);
     draw(TRUE);
     diagNoteGatedWork((u32) OS_CYCLES_TO_USEC(osGetTime() - gated_start));
+  } else if ((current_screen == GAME || current_screen == INVENTORY) &&
+      world_job_stage == WORLD_JOB_IDLE) {
+    /*
+     * A task is in flight: the RSP and RDP are busy and this callback used
+     * to be nothing but the heartbeat and player physics.  Spend the idle
+     * field streaming instead -- see stepGameplayStreaming for why every
+     * step in it is safe beside a running task.  At 20 fps this recovers
+     * two otherwise-empty callbacks per displayed frame, which is what
+     * stops walking from stacking generation time on top of render time.
+     */
+    OSTime overlap_start = osGetTime();
+
+    diagPaintPhase(DIAG_PHASE_STREAMING);
+    stepGameplayStreaming(overlap_start, STREAM_OVERLAP_USEC,
+      STREAM_OVERLAP_URGENT_USEC);
+    diagNoteGatedWork((u32) OS_CYCLES_TO_USEC(osGetTime() - overlap_start));
   }
 
   if (current_screen == LOADING_PREVIEW && loadingPreviewFinished()) {
