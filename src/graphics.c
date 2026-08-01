@@ -2073,6 +2073,16 @@ typedef struct {
 static BakedQuad column_baked[COLUMN_QUAD_CAP];
 static u16 column_baked_total;
 static u16 column_baked_counts[NUM_TEXTURES];
+/*
+ * The same quads grouped by texture: order[first[t] .. first[t] + counts[t])
+ * indexes column_baked.  The counts are already a histogram, so one prefix
+ * sum and one stable scatter replace the sixteen full rescans the per-texture
+ * emitters used to make -- for a 270-quad column that is 270 visits instead
+ * of 4,320.  Stability keeps each texture's quads in resolve order, so the
+ * emitted vertices and commands are byte-identical to the rescan's.
+ */
+static u16 column_baked_order[COLUMN_QUAD_CAP];
+static u16 column_baked_first[NUM_TEXTURES];
 
 /* TRUE for quads the surface shell keeps: the skin the world shows from a
    distance.  Same filter the scenic preview always used. */
@@ -2163,6 +2173,22 @@ static void resolveColumnQuads(int cx, int cz, u8 lod) {
     resolveAxisQuads(cq->x_quads, cx, cz, cy, XZY, RIGHT, LEFT, shell);
     resolveAxisQuads(cq->y_quads, cx, cz, cy, YXZ, TOP, BOTTOM, shell);
   }
+
+  /* Group by texture: prefix-sum the histogram, then scatter each quad to
+     its texture's cursor.  In-order scatter is what makes it stable. */
+  {
+    u16 cursor[NUM_TEXTURES];
+    u16 i, running = 0;
+
+    for (texture = 0; texture < NUM_TEXTURES; texture++) {
+      column_baked_first[texture] = running;
+      cursor[texture] = running;
+      running += column_baked_counts[texture];
+    }
+    for (i = 0; i < column_baked_total; i++) {
+      column_baked_order[cursor[column_baked[i].texture]++] = i;
+    }
+  }
 }
 
 /* Quads per gSPVertex batch: 8 quads' 32 vertices fill the F3DEX2 vertex
@@ -2204,15 +2230,12 @@ static Gfx *emitColumnTextureDL(u32 slot, u8 texture,
    * seams freely.  A Vtx is two Gfx of arena space.
    */
   verts = *verts_cursor;
-  emitted = 0;
-  for (i = 0; i < column_baked_total; i++) {
-    BakedQuad *q = &column_baked[i];
+  for (emitted = 0; emitted < n; emitted++) {
+    BakedQuad *q =
+      &column_baked[column_baked_order[column_baked_first[texture] + emitted]];
     const Vtx *src;
     u8 v;
 
-    if (q->texture != texture) {
-      continue;
-    }
     src = q->water_top ? WATER_TOP_QUAD_ADDR(q->width, q->height) :
       QUAD_ADDR(q->face, q->width, q->height);
     for (v = 0; v < 4; v++) {
@@ -2223,7 +2246,6 @@ static Gfx *emitColumnTextureDL(u32 slot, u8 texture,
       out->v.ob[1] += (s16) ((s16) q->y * BLOCK_SIZE);
       out->v.ob[2] += (s16) ((s16) q->z * BLOCK_SIZE);
     }
-    emitted++;
   }
   *verts_cursor = verts + (u32) n * 4;
 
