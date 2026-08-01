@@ -17,7 +17,7 @@ different on every run. Reach for the preview first, and keep the emulator for
 what only it can show: the interface in its real framebuffer, and behaviour
 that involves the game actually running.
 
-## The two scenes that exist
+## The three scenes that exist
 
 `mob.py` poses a quadruped exactly as `drawQuadrupedMob` does -- four
 rotations, seven anchors -- with the joint offsets read out of the
@@ -43,9 +43,29 @@ tools/preview/hand.py iron_sword --reach 0.5
 tools/preview/hand.py wood_axe --strip
 ```
 
+`hud.py` is the exception to "the emulator owns the interface". The health and
+food meters are pixel sprites made of fill rectangles placed by arithmetic over
+the item bar's edges, and none of that needs a running game, so it replays the
+same rectangles onto a bitmap -- reading the `HudSpan` tables, the
+`HudMeterStyle` colours and the `HOTBAR_*` defines out of `graphics.c`, so the
+sprite in the picture is the sprite in the ROM:
+
+```sh
+tools/preview/hud.py --health 13 --food 7
+tools/preview/hud.py --sheet             # full, half and empty, all at once
+tools/preview/hud.py --compact           # the four-player sprites
+tools/preview/hud.py --crt               # fake composite over the result
+```
+
+`--crt` smears chroma sideways and leaves luma alone, which is roughly what a
+composite cable does. It is a sanity check on whether a one-pixel border is
+still a border by the time it reaches a television -- not a television.
+Anything with a menu, a font or a state machine in it still belongs in
+`tools/emu`.
+
 ## Anything else, in ten lines
 
-The two scripts above are just callers. `render.py` is the part worth knowing:
+The scripts above are just callers. `render.py` is the part worth knowing:
 it parses the geometry, and `Scene` poses and rasterises it.
 
 ```python

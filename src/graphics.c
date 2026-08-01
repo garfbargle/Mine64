@@ -4212,63 +4212,260 @@ static void setHudFillColor(u8 r, u8 g, u8 b) {
   gDPSetFillColor(dlp++, (color << 16) | color);
 }
 
+/*
+ * Where the item bar sits, in one place, because the bar, the health row and
+ * the food row all have to agree about its edges.  `x`/`y` are the top-left
+ * of the first slot; the raised rim drawn by drawHotbar extends two pixels
+ * beyond that on every side.
+ */
+typedef struct {
+  u32 x;
+  u32 y;
+  u32 width;
+  u32 slot_size;
+} HotbarRect;
+
+static void hotbarRect(u8 player_num, HotbarRect *bar) {
+  u8 compact = usesFourPlayerLayout();
+
+  bar->slot_size = compact ? 14 : HOTBAR_SLOT_SIZE;
+  bar->width = HOTBAR_SLOT_COUNT * bar->slot_size;
+  bar->x = playerViewportX(player_num) +
+    (playerViewportWidth() - bar->width) / 2;
+  bar->y = playerViewportY(player_num) + playerViewportHeight() -
+    bar->slot_size - (compact ? 4 : HOTBAR_MARGIN);
+}
+
+/*
+ * Health and food are pixel sprites described as horizontal spans rather than
+ * hand-placed rectangles.  Three reasons: the two meters then share one
+ * drawing routine, the spans can be grouped by colour instead of by symbol
+ * (see drawHudMeter), and tools/preview/hud.py parses these very arrays, so
+ * the offline picture is this shape rather than a copy of it that can drift.
+ *
+ * Coordinates are symbol-local, inclusive, top-left origin.  `inner` is the
+ * outline inset by one pixel on every side, which is the whole trick: the
+ * fill can never reach the edge of the silhouette, so the dark border is
+ * always there to hold the shape against whatever terrain is behind it.
+ */
+typedef struct {
+  u8 x0, y0, x1, y1;
+} HudSpan;
+
+/*   .XX..XX.
+ *   XXXXXXXX
+ *   XXXXXXXX
+ *   XXXXXXXX
+ *   .XXXXXX.
+ *   ..XXXX..
+ *   ...XX...   */
+static const HudSpan heart_outline_spans[] = {
+  {1, 0, 2, 0}, {5, 0, 6, 0},
+  {0, 1, 7, 3},
+  {1, 4, 6, 4},
+  {2, 5, 5, 5},
+  {3, 6, 4, 6}
+};
+
+static const HudSpan heart_inner_spans[] = {
+  {1, 1, 2, 1}, {5, 1, 6, 1},
+  {1, 2, 6, 3},
+  {2, 4, 5, 4},
+  {3, 5, 4, 5}
+};
+
+/* A drumstick: meat to the left, bone trailing down to the right.  The meat
+ * leads so that a half unit -- which fills the left half of the cell -- fills
+ * the part of the shape the eye actually weighs.
+ *
+ *   ..XXX...
+ *   .XXXXX..
+ *   .XXXXX..
+ *   ..XXXX..
+ *   ....XXX.
+ *   .....XXX
+ *   ......XX   */
+static const HudSpan food_outline_spans[] = {
+  {2, 0, 4, 0},
+  {1, 1, 5, 2},
+  {2, 3, 5, 3},
+  {4, 4, 6, 4},
+  {5, 5, 7, 5},
+  {6, 6, 7, 6}
+};
+
+static const HudSpan food_inner_spans[] = {
+  {2, 1, 4, 2},
+  {3, 3, 4, 3},
+  {5, 4, 5, 4},
+  {6, 5, 6, 5}
+};
+
+/*
+ * Four-player mode has 130 pixels of bar to hang twenty symbols off, which
+ * leaves five pixels a symbol and one to space them by.  Nothing five wide
+ * has room for both an outline and an interior, so the compact sprites drop
+ * the outline pass (an empty `outline` table) and are drawn as one silhouette
+ * in two colours: dark for spent, bright for remaining.  Losing the border is
+ * survivable at quarter-screen in a way that losing the shape would not be.
+ */
+static const HudSpan heart_compact_spans[] = {
+  {0, 0, 1, 0}, {3, 0, 4, 0},
+  {0, 1, 4, 2},
+  {1, 3, 3, 3},
+  {2, 4, 2, 4}
+};
+
+static const HudSpan food_compact_spans[] = {
+  {1, 0, 3, 0},
+  {0, 1, 4, 3},
+  {1, 4, 3, 4}
+};
+
+typedef struct {
+  const HudSpan *outline;
+  const HudSpan *inner;
+  u8 outline_spans;
+  u8 inner_spans;
+  u8 width;
+  u8 height;
+  u8 pitch;
+  /* Every border here is a luminance step, not a hue step.  Composite video
+     carries luma at full bandwidth and chroma at a fraction of it, so a
+     near-black outline survives the trip to a CRT where two saturated colours
+     of similar brightness would smear into each other. */
+  u8 outline_color[3];
+  u8 empty_color[3];
+  u8 fill_color[3];
+} HudMeterStyle;
+
+static const HudMeterStyle health_style = {
+  heart_outline_spans, heart_inner_spans, 6, 5, 8, 7, 9,
+  {26, 8, 10}, {94, 33, 35}, {228, 60, 56}
+};
+
+static const HudMeterStyle health_compact_style = {
+  NULL, heart_compact_spans, 0, 5, 5, 5, 6,
+  {0, 0, 0}, {84, 29, 31}, {228, 60, 56}
+};
+
+static const HudMeterStyle food_style = {
+  food_outline_spans, food_inner_spans, 6, 4, 8, 7, 9,
+  {22, 14, 6}, {80, 54, 29}, {228, 156, 56}
+};
+
+static const HudMeterStyle food_compact_style = {
+  NULL, food_compact_spans, 0, 3, 5, 5, 6,
+  {0, 0, 0}, {72, 48, 26}, {228, 156, 56}
+};
+
+#define HUD_METER_UNITS(max) ((max) / 2)
+
+static u32 hudMeterWidth(const HudMeterStyle *style, u8 max_value) {
+  return (HUD_METER_UNITS(max_value) - 1) * style->pitch + style->width;
+}
+
+/* `clip_width` keeps only the leftmost columns of the sprite, which is how a
+   half unit is drawn: the same spans, cut down the middle. */
+static void drawHudSpans(const HudSpan *spans, u8 count, u32 x, u32 y,
+    u8 clip_width) {
+  u8 i;
+
+  for (i = 0; i < count; i++) {
+    u8 x1 = spans[i].x1;
+
+    if (spans[i].x0 >= clip_width) {
+      continue;
+    }
+    if (x1 >= clip_width) {
+      x1 = clip_width - 1;
+    }
+    gDPFillRectangle(dlp++, x + spans[i].x0, y + spans[i].y0, x + x1,
+      y + spans[i].y1);
+  }
+}
+
+/*
+ * Drawn in three passes over the whole row -- every outline, then every empty
+ * interior, then every fill -- so the row costs three fill colours instead of
+ * two per symbol.
+ *
+ * That grouping is not just tidiness.  gDPSetFillColor is an RDP attribute
+ * change, and like the mode changes in docs/hardware.md it needs the pipe
+ * drained first or it lands on spans of a primitive still in flight.  The old
+ * code alternated dark and bright forty times a row with no sync at all, and
+ * because its bright rectangles sat exactly on top of its dark ones, every
+ * pixel the hazard stole showed the dark layer underneath -- a full heart came
+ * out half dark on hardware while emulators drew it solid.
+ */
+static void drawHudMeter(const HudMeterStyle *style, u32 x, u32 y, u8 value,
+    u8 max_value) {
+  u8 units = HUD_METER_UNITS(max_value);
+  u8 i;
+
+  if (style->outline_spans > 0) {
+    gDPPipeSync(dlp++);
+    setHudFillColor(style->outline_color[0], style->outline_color[1],
+      style->outline_color[2]);
+    for (i = 0; i < units; i++) {
+      drawHudSpans(style->outline, style->outline_spans,
+        x + i * style->pitch, y, style->width);
+    }
+  }
+
+  gDPPipeSync(dlp++);
+  setHudFillColor(style->empty_color[0], style->empty_color[1],
+    style->empty_color[2]);
+  for (i = 0; i < units; i++) {
+    /* A full unit's fill covers the interior outright, so only partial and
+       empty units need painting underneath it. */
+    if (value < (i + 1) * 2) {
+      drawHudSpans(style->inner, style->inner_spans, x + i * style->pitch, y,
+        style->width);
+    }
+  }
+
+  gDPPipeSync(dlp++);
+  setHudFillColor(style->fill_color[0], style->fill_color[1],
+    style->fill_color[2]);
+  for (i = 0; i < units; i++) {
+    u8 unit = value > i * 2 ? min(2, value - i * 2) : 0;
+
+    if (unit > 0) {
+      drawHudSpans(style->inner, style->inner_spans, x + i * style->pitch, y,
+        unit == 2 ? style->width : (style->width + 1) / 2);
+    }
+  }
+}
+
+/*
+ * Health rides the leading edge of the item bar's top rim and food the
+ * trailing edge, both aligned to the rim rather than to the slots so the two
+ * rows read as part of the bar.  The middle stays clear for the held-item
+ * name that prints just above it.
+ */
 static void drawHealth(u8 player_num) {
   u8 compact = usesFourPlayerLayout();
-  u32 size = compact ? 4 : 6;
-  u32 total_width = (PLAYER_MAX_HEALTH / 2) * (size + 2) - 2;
-  u32 x = playerViewportX(player_num) +
-    (playerViewportWidth() - total_width) / 2;
-  u32 start_x = x;
-  u32 y = playerViewportY(player_num) + playerViewportHeight() -
-    (compact ? 14 + 4 + 8 : HOTBAR_SLOT_SIZE + HOTBAR_MARGIN + 10);
-  u8 heart;
+  const HudMeterStyle *health = compact ? &health_compact_style :
+    &health_style;
+  const HudMeterStyle *food = compact ? &food_compact_style : &food_style;
+  HotbarRect bar;
+  u32 rim_left;
+  u32 rim_right;
+  u32 y;
+
+  hotbarRect(player_num, &bar);
+  rim_left = bar.x - 2;
+  rim_right = bar.x + bar.width + 1;
+  y = bar.y - 2 - 2 - health->height;
 
   gDPPipeSync(dlp++);
   gDPSetCycleType(dlp++, G_CYC_FILL);
   gDPSetRenderMode(dlp++, G_RM_NOOP, G_RM_NOOP2);
-  for (heart = 0; heart < PLAYER_MAX_HEALTH / 2; heart++) {
-    u8 value = players[player_num].health > heart * 2 ?
-      min(2, players[player_num].health - heart * 2) : 0;
-
-    setHudFillColor(72, 22, 22);
-    /* A few filled pixels read as a heart on a CRT more clearly than a
-       single health bar, while still fitting beside a four-player hotbar. */
-    gDPFillRectangle(dlp++, x + 1, y, x + size - 2, y + 1);
-    gDPFillRectangle(dlp++, x, y + 1, x + size - 1, y + size - 2);
-    gDPFillRectangle(dlp++, x + 1, y + size - 1, x + size - 2, y + size);
-    if (value > 0) {
-      u32 fill_right = value == 2 ? x + size - 1 : x + size / 2;
-      setHudFillColor(220, 48, 48);
-      gDPFillRectangle(dlp++, x + 1, y,
-        value == 2 ? x + size - 2 : fill_right, y + 1);
-      gDPFillRectangle(dlp++, x, y + 1, fill_right, y + size - 2);
-      gDPFillRectangle(dlp++, x + 1, y + size - 1,
-        value == 2 ? x + size - 2 : fill_right, y + size);
-    }
-    x += size + 2;
-  }
-
-  /* Food pips share the same fill-mode pass as hearts, so survival adds no
-     extra RDP state transition.  Their warm diamond silhouette remains
-     distinct from health even on a soft composite CRT image. */
-  x = start_x;
-  y -= size + 3;
-  for (heart = 0; heart < PLAYER_MAX_HUNGER / 2; heart++) {
-    u8 value = players[player_num].hunger > heart * 2 ?
-      min(2, players[player_num].hunger - heart * 2) : 0;
-
-    setHudFillColor(61, 39, 24);
-    gDPFillRectangle(dlp++, x + 1, y, x + size - 2, y + size - 1);
-    gDPFillRectangle(dlp++, x, y + 1, x + size - 1, y + size - 2);
-    if (value > 0) {
-      u32 fill_right = value == 2 ? x + size - 1 : x + size / 2;
-      setHudFillColor(226, 154, 55);
-      gDPFillRectangle(dlp++, x + 1, y, value == 2 ? x + size - 2 : fill_right,
-        y + size - 1);
-      gDPFillRectangle(dlp++, x, y + 1, fill_right, y + size - 2);
-    }
-    x += size + 2;
-  }
+  drawHudMeter(health, rim_left, y, players[player_num].health,
+    PLAYER_MAX_HEALTH);
+  drawHudMeter(food, rim_right - hudMeterWidth(food, PLAYER_MAX_HUNGER) + 1,
+    y, players[player_num].hunger, PLAYER_MAX_HUNGER);
   gDPPipeSync(dlp++);
   gDPSetCycleType(dlp++, G_CYC_1CYCLE);
   gDPSetRenderMode(dlp++, G_RM_NOOP, G_RM_NOOP2);
@@ -4539,17 +4736,19 @@ static void drawItemIcon(u8 item, u32 x, u32 y, u32 size) {
 
 static void drawHotbar(u8 player_num) {
   u8 compact = usesFourPlayerLayout();
-  u32 viewport_width = playerViewportWidth();
-  u32 viewport_height = playerViewportHeight();
-  u32 x_offset = playerViewportX(player_num);
-  u32 y_offset = playerViewportY(player_num);
-  u32 slot_size = compact ? 14 : HOTBAR_SLOT_SIZE;
   u32 icon_size = compact ? 10 : HOTBAR_ICON_SIZE;
-  u32 margin = compact ? 4 : HOTBAR_MARGIN;
-  u32 bar_width = HOTBAR_SLOT_COUNT * slot_size;
-  u32 bar_x = x_offset + (viewport_width - bar_width) / 2;
-  u32 bar_y = y_offset + viewport_height - slot_size - margin;
+  HotbarRect bar;
+  u32 slot_size;
+  u32 bar_width;
+  u32 bar_x;
+  u32 bar_y;
   u8 slot;
+
+  hotbarRect(player_num, &bar);
+  slot_size = bar.slot_size;
+  bar_width = bar.width;
+  bar_x = bar.x;
+  bar_y = bar.y;
 
   gDPPipeSync(dlp++);
   gDPSetCycleType(dlp++, G_CYC_FILL);
