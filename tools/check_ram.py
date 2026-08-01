@@ -22,7 +22,7 @@ FRAMEBUFFER_ADDR = RDRAM_END - FRAMEBUFFER_BYTES * 3
 # Must track MINE64_AU_HEAP_SIZE in src/audio.c -- audio.c passes the size to
 # nuAuMgrInit itself, so this is not an SDK constant to look up but a number
 # the two files have to agree on.
-AUDIO_HEAP_SIZE = 0x16000
+AUDIO_HEAP_SIZE = 0x11800  # 70 KiB, against a measured 64 KiB peak
 AUDIO_HEAP_ADDR = FRAMEBUFFER_ADDR - AUDIO_HEAP_SIZE
 
 SHF_ALLOC = 0x2

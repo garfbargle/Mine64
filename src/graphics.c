@@ -6738,8 +6738,9 @@ static void drawStreamingDiagnostics() {
   y = drawDiagnosticRow("A", free_percent, y);
 #ifdef ENABLE_AUDIO
   /* KiB actually taken from the audio heap, against the MINE64_AU_HEAP_SIZE
-     the build reserved.  The heap was sized from the SDK's own formula, not
-     from a reading; this row is how that guess gets checked on hardware. */
+     the build reserved.  This row is what sized the heap: it read 64 against a
+     70 KiB reserve, so U climbing past about 66 means something new is
+     allocating and the reserve has to move before it silently runs out. */
   y = drawDiagnosticRow("U", audioHeapPeakKiB(), y);
 #endif
   /* Once the boundary marcher fires, S is the swept-frame speed in world

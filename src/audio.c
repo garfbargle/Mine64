@@ -11,18 +11,28 @@
  * formula over those numbers wants about 73 KiB.  The heap must sit directly
  * beneath the framebuffers, so shrinking it also moves its base up.
  *
- * 88 KiB rather than the 96 it was, because the audio variant had come within
- * 3 KiB of fitting for the first time and the homestead models pushed it back
- * out.  This is the conservative step: it clears the link and still leaves
- * ~15 KiB over the formula's estimate.
+ * 70 KiB is no longer the formula's estimate.  It was 96, then 88, both of them
+ * guesses with a margin bolted on; the U row was then read on hardware in game
+ * and the peak is 64 KiB.  So this is 6 KiB over a measurement rather than
+ * ~15 KiB over an estimate, and it is the smaller number that is better
+ * founded.  The 18 KiB it returns is what puts the audio variant back under
+ * NuSystem's ceiling with room to work in.
  *
- * It is an estimate, and an undersized audio heap fails only on hardware and
- * only as silence or corruption -- no emulator reproduces it.  So do not cut
- * this again on the strength of the formula alone: the diagnostics overlay's
- * U row reports the peak actually taken (see audioHeapPeakKiB), and that
- * measurement is what a further cut should be made against.
+ * That reading is a ceiling and not a sample: alHeap never frees, and every
+ * allocation of consequence happens in initAudio below -- nuAuMgrInit takes
+ * the voices, the 32 x 1 KiB DMA buffers and the command list, and
+ * nuAuSndPlayerInit takes maxSounds worth of sound state.  alSndpAllocate at
+ * play time hands out one of those pre-allocated slots.  The heap is therefore
+ * at its high-water mark before the first note plays, which is why a single
+ * in-game reading settles it.
+ *
+ * An undersized audio heap still fails only on hardware and only as silence or
+ * corruption -- no emulator reproduces it.  Anything that changes maxVVoices,
+ * maxPVoices, maxUpdates, nuAuDmaBufNum/Size, nuAuAcmdLen or maxSounds moves
+ * the ceiling, so re-read the U row (see audioHeapPeakKiB) after touching any
+ * of them rather than trusting this number to hold.
  */
-#define MINE64_AU_HEAP_SIZE 0x16000  /* 88 KiB */
+#define MINE64_AU_HEAP_SIZE 0x11800  /* 70 KiB; measured peak is 64 KiB */
 #define MINE64_AU_HEAP_ADDR (NU_GFX_FRAMEBUFFER_ADDR - MINE64_AU_HEAP_SIZE)
 #include "audio.h"
 #include "music_title_vadpcm.h"
