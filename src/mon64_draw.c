@@ -3,6 +3,7 @@
 #include <stddef.h>
 
 #include "camera.h"
+#include "humanoid.h"
 #include "graphics.h"
 #include "items.h"
 #include "math.h"
@@ -61,6 +62,10 @@ static Gfx creature_box_display_list[] = {
 
 typedef struct {
   float walk_time;
+  /* How much of a walking pace the body is making; scales limb travel only.
+     Breathing, tails and wings ignore it, because those do not stop when the
+     feet do.  See MonRoamer::gait. */
+  float gait;
   float lunge;    /* frames remaining in an attack lunge */
   float hurt;     /* frames remaining in a recoil */
   float faint;    /* zero, or how far through falling over */
@@ -82,62 +87,48 @@ static void setBoxVertex(Vtx *vertex, s16 x, s16 y, s16 z, const u8 *rgb) {
 }
 
 /*
- * Build one box.  One face carries the palette colour and the opposite face a
+ * Build one box.  The +Z face carries the species colour and the -Z face a
  * darkened copy, which is the whole lighting model for entities in this game:
  * there is no RSP light in the entity pass, so a box has to carry its own
  * sense of which way is toward the viewer or it reads as a flat sticker.
  *
- * `front_lit` picks which of the two the -Z face gets.  Creatures put the
- * shadow on their front, which is what gives an animal walking at you a
- * darker face than its flank.  Steve does the opposite, and anything wearing
- * his face sheet has to agree with it: the sheet's own colours are authored
- * for a lit head, so a shaded one would show a bright face on a dark skull.
+ * People are shaded the other way round and do not come through here at all;
+ * see humanoid.c, which puts the colour in the primitive register instead of
+ * writing it into eight vertices.
  */
 static void buildBox(Vtx *verts, s16 x0, s16 y0, s16 z0, s16 x1, s16 y1,
-    s16 z1, const u8 *color, u8 front_lit) {
-  u8 shaded[3];
-  const u8 *front;
-  const u8 *back;
+    s16 z1, const u8 *color) {
+  u8 dark[3];
 
-  shaded[0] = (u8) (((u32) color[0] * 180) / 255);
-  shaded[1] = (u8) (((u32) color[1] * 180) / 255);
-  shaded[2] = (u8) (((u32) color[2] * 180) / 255);
-  front = front_lit ? color : (const u8 *) shaded;
-  back = front_lit ? (const u8 *) shaded : color;
-  setBoxVertex(&verts[0], x0, y1, z1, back);
-  setBoxVertex(&verts[1], x1, y1, z1, back);
-  setBoxVertex(&verts[2], x1, y0, z1, back);
-  setBoxVertex(&verts[3], x0, y0, z1, back);
-  setBoxVertex(&verts[4], x1, y1, z0, front);
-  setBoxVertex(&verts[5], x0, y1, z0, front);
-  setBoxVertex(&verts[6], x0, y0, z0, front);
-  setBoxVertex(&verts[7], x1, y0, z0, front);
+  dark[0] = (u8) (((u32) color[0] * 180) / 255);
+  dark[1] = (u8) (((u32) color[1] * 180) / 255);
+  dark[2] = (u8) (((u32) color[2] * 180) / 255);
+  setBoxVertex(&verts[0], x0, y1, z1, color);
+  setBoxVertex(&verts[1], x1, y1, z1, color);
+  setBoxVertex(&verts[2], x1, y0, z1, color);
+  setBoxVertex(&verts[3], x0, y0, z1, color);
+  setBoxVertex(&verts[4], x1, y1, z0, dark);
+  setBoxVertex(&verts[5], x0, y1, z0, dark);
+  setBoxVertex(&verts[6], x0, y0, z0, dark);
+  setBoxVertex(&verts[7], x1, y0, z0, dark);
 }
 
 /*
  * What a box needs that the rig does not carry: the three colours its tone
- * selects, and the size the rig is drawn at.  A species fills this in from
- * the roster and a trainer from a look, which is what lets one draw path
- * serve both without the trainer needing a species to impersonate.
+ * selects, and the size the rig is drawn at.  Both come from the species; the
+ * split exists so the pose and the geometry can be read without the roster
+ * being threaded through every helper.
  */
 typedef struct {
   const u8 *primary;
   const u8 *secondary;
   const u8 *accent;
-  /* Only a trainer has one; a species points this at a colour it already
-     uses, because no box in the roster ever asks for it. */
-  const u8 *hair;
   u8 scale;
   u8 bulk;
   u8 maturity;
-  /* See buildBox: a rig that wears the face sheet is lit like Steve. */
-  u8 front_lit;
 } CreatureSkin;
 
 static const u8 *toneColor(const CreatureSkin *skin, u8 tone) {
-  if (tone == MON_TONE_HAIR) {
-    return skin->hair;
-  }
   if (tone == MON_TONE_SECONDARY) {
     return skin->secondary;
   }
@@ -157,7 +148,7 @@ static const u8 *toneColor(const CreatureSkin *skin, u8 tone) {
  */
 static void poseOffset(const MonPart *part, const CreaturePose *pose,
     u8 scale, float *out_x, float *out_y, float *out_z) {
-  float step = sinf(pose->walk_time) * 3.f;
+  float step = sinf(pose->walk_time) * 3.f * pose->gait;
   float breathe = sinf(pose->walk_time * .3f) * 1.2f;
   float shake = pose->hurt > 0 ?
     sinf(pose->hurt * 90.f * M_DTOR) * 4.f : 0;
@@ -210,49 +201,56 @@ static void poseOffset(const MonPart *part, const CreaturePose *pose,
 }
 
 /*
- * One rig into the display list.
+ * One creature into the display list.
  *
  * `slot` selects a render slot's matrices and vertex scratch, and both are
  * double-buffered by dl_no like every other RSP-referenced structure in the
  * game: the RSP may still be walking last frame's copy while this one is
  * written.
- *
- * `face_part` is the box that wears the player's face sheet, or MON_NONE.
- * No creature has one; a trainer does.
  */
-static void drawRig(u8 slot, const MonRig *rig, const CreatureSkin *skin,
-    u8 face_part, Vector3 position, float yaw, const CreaturePose *pose) {
+static void drawCreature(u8 slot, u8 species_id, Vector3 position, float yaw,
+    const CreaturePose *pose) {
+  const MonSpecies *species;
+  const MonRig *rig;
+  CreatureSkin skin;
   u8 part_index;
 
-  if (slot >= MON_RENDER_SLOTS) {
+  if (species_id >= MON_SPECIES_COUNT || slot >= MON_RENDER_SLOTS) {
     return;
   }
+  species = &mon_species[species_id];
+  rig = &mon_rigs[species->rig];
+  skin.primary = species->primary;
+  skin.secondary = species->secondary;
+  skin.accent = species->accent;
+  skin.scale = species->scale;
+  skin.bulk = species->bulk;
+  skin.maturity = species->maturity;
 
   for (part_index = 0; part_index < rig->part_count; part_index++) {
     const MonPart *part = &rig->parts[part_index];
     Vtx *verts = creature_verts[dl_no][slot][part_index];
-    const u8 *color = toneColor(skin, part->tone);
+    const u8 *color = toneColor(&skin, part->tone);
     float ox;
     float oy;
     float oz;
     Vector3 offset;
     /* Bulk widens and deepens without heightening, so an elder reads as a
        heavier animal rather than a taller one. */
-    s16 sx = (s16) ((part->sx * skin->scale * skin->bulk) / 10000);
-    s16 sy = (s16) ((part->sy * skin->scale) / 100);
-    s16 sz = (s16) ((part->sz * skin->scale * skin->bulk) / 10000);
+    s16 sx = (s16) ((part->sx * skin.scale * skin.bulk) / 10000);
+    s16 sy = (s16) ((part->sy * skin.scale) / 100);
+    s16 sz = (s16) ((part->sz * skin.scale * skin.bulk) / 10000);
 
     /* Boxes the creature has not grown into yet. */
-    if (part->stage > skin->maturity) {
+    if (part->stage > skin.maturity) {
       continue;
     }
     if (sx < 1) sx = 1;
     if (sy < 1) sy = 1;
     if (sz < 1) sz = 1;
-    buildBox(verts, (s16) -sx, (s16) -sy, (s16) -sz, sx, sy, sz, color,
-      skin->front_lit);
+    buildBox(verts, (s16) -sx, (s16) -sy, (s16) -sz, sx, sy, sz, color);
 
-    poseOffset(part, pose, skin->scale, &ox, &oy, &oz);
+    poseOffset(part, pose, skin.scale, &ox, &oy, &oz);
     offset.x = ox;
     offset.y = oy;
     offset.z = oz;
@@ -270,65 +268,30 @@ static void drawRig(u8 slot, const MonRig *rig, const CreatureSkin *skin,
       OS_K0_TO_PHYSICAL(&creature_rotate[dl_no][slot][part_index]),
       G_MTX_MODELVIEW | G_MTX_MUL | G_MTX_NOPUSH);
     gSPVertex(dlp++, verts, 8, 0);
-    gSPDisplayList(dlp++, creature_box_display_list);
-    /* The face rides the head's own matrices, so it costs a vertex load and
-       a display list and no third transform.  It is authored for an unscaled
-       32-unit head, which is why the rig that wears one is drawn at 100. */
-    if (part_index == face_part) {
-      gSPVertex(dlp++, steve_face_verts, 24, 0);
-      gSPDisplayList(dlp++, steve_face_display_list);
-    }
+    gSPDisplayList(dlp++, box_display_list);
   }
-}
-
-static void drawCreature(u8 slot, u8 species_id, Vector3 position, float yaw,
-    const CreaturePose *pose) {
-  const MonSpecies *species;
-  CreatureSkin skin;
-
-  if (species_id >= MON_SPECIES_COUNT) {
-    return;
-  }
-  species = &mon_species[species_id];
-  skin.primary = species->primary;
-  skin.secondary = species->secondary;
-  skin.accent = species->accent;
-  skin.hair = species->accent;
-  skin.scale = species->scale;
-  skin.bulk = species->bulk;
-  skin.maturity = species->maturity;
-  skin.front_lit = FALSE;
-  drawRig(slot, &mon_rigs[species->rig], &skin, MON_NONE, position, yaw,
-    pose);
 }
 
 /*
- * A trainer, who is another player rather than another animal.
+ * A trainer, who is a person rather than an animal.
  *
- * Which of the two, and what they are wearing, comes from the seed the roamer
- * was spawned with -- the seed their team already comes from, so the trainer
- * who is the same fight twice is the same person twice.  Unscaled, always:
- * the face sheet is authored for a head of one size.
+ * Which person comes from the seed the roamer was spawned with -- the seed
+ * their team already comes from, so the trainer who is the same fight twice
+ * is the same person twice, wearing the same clothes under the same name.
+ * The body, the gait and the matrices are the player's own; 64MON supplies
+ * only where they stand and which way they are looking.
  */
-static void drawTrainer(u8 slot, u32 seed, Vector3 position, float yaw,
-    const CreaturePose *pose) {
-  const MonTrainer *who = mon64TrainerFromSeed(seed);
-  CreatureSkin skin;
+static void drawTrainer(u8 slot, const MonRoamer *roamer) {
+  const HumanoidPerson *who = humanoidPersonFromSeed(roamer->seed);
+  HumanoidPose pose;
 
-  skin.primary = who->look.primary;
-  skin.secondary = who->look.secondary;
-  skin.accent = who->look.accent;
-  skin.hair = who->look.hair;
-  skin.scale = 100;
-  skin.bulk = 100;
-  skin.maturity = 3;
-  skin.front_lit = TRUE;
-  drawRig(slot, &mon_trainer_bodies[who->body], &skin, MON_TRAINER_HEAD_PART,
-    position, yaw, pose);
+  /* The roamer's walk_time is paced for a creature's short legs; a person
+     covering the same ground takes fewer, longer strides. */
+  humanoidWalkPose(&pose, roamer->position, roamer->yaw, roamer->yaw,
+    roamer->walk_time * 6.f, roamer->gait);
+  humanoidDraw(slot, &who->look, &pose);
 }
 
-/* PRIM * SHADE, the combiner every untextured entity in the game uses.  The
-   day/night tint is already loaded as the primitive colour by the caller. */
 static void setCreatureCombine(void) {
   gDPSetCombineLERP(dlp++, PRIMITIVE, 0, SHADE, 0, 0, 0, 0, SHADE,
     PRIMITIVE, 0, SHADE, 0, 0, 0, 0, SHADE);
@@ -372,6 +335,10 @@ static void drawBattleCreatures(u8 viewer_num) {
       continue;
     }
     pose.walk_time = mon_battle.scene_time * .06f;
+    /* A battler is squaring up on the spot, and its shifting weight is most
+       of what stops the scene reading as two statues.  This is the one place
+       a full stride is right with nobody going anywhere. */
+    pose.gait = 1.f;
     pose.lunge = mon_battle.lunge[side];
     pose.hurt = mon_battle.hurt[side];
     pose.faint = mon_battle.faint[side] > 0 ?
@@ -385,19 +352,25 @@ static void drawBattleCreatures(u8 viewer_num) {
 static void drawRoamers(u8 viewer_num) {
   u8 drawn[MON_MAX_ROAMERS];
   u8 index;
-  u8 slot;
+  u8 pick;
+  u8 creature_slot = 0;
 
   for (index = 0; index < MON_MAX_ROAMERS; index++) {
     drawn[index] = FALSE;
   }
 
   /*
-   * Nearest first, capped at the render slots.  The cap is the point: a
-   * creature the player has walked past is never worth the frame time of the
-   * one they are walking toward, and the pool is small enough that picking
-   * the nearest twice is cheaper than sorting it.
+   * Nearest first, until whichever pool a roamer belongs to runs dry.  The
+   * cap is the point: a creature the player has walked past is never worth
+   * the frame time of the one they are walking toward, and the pool is small
+   * enough that picking the nearest repeatedly is cheaper than sorting it.
+   *
+   * The two kinds no longer compete.  A trainer is a person and comes out of
+   * humanoid.c's slots; a creature comes out of the vertex scratch here.  So
+   * meeting somebody on the road no longer costs you the sight of the animal
+   * standing behind them.
    */
-  for (slot = 0; slot < MON_RENDER_SLOTS; slot++) {
+  for (pick = 0; pick < MON_MAX_ROAMERS; pick++) {
     u8 best = MON_MAX_ROAMERS;
     float best_distance = 0;
     CreaturePose pose;
@@ -422,18 +395,25 @@ static void drawRoamers(u8 viewer_num) {
       break;
     }
     drawn[best] = TRUE;
+
+    if (mon_roamers[best].kind == MON_ROAMER_TRAINER) {
+      u8 slot = humanoidClaimSlot();
+      if (slot != HUMANOID_NO_SLOT) {
+        drawTrainer(slot, &mon_roamers[best]);
+      }
+      continue;
+    }
+    if (creature_slot >= MON_RENDER_SLOTS) {
+      continue;
+    }
     pose.walk_time = mon_roamers[best].walk_time;
+    pose.gait = mon_roamers[best].gait;
     pose.lunge = 0;
     pose.hurt = 0;
     pose.faint = 0;
     pose.reach = 0;
-    if (mon_roamers[best].kind == MON_ROAMER_TRAINER) {
-      drawTrainer(slot, mon_roamers[best].seed, mon_roamers[best].position,
-        mon_roamers[best].yaw, &pose);
-    } else {
-      drawCreature(slot, mon_roamers[best].species,
-        mon_roamers[best].position, mon_roamers[best].yaw, &pose);
-    }
+    drawCreature(creature_slot++, mon_roamers[best].species,
+      mon_roamers[best].position, mon_roamers[best].yaw, &pose);
   }
 }
 
@@ -929,7 +909,7 @@ void mon64DrawPrompt(u8 player_num, u32 center_x, u32 bottom_y) {
      face and their own clothes, the badge may as well say who they are.  Both
      come from the seed, so the name always belongs to the body wearing it. */
   label = roamer->kind == MON_ROAMER_TRAINER ?
-    mon64TrainerFromSeed(roamer->seed)->name :
+    humanoidPersonFromSeed(roamer->seed)->name :
     mon_species[roamer->species].name;
 
   /* Sized to its contents rather than fixed, so a four-player viewport gets

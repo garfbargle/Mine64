@@ -276,6 +276,18 @@ extern u32 window_key_fault_slot;
 void worldGenerateColumnTerrain(int cx, int cz);
 /* FALSE while the column still needs a neighbour to catch up. */
 u8 worldAdvanceColumnDecoration(int cx, int cz);
+/*
+ * A cottage in the hamlet whose plan covers this block, or FALSE.
+ *
+ * The plan is coordinate-pure and cached, so asking is arithmetic rather than
+ * a search, and the answer is the same in every session of the same world.
+ * Villagers use it for both halves of who they are: where home is, and -- via
+ * the coordinate itself -- which person lives there.
+ */
+#define WORLD_HAMLET_HOUSES 4
+u8 worldHamletHouse(int block_x, int block_z, u8 house, int *house_x,
+  int *house_z);
+
 u8 worldGenerationActive();
 u8 worldGenerationProgress();
 u8 tryPlantTree(int x, int y, int z);

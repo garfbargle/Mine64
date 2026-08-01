@@ -25,6 +25,12 @@
 #define ROAM_WALK_SPEED 0.62f
 #define ROAM_FLEE_SPEED 1.34f
 #define ROAM_APPROACH_SPEED 0.95f
+/* Limb cycle while walking, and the slower drift that keeps breathing and
+   tails alive at a standstill.  See MonRoamer::gait for why the second of
+   these is not what stops the feet. */
+#define ROAM_STRIDE_RATE .22f
+#define ROAM_IDLE_RATE .05f
+#define ROAM_GAIT_EASE .3f
 #define ROAM_DECISION_MIN 60.f
 #define ROAM_DECISION_VARIATION 120.f
 #define ROAM_DESPAWN_DISTANCE (BLOCK_SIZE * 34.f)
@@ -694,6 +700,7 @@ static u8 trySpawnRoamer(void) {
     roamer->position.z = z;
     roamer->yaw = (float) random(360);
     roamer->walk_time = 0;
+    roamer->gait = 0;
     roamer->decision_time = ROAM_DECISION_MIN;
     roamer->notice_time = 0;
     roamer->ground_y = (s8) ground_y;
@@ -723,6 +730,7 @@ static void updateRoamer(MonRoamer *roamer, float delta) {
   u8 player_num;
   float speed = 0;
   u8 night = dayCycleSunAltitude() < 0;
+  u8 moved;
 
   for (player_num = 0; player_num < active_player_count; player_num++) {
     float dx;
@@ -799,6 +807,7 @@ static void updateRoamer(MonRoamer *roamer, float delta) {
       break;
   }
 
+  moved = FALSE;
   if (speed > 0) {
     float radians = roamer->yaw * M_DTOR;
     float step_x = -sinf(radians) * speed * delta;
@@ -814,14 +823,21 @@ static void updateRoamer(MonRoamer *roamer, float delta) {
       roamer->position.z = next_z;
       roamer->ground_y = (s8) ground_y;
       roamer->position.y = (float) (ground_y + 1) * BLOCK_SIZE;
-      roamer->walk_time += delta * .22f;
+      roamer->walk_time += delta * ROAM_STRIDE_RATE;
+      moved = TRUE;
     } else {
       /* Blocked.  Turn rather than stall against the wall. */
       roamer->yaw = (float) random(360);
     }
-  } else {
-    roamer->walk_time += delta * .05f;
   }
+  if (!moved) {
+    /* Standing still is not being switched off -- the breathe and tail cycles
+       read from walk_time too.  It is gait, not this clock, that keeps the
+       legs from walking on the spot. */
+    roamer->walk_time += delta * ROAM_IDLE_RATE;
+  }
+  roamer->gait += ((moved ? 1.f : 0.f) - roamer->gait) *
+    min(1.f, delta * ROAM_GAIT_EASE);
 }
 
 /* ------------------------------------------------------------------ */
@@ -1060,7 +1076,7 @@ static void beginTrainerBattle(u8 player_num, MonRoamer *roamer) {
      the person who was standing there. */
   {
     char *out = message_scratch;
-    out = appendText(out, mon64TrainerFromSeed(roamer->seed)->name);
+    out = appendText(out, humanoidPersonFromSeed(roamer->seed)->name);
     out = appendText(out, " WANTS TO BATTLE!");
     *out = 0;
     pushMessage(message_scratch);

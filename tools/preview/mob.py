@@ -37,10 +37,12 @@ class Quadruped(object):
         self.joint = dict(zip(JOINTS, [int(v) for v in fields[7:15]]))
 
     def pose(self, scene, yaw=0.0, head_yaw=0.0, graze=0.0, walk=0.0,
-             scale=1.0, detailed=True):
+             scale=1.0, detailed=True, gait=1.0):
         """drawQuadrupedMob: four rotations, seven anchors, one body."""
         g, j = self.geom, self.joint
-        swing = math.sin(walk * 2 * math.pi) * j["stride"]
+        # gait is Mob::gait: 1 walking, 0 standing.  The legs are square to the
+        # body at 0 whatever the phase, which is what a stopped animal is.
+        swing = math.sin(walk * 2 * math.pi) * j["stride"] * gait
         graze_pitch = j["graze_pitch"] * graze
 
         body = rpy(0, yaw, 0, scale)
@@ -55,7 +57,7 @@ class Quadruped(object):
             return (x * math.cos(a) + z * math.sin(a), y,
                     -x * math.sin(a) + z * math.cos(a))
 
-        box = "steve_box_display_list"
+        box = "box_display_list"
         scene.add(g.mesh(self.name + "_body_verts", box), body, anchor((0, 0, 0)))
         neck = anchor((0, j["neck_y"], j["neck_z"]))
         scene.add(g.mesh(self.name + "_head_verts", box), head, neck)
@@ -102,6 +104,11 @@ STRIPS = {
     "walk": lambda m: (
         [frame(m, walk=p / 5.0, yaw=20) for p in range(5)],
         ["phase %d/5" % p for p in range(5)]),
+    # An animal that has walked up to the player and stopped: the phase keeps
+    # running, the legs do not.  Every frame of this strip must be identical.
+    "halt": lambda m: (
+        [frame(m, walk=p / 5.0, yaw=20, gait=0.0) for p in range(5)],
+        ["stopped %d/5" % p for p in range(5)]),
     "graze": lambda m: (
         [frame(m, graze=g / 4.0) for g in range(5)],
         ["graze %d%%" % (g * 25) for g in range(5)]),
@@ -120,6 +127,8 @@ def main():
     p.add_argument("--graze", nargs="?", type=float, const=1.0, default=0.0,
                    help="0..1 of the model's graze_pitch")
     p.add_argument("--walk", type=float, default=0.0, help="stride phase, 0..1")
+    p.add_argument("--gait", type=float, default=1.0,
+                   help="Mob::gait -- 1 walking, 0 stopped and legs square")
     p.add_argument("--yaw", type=float, default=0.0, help="which way it faces")
     p.add_argument("--scale", type=float, default=1.0, help="1.0 adult, ~0.6 calf")
     p.add_argument("--camera-yaw", type=float, default=25.0,
@@ -145,7 +154,7 @@ def main():
         image = frame(model, camera_yaw=args.camera_yaw,
                       distance=args.distance, yaw=args.yaw,
                       head_yaw=args.head_yaw, graze=args.graze,
-                      walk=args.walk, scale=args.scale,
+                      walk=args.walk, scale=args.scale, gait=args.gait,
                       detailed=not args.plain)
         if args.scale_up > 1:
             image = image.resize((image.width * args.scale_up,

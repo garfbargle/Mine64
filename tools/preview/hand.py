@@ -30,13 +30,13 @@ for _tier in ("wood", "stone", "iron"):
     TOOLS[_tier + "_sword"] = [(_tier + "_sword_blade_verts",
                                 "sword_blade_display_list"),
                                (_tier + "_sword_guard_verts",
-                                "steve_box_display_list")]
-    TOOLS[_tier + "_pickaxe"] = [("tool_handle_verts", "steve_box_display_list"),
+                                "box_display_list")]
+    TOOLS[_tier + "_pickaxe"] = [("tool_handle_verts", "box_display_list"),
                                  (_tier + "_pick_head_verts",
-                                  "steve_box_display_list")]
-    TOOLS[_tier + "_axe"] = [("tool_handle_verts", "steve_box_display_list"),
+                                  "box_display_list")]
+    TOOLS[_tier + "_axe"] = [("tool_handle_verts", "box_display_list"),
                              (_tier + "_axe_head_verts",
-                              "steve_box_display_list")]
+                              "box_display_list")]
 
 
 class Hand(object):

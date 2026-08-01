@@ -3,8 +3,8 @@
 Most questions about how something looks are questions about arithmetic, and
 none of that arithmetic needs an N64. Every model in Mine64 is a handful of
 untextured boxes and quads run through `guRotateRPY` and `guPerspective`, so
-`tools/preview` reads the real vertex data out of `src/graphics.c`, does the
-same maths the RSP would, and writes a PNG:
+`tools/preview` reads the real vertex data out of `src/graphics.c` and
+`src/humanoid.c`, does the same maths the RSP would, and writes a PNG:
 
 ```sh
 tools/preview/mob.py pig --head-yaw 40
@@ -41,6 +41,19 @@ the `FP_*` defines:
 ```sh
 tools/preview/hand.py iron_sword --reach 0.5
 tools/preview/hand.py wood_axe --strip
+```
+
+`person.py` poses a person -- a player, a 64MON trainer or a villager, which
+are all one body now. The boxes, the eight anchor offsets and the look table
+come out of `src/humanoid.c`, and the garment colours are applied the way the
+RDP applies them, primitive colour times vertex shade, which is why the boxes
+in the source are white:
+
+```sh
+tools/preview/person.py                    # the player
+tools/preview/person.py kalia --walk 0.25  # mid-stride
+tools/preview/person.py --everyone         # the whole cast
+tools/preview/person.py sam --turn         # a filmstrip of a head turning
 ```
 
 `hud.py` is the exception to "the emulator owns the interface". The health and

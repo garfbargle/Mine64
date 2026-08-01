@@ -3,6 +3,7 @@
 
 #include <nusys.h>
 #include "math.h"
+#include "humanoid.h"
 #include "player.h"
 
 /*
@@ -116,10 +117,6 @@ enum MonMoveEffect {
 #define MON_TONE_PRIMARY 0
 #define MON_TONE_SECONDARY 1
 #define MON_TONE_ACCENT 2
-/* A fourth, which no species has: hair is the one thing a person needs that
-   an animal in this roster never does, and giving the trainers a tone of
-   their own is cheaper than spending a species colour on it. */
-#define MON_TONE_HAIR 3
 
 /*
  * Animation roles.  Parts animate by moving, never by rotating: the rig has
@@ -164,18 +161,6 @@ typedef struct {
   u8 height;
   MonPart parts[MON_MAX_PARTS];
 } MonRig;
-
-/*
- * The colours in the slots a rig's tones select.  A species carries its own
- * three (see below); anything drawn from a rig without being a species -- so
- * far, the trainers -- carries one of these instead, and has hair.
- */
-typedef struct {
-  u8 primary[3];    /* shirt */
-  u8 secondary[3];  /* trousers */
-  u8 accent[3];     /* skin */
-  u8 hair[3];
-} MonLook;
 
 typedef struct {
   /* Nine characters is what the battle panel can show beside a level. */
@@ -250,6 +235,12 @@ typedef struct {
   Vector3 position;
   float yaw;
   float walk_time;
+  /* Eased 0 at a standstill, 1 on the move.  The pose scales limb travel by
+     it, which is what stops a creature that has noticed the player and halted
+     from carrying on stepping where it stands -- state cannot answer this,
+     because a roamer holding still is the same ROAM_NOTICE that it was while
+     it was still turning to look. */
+  float gait;
   float decision_time;
   float notice_time;
   u8 active;
@@ -388,45 +379,10 @@ extern const MonSpecies mon_species[MON_SPECIES_COUNT];
 extern const MonMove mon_moves[MON_MOVE_COUNT];
 extern const MonRig mon_rigs[MON_RIG_COUNT];
 /*
- * The people who wander the world.
- *
- * Two bodies, which belong to no species and so are not in the rig table --
- * nothing that spawns wild may ever pick one.  Both are authored at
- * drawSteve's measurements and drawn unscaled, because the face sheet their
- * heads wear is authored for a head of exactly that size, and both keep the
- * head at part 1 so the face always knows which matrices to ride.  They
- * differ only in hair, which is the one thing at this resolution that has
- * ever told two blocky people apart.
+ * A trainer is a person, and people are humanoid.h's business: the body, the
+ * wardrobe and the name all come from there, and 64MON keeps nothing about
+ * them but the seed their roamer was spawned with.
  */
-#define MON_TRAINER_BODY_SHORT 0
-#define MON_TRAINER_BODY_LONG 1
-#define MON_TRAINER_BODIES 2
-#define MON_TRAINER_HEAD_PART 1
-extern const MonRig mon_trainer_bodies[MON_TRAINER_BODIES];
-
-/*
- * And the people themselves: a name for the badge, a body, and what they are
- * wearing.  Both the model and the badge pick their entry with the roamer's
- * seed, so the trainer you meet twice is the same person twice -- same face,
- * same clothes, same name over their head, same team -- out of a seed that
- * was already being kept for the team alone.
- */
-#define MON_TRAINER_COUNT 8
-
-typedef struct {
-  /* Five characters.  The badge sizes itself to its contents and still has to
-     fit inside a quarter-screen viewport in four-player. */
-  const char *name;
-  u8 body;
-  MonLook look;
-} MonTrainer;
-
-extern const MonTrainer mon_trainers[MON_TRAINER_COUNT];
-
-/* Which of them a roamer's seed makes.  The model, the badge and the
-   challenge line all ask this, so none of them can disagree about who is
-   standing there. */
-const MonTrainer *mon64TrainerFromSeed(u32 seed);
 /* Effectiveness as quarters: 8 is double, 4 is neutral, 2 is halved. */
 extern const u8 mon_type_chart[MON_TYPE_COUNT][MON_TYPE_COUNT];
 /* Panel and swatch colour for each type, plus the plain column. */

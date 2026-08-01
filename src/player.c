@@ -6,6 +6,7 @@
 #include "graphics.h"
 #include "camera.h"
 #include "mon64.h"
+#include "villagers.h"
 #include "geometry.h"
 #include "items.h"
 #include "mobs.h"
@@ -2249,9 +2250,10 @@ void updatePlayers() {
   updateDroppedItems(delta);
   diagPaintPhase(DIAG_PHASE_MOBS);
   updateMobs(delta);
-  /* Shares the mob phase colour: the freeze square only has to say which
-     subsystem died, and these two are one ecology on one budget. */
+  /* Share the mob phase colour: the freeze square only has to say which
+     subsystem died, and these three are one ecology on one budget. */
   mon64Update(delta);
+  updateVillagers(delta);
 
   /* Z + D-pad is the developer chord; the plain D-pad save below ignores the
      D-pad while Z is held, so these cannot collide with it.  Up toggles the

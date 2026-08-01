@@ -7,6 +7,7 @@
 #include "geometry.h"
 #include "graphics.h"
 #include "mon64.h"
+#include "villagers.h"
 #include "items.h"
 #include "mobs.h"
 #include "storage.h"
@@ -222,6 +223,7 @@ static void beginWorldMeshStage(u8 place_players) {
   initDroppedItems();
   initMobs();
   initMon64();
+  initVillagers();
   initGeometry();
   world_job_stage = WORLD_JOB_MESH;
   beginWorldMeshBuild();

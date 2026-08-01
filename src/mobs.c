@@ -5,6 +5,7 @@
 #include "audio.h"
 #include "blocks.h"
 #include "mon64.h"
+#include "villagers.h"
 #include "day_cycle.h"
 #include "graphics.h"
 #include "items.h"
@@ -43,6 +44,23 @@
 #define MOB_TEMPT_DISTANCE (BLOCK_SIZE * 9.f)
 #define MOB_TEMPT_SPACING (BLOCK_SIZE * 1.7f)
 #define MOB_TEMPT_SPEED 1.12f
+/*
+ * Nobody stands inside anybody.  Roughly the radius of the creature's own
+ * body: how close its feet may get to a player, whatever its behaviour would
+ * rather do.  A hostile that had walked to zero distance was not only wrong
+ * to look at -- it also put itself inside punchMob's `distance_squared < 1`
+ * rejection, so the player could not hit back at the one moment they most
+ * wanted to.
+ */
+#define MOB_SPACE_CHICKEN 34.f
+#define MOB_SPACE_SLIME 50.f
+#define MOB_SPACE_ZOMBIE 54.f
+#define MOB_SPACE_SPIDER 58.f
+#define MOB_SPACE_DEFAULT 48.f
+/* How fast an overlap is undone, in world units per frame.  Bounded so a
+   player who walks into an animal shoulders it aside over several frames
+   instead of flicking it away. */
+#define MOB_SPACING_RECOVERY 2.4f
 /* Turn rates, in degrees per frame.  A walking animal swings its whole body
    around slowly; the neck is quick, which is what makes a head that follows
    the player read as attention rather than as drift. */
@@ -64,6 +82,30 @@
  * of them -- keep it that way when adding an animation.
  */
 #define MOB_WALK_TIME_WRAP 1005.30965f
+/* One full swing of the limbs, in radians of walk_time. */
+#define MOB_STRIDE_CYCLE 6.28318531f
+/*
+ * How much ground a species covers in one of those swings: about a leg's
+ * worth of reach, so a chicken takes several steps across a block a zombie
+ * shambles over in one.  Cadence is distance divided by this rather than a
+ * rate per frame, which is what makes the legs agree with the feet.  The old
+ * fixed rate advanced the cycle more than a full turn between two drawn
+ * frames -- at 8 radians a frame the screen only ever showed the remainder,
+ * so the apparent speed was set by the frame time and differed per species
+ * for no reason anyone could see.
+ */
+#define MOB_STRIDE_CHICKEN (BLOCK_SIZE * .62f)
+#define MOB_STRIDE_ZOMBIE (BLOCK_SIZE * 1.3f)
+#define MOB_STRIDE_SPIDER (BLOCK_SIZE * .78f)
+#define MOB_STRIDE_SLIME (BLOCK_SIZE * 1.f)
+#define MOB_STRIDE_DEFAULT (BLOCK_SIZE * 1.1f)
+/* Standing still is not being switched off: grazing, pecking and a resting
+   slime's bob all read from walk_time.  It has to keep drifting when the feet
+   stop, slowly enough that it is a breath rather than a step. */
+#define MOB_IDLE_RATE .11f
+/* How quickly gait follows the body, per frame.  Fast enough that stopping
+   looks deliberate, slow enough that one blocked frame is not a stumble. */
+#define MOB_GAIT_EASE .3f
 #define MOB_DECISION_MIN 45.f
 #define MOB_DECISION_VARIATION 105.f
 #define MOB_HIT_RANGE 120.f
@@ -294,7 +336,9 @@ static u8 spawnMob(Mob *mob, u8 type) {
       world_z};
     mob->knockback_velocity = (Vector3) {0, 0, 0};
     mob->yaw = random(360);
+    mob->goal_yaw = mob->yaw;
     mob->walk_time = random(360) * M_DTOR;
+    mob->gait = 0;
     mob->decision_time = MOB_DECISION_MIN +
       random((u32) MOB_DECISION_VARIATION);
     mob->state_time = 0;
@@ -420,10 +464,13 @@ static void chaseDirection(Mob *mob, Player *target, float distance) {
 static void spiderChaseDirection(Mob *mob, Player *target,
     float distance_squared) {
   /* Close spiders orbit before committing.  A slow bit of walk_time supplies
-     handedness without another state byte, pathfinder, or per-frame trig. */
+     handedness without another state byte, pathfinder, or per-frame trig.
+     Bit 6 is about ten strides of walk_time now that the cycle is driven by
+     distance, so the spider commits to a direction long enough to circle in
+     it rather than jittering between the two. */
   if (target != NULL && distance_squared <
       (BLOCK_SIZE * 5.f) * (BLOCK_SIZE * 5.f)) {
-    float side = ((int) mob->walk_time & 256) ? -.52f : .52f;
+    float side = ((int) mob->walk_time & 64) ? -.52f : .52f;
     float dx = target->position.x - mob->position.x;
     float dz = target->position.z - mob->position.z;
 
@@ -444,10 +491,14 @@ static float mobChaseDistance(u8 type) {
   return BLOCK_SIZE * 10.f;
 }
 
+/* Where a hostile starts its wind-up.  Kept clear of the personal space above
+   so a monster that has closed as far as it is allowed to is inside its own
+   attack range: the two numbers moving together is what lets a zombie stop at
+   arm's length and still be a threat there. */
 static float mobContactDistance(u8 type) {
-  if (type == MOB_SPIDER) return 62.f;
-  if (type == MOB_ZOMBIE) return 58.f;
-  return 56.f;
+  if (type == MOB_SPIDER) return MOB_SPACE_SPIDER + 10.f;
+  if (type == MOB_ZOMBIE) return MOB_SPACE_ZOMBIE + 10.f;
+  return MOB_SPACE_SLIME + 10.f;
 }
 
 static float mobWindupTime(u8 type) {
@@ -597,6 +648,7 @@ static u8 breedMobs(Mob *first, Mob *second) {
   calf->yaw = first->yaw;
   calf->goal_yaw = first->yaw;
   calf->walk_time = 0;
+  calf->gait = 0;
   calf->decision_time = MOB_DECISION_MIN;
   calf->state_time = 0;
   calf->hurt_time = 0;
@@ -752,20 +804,129 @@ static float mobWalkSpeed(Mob *mob) {
   return mob->type == MOB_CHICKEN ? MOB_CHICKEN_SPEED : MOB_WALK_SPEED;
 }
 
-/* How fast the limb cycle advances.  Short legs have to cycle faster to cover
-   the same ground, which is what stops a chicken from looking like a sheep
-   that has been scaled down. */
-static float mobStrideRate(Mob *mob) {
-  float rate = mob->state == MOB_FLEE || mob->state == MOB_RETREAT ?
-    13.f : 8.f;
+/* Ground covered per swing of the limbs.  Short legs have to cycle faster to
+   cover the same distance, which is what stops a chicken from looking like a
+   sheep that has been scaled down -- and a fleeing animal's legs speed up on
+   their own, because it is covering more ground, not because a state says so.
+   A calf's legs are shorter by exactly the amount its whole body is. */
+static float mobStrideLength(Mob *mob) {
+  float length;
 
-  if (mob->type == MOB_CHICKEN) {
-    rate *= 1.45f;
+  switch (mob->type) {
+    case MOB_CHICKEN:
+      length = MOB_STRIDE_CHICKEN;
+      break;
+    case MOB_ZOMBIE:
+      length = MOB_STRIDE_ZOMBIE;
+      break;
+    case MOB_SPIDER:
+      length = MOB_STRIDE_SPIDER;
+      break;
+    case MOB_SLIME:
+      length = MOB_STRIDE_SLIME;
+      break;
+    default:
+      length = MOB_STRIDE_DEFAULT;
+      break;
   }
-  if (MOB_IS_BABY(mob)) {
-    rate *= 1.5f;
+  return MOB_IS_BABY(mob) ? length * MOB_BABY_SCALE : length;
+}
+
+static float mobPersonalSpace(Mob *mob) {
+  float space;
+
+  switch (mob->type) {
+    case MOB_CHICKEN:
+      space = MOB_SPACE_CHICKEN;
+      break;
+    case MOB_SLIME:
+      space = MOB_SPACE_SLIME;
+      break;
+    case MOB_ZOMBIE:
+      space = MOB_SPACE_ZOMBIE;
+      break;
+    case MOB_SPIDER:
+      space = MOB_SPACE_SPIDER;
+      break;
+    default:
+      space = MOB_SPACE_DEFAULT;
+      break;
   }
-  return rate;
+  return MOB_IS_BABY(mob) ? space * MOB_BABY_SCALE : space;
+}
+
+/*
+ * Bodies are not places.  Every behaviour above is free to aim straight at a
+ * player; this is the single point that decides how close the feet may
+ * actually get, so a zombie waiting out its attack cooldown, a spider
+ * mid-orbit and a wandering sheep all stop at the same skin instead of each
+ * needing its own spacing rule.
+ *
+ * Only the part of a step that closes the gap is refused.  What is left is
+ * tangential, so a monster held at the ring circles the player rather than
+ * grinding into them, and knockback outward is untouched.
+ */
+static Vector3 keepPlayerSpacing(Mob *mob, Vector3 motion, float delta) {
+  float space = mobPersonalSpace(mob);
+  u8 player_num;
+
+  for (player_num = 0; player_num < active_player_count; player_num++) {
+    Player *player = &players[player_num];
+    float dx;
+    float dz;
+    float distance_squared;
+    float distance;
+
+    /* A player on a roof is not someone to stand clear of. */
+    if (!player->active ||
+        mobVerticalDistance(mob, player) >= BLOCK_SIZE * 1.5f) {
+      continue;
+    }
+
+    /* Refuse the step, measured against where it would land, so the ring is
+       held on the frame that would cross it rather than the frame after. */
+    dx = player->position.x - (mob->position.x + motion.x);
+    dz = player->position.z - (mob->position.z + motion.z);
+    distance_squared = dx * dx + dz * dz;
+    if (distance_squared > 1.f && distance_squared < space * space) {
+      float inward;
+
+      distance = sqrtf(distance_squared);
+      inward = (motion.x * dx + motion.z * dz) / distance;
+      if (inward > 0) {
+        motion.x -= dx / distance * inward;
+        motion.z -= dz / distance * inward;
+      }
+    }
+
+    /* Undo an overlap that already exists, which is the player having walked
+       into the animal rather than the reverse.  Deliberately measured from
+       where the body is standing and not from the step above: sharing one
+       measurement would let a refused step read as an overlap, and the two
+       rules would trade the body back and forth every frame. */
+    dx = player->position.x - mob->position.x;
+    dz = player->position.z - mob->position.z;
+    distance_squared = dx * dx + dz * dz;
+    if (distance_squared >= space * space) {
+      continue;
+    }
+    if (distance_squared < 1.f) {
+      /* Dead centre carries no direction to separate along, so the body's own
+         facing is the only heading available to back out on. */
+      motion = add(motion, mul(mobFacing(mob), -MOB_SPACING_RECOVERY * delta));
+      continue;
+    }
+    distance = sqrtf(distance_squared);
+    /* Never more than the gap itself: a recovery that overshoots the ring is
+       a shove, and the body would spend every frame bouncing back through it. */
+    {
+      float push = min(space - distance, MOB_SPACING_RECOVERY * delta);
+
+      motion.x -= dx / distance * push;
+      motion.z -= dz / distance * push;
+    }
+  }
+  return motion;
 }
 
 static void updateHeadYaw(Mob *mob, Player *attention, float delta) {
@@ -875,9 +1036,12 @@ static u8 spawnForBudget(u8 night) {
      exactly as many entities as one without -- it simply has fewer sheep.
      The reserve is zero when the mod is off. */
   u8 roamer_reserve = mon64RoamerReserve();
+  /* And a village borrows the same way, for as long as the player is near
+     one: a hamlet trades its sheep for the people who live there. */
+  u8 people_reserve = (u8) (roamer_reserve + villagerReserve());
 
-  passive_budget = passive_budget > roamer_reserve ?
-    (u8) (passive_budget - roamer_reserve) : 0;
+  passive_budget = passive_budget > people_reserve ?
+    (u8) (passive_budget - people_reserve) : 0;
 
   countMobs(&passives, &hostiles);
   if (night && !worldModOn(MOD_PEACEFUL) &&
@@ -1060,28 +1224,43 @@ void updateMobs(float delta) {
     motion = add(motion, mul(mob->knockback_velocity, delta));
     mob->knockback_velocity = mul(mob->knockback_velocity,
       max(0, 1.f - delta * .18f));
+    motion = keepPlayerSpacing(mob, motion, delta);
 
-    if (moveMob(mob, motion)) {
-      if (mob->state != MOB_IDLE && mob->state != MOB_WINDUP) {
-        mob->walk_time += delta * mobStrideRate(mob);
-      } else {
-        /* Idle animals still breathe: the graze and peck cycles read from
-           walk_time, so it has to keep advancing when the feet stop. */
-        mob->walk_time += delta * .9f;
-      }
+    {
+      float start_x = mob->position.x;
+      float start_z = mob->position.z;
+      u8 stepped = moveMob(mob, motion);
+      float dx = mob->position.x - start_x;
+      float dz = mob->position.z - start_z;
+      /* Distance the body really went, which is not the distance it meant to
+         go: spacing, a wall and a rejected step all show up here.  Driving
+         the animation off it is what keeps the feet honest -- there is no
+         combination of state and speed that walks on the spot, because the
+         legs are reading the ground. */
+      float travelled = sqrtf(dx * dx + dz * dz);
+      float pace = mobWalkSpeed(mob) * delta;
+
+      mob->gait += ((pace > 0 ? min(1.f, travelled / pace) : 0) - mob->gait) *
+        min(1.f, delta * MOB_GAIT_EASE);
+      /* The idle drift fades out as the walk takes over, so the two never sum
+         into a cadence neither of them asked for. */
+      mob->walk_time += travelled * MOB_STRIDE_CYCLE / mobStrideLength(mob) +
+        delta * MOB_IDLE_RATE * (1.f - mob->gait);
       if (mob->walk_time >= MOB_WALK_TIME_WRAP) {
         mob->walk_time -= MOB_WALK_TIME_WRAP;
       }
-    } else {
-      mob->knockback_velocity.x = 0;
-      mob->knockback_velocity.z = 0;
-      /* Chasers recompute their heading next frame.  Wanderers use this turn
-         to escape local corners without a pathfinding allocation. */
-      if (mob->state != MOB_CHASE && mob->state != MOB_WINDUP) {
-        mob->goal_yaw = mob->yaw + 120.f + random(121);
-        if (mob->goal_yaw >= 360) mob->goal_yaw -= 360;
+
+      if (!stepped) {
+        mob->knockback_velocity.x = 0;
+        mob->knockback_velocity.z = 0;
+        /* Chasers recompute their heading next frame.  Wanderers use this
+           turn to escape local corners without a pathfinding allocation. */
+        if (mob->state != MOB_CHASE && mob->state != MOB_WINDUP) {
+          mob->goal_yaw = mob->yaw + 120.f + random(121);
+          if (mob->goal_yaw >= 360) mob->goal_yaw -= 360;
+        }
+        mob->decision_time = 20.f;
       }
-      mob->decision_time = 20.f;
     }
   }
 

@@ -1190,6 +1190,24 @@ static void stampRuinColumn(const StructurePlan *plan, int cx, int cz) {
   }
 }
 
+u8 worldHamletHouse(int block_x, int block_z, u8 house, int *house_x,
+    int *house_z) {
+  int cell_x = floorDiv(block_x, STRUCTURE_CELL_SIZE);
+  int cell_z = floorDiv(block_z, STRUCTURE_CELL_SIZE);
+  const StructurePlan *plan = structurePlanForCell(cell_x, cell_z);
+  int local_x;
+  int local_z;
+
+  if (plan->kind != STRUCTURE_HAMLET || house >= WORLD_HAMLET_HOUSES ||
+      !hamletHousePresent(plan, house)) {
+    return FALSE;
+  }
+  hamletHouseCenter(plan, house, &local_x, &local_z);
+  *house_x = plan->anchor_x + local_x;
+  *house_z = plan->anchor_z + local_z;
+  return TRUE;
+}
+
 static void stampStructureColumn(int cx, int cz) {
   int cell_x = floorDiv(cx * CHUNK_SIZE, STRUCTURE_CELL_SIZE);
   int cell_z = floorDiv(cz * CHUNK_SIZE, STRUCTURE_CELL_SIZE);

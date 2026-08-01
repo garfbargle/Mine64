@@ -108,6 +108,7 @@ those belong on hardware.
 | [RAM budget](docs/ram-budget.md) | Where the console's memory goes |
 | [Building](docs/building.md) | SDK, ROM builds, flashcart deployment, asset pipelines |
 | [64MON](docs/64mon.md) | Type chart, roster, design notes |
+| [People](docs/people.md) | The shared human body, the cast, and the villagers |
 | [Offline preview](docs/offline-preview.md) | `tools/preview` reference |
 | [Emulator screenshots](docs/emulator-screenshots.md) | `tools/emu` script grammar |
 | [Custom textures](docs/custom-textures.md) | Art-to-cartridge workflow |

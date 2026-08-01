@@ -595,12 +595,91 @@ static void checkWorldMods(u8 *base, u8 *other) {
   free(classic);
 }
 
+/*
+ * Does worldHamletHouse agree with what the generator actually stamped?
+ *
+ * Villagers are placed entirely from that query -- where home is and where
+ * their doorstep is -- and it is a second derivation of the same plan rather
+ * than a reading of the blocks, so the two can drift apart silently.  Every
+ * house it names must have a plank floor under it, and the spot beside it
+ * that a villager is spawned onto must be somewhere a person can stand.
+ */
+/* The sides villagers.c tries, in its order. */
+static const int doorstep_offsets[4][2] = {
+  {5, 0}, {-5, 0}, {0, 5}, {0, -5}
+};
+
+static void countHamletHouses(int *named, int *floored, int *standable) {
+  int cell_x, cell_z, house;
+
+  for (cell_x = 0; cell_x < TEST_STRUCTURE_CELLS_X; cell_x++) {
+    for (cell_z = 0; cell_z < TEST_STRUCTURE_CELLS_Z; cell_z++) {
+      int probe_x = cell_x * TEST_STRUCTURE_CELL_SIZE +
+        TEST_STRUCTURE_CELL_SIZE / 2;
+      int probe_z = cell_z * TEST_STRUCTURE_CELL_SIZE +
+        TEST_STRUCTURE_CELL_SIZE / 2;
+
+      for (house = 0; house < WORLD_HAMLET_HOUSES; house++) {
+        int house_x;
+        int house_z;
+        int side;
+        int y;
+
+        if (!worldHamletHouse(probe_x, probe_z, house, &house_x, &house_z)) {
+          continue;
+        }
+        /* The test world is one fixed slab, so a cottage the plan places past
+           its edge simply is not there to check. */
+        if (house_x - 6 < 0 || house_z - 6 < 0 || house_x + 6 >= MAX_X ||
+            house_z + 6 >= MAX_Z) {
+          continue;
+        }
+        (*named)++;
+        for (y = 0; y < MAX_Y; y++) {
+          if (blockGet(house_x, y, house_z) == PLANKS) {
+            (*floored)++;
+            break;
+          }
+        }
+        /* villagers.c tries each side of the cottage in turn; a house with
+           no standable side anywhere would be a house nobody can live in. */
+        for (side = 0; side < 4; side++) {
+          int stand_x = house_x + doorstep_offsets[side][0];
+          int stand_z = house_z + doorstep_offsets[side][1];
+          u8 found = FALSE;
+
+          if (stand_x < 0 || stand_z < 0 || stand_x >= MAX_X ||
+              stand_z >= MAX_Z) {
+            continue;
+          }
+          for (y = MAX_Y - 3; y >= 0; y--) {
+            u8 ground = blockGet(stand_x, y, stand_z);
+            if (BLOCK_IS_SOLID(ground) &&
+                blockGet(stand_x, y + 1, stand_z) == AIR &&
+                blockGet(stand_x, y + 2, stand_z) == AIR) {
+              found = TRUE;
+              break;
+            }
+          }
+          if (found) {
+            (*standable)++;
+            break;
+          }
+        }
+      }
+    }
+  }
+}
+
 int main(void) {
   u8 *base = malloc(SNAPSHOT_BYTES);
   u8 *other = malloc(SNAPSHOT_BYTES);
   int trial;
   int total_hamlets;
   int total_ruins;
+  int named_houses = 0;
+  int floored_houses = 0;
+  int standable_doorsteps = 0;
 
   if (base == 0 || other == 0) {
     printf("out of memory\n");
@@ -671,6 +750,7 @@ int main(void) {
     generateWorld(0xC0FFEE00ULL + trial * 7919ULL, MAX_X * MAX_Z, 0);
     snapshot(other);
     countStructureCells(other, &hamlets, &ruins);
+    countHamletHouses(&named_houses, &floored_houses, &standable_doorsteps);
     total_hamlets += hamlets;
     total_ruins += ruins;
     printf("  seed %2d: %d hamlet%s, %d ruin%s\n", trial,
@@ -685,6 +765,17 @@ int main(void) {
   } else {
     printf("  FAIL  bad structure spread: %d hamlets, %d ruins\n",
       total_hamlets, total_ruins);
+    failures++;
+  }
+
+  if (named_houses > 0 && floored_houses == named_houses &&
+      standable_doorsteps == named_houses) {
+    printf("  PASS  every named cottage is built and has a doorstep "
+      "(%d houses)\n", named_houses);
+  } else {
+    printf("  FAIL  hamlet query disagrees with the stamp: %d named, "
+      "%d floored, %d standable\n", named_houses, floored_houses,
+      standable_doorsteps);
     failures++;
   }
 

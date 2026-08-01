@@ -262,6 +262,28 @@ audio output, and RDP timing generally. Items 1 and 3 are structural and the
 emulator run is good evidence. Item 2 is a performance change and only hardware
 can sign it off — check `W`/`B` before and after.
 
+## What was spent
+
+### One body for every person — ~5 KiB, both builds · `humanoid.c`
+
+Players, 64MON's trainers and the villagers used to be two model
+representations and one draw path each; they are now one body out of one
+matrix pool. The pool is `HUMANOID_SLOTS` (four players plus two NPCs) times
+eight anchors times two matrices, double-buffered: 12 KiB, against the 7 KiB
+the player-only array it replaced cost.
+
+The geometry itself became free rather than costing more. The boxes carry
+shading only and the garment colour arrives as the primitive colour, so eight
+people on screen would share one set of vertices -- where the creature path
+writes eight vertices per box per slot per frame.
+
+**`HUMANOID_NPC_SLOTS` is the dial.** Each one is 2 KiB. The obvious lever if
+more are wanted is concatenating each anchor's translation and rotation into a
+single matrix on the CPU, which would halve the pool *and* halve the matrix
+commands the RSP walks per person. It was not done here because the two-matrix
+form is what every other model in the game uses, and changing it is a frame-time
+question that belongs on hardware.
+
 ## What is still on the table
 
 Neither of these is free — both trade frame time for memory, and Mine64 has more
@@ -332,14 +354,21 @@ exactly where the Z buffer ends. Nothing is wasted between them.
 
 Measured, not projected — every column is a real build in the container.
 
-| | before | + microcodes | **today** (all three) |
-|---|---|---|---|
-| `make` | 35 KiB free ⚠ | 64 KiB free ✓ | **128 KiB free** ✓ |
-| `make audio` | 310 KiB over ✗ | 285 KiB over ✗ | **2 KiB free** ⚠ |
+| | before | + microcodes | after all three | **today** |
+|---|---|---|---|---|
+| `make` | 35 KiB free ⚠ | 64 KiB free ✓ | 128 KiB free ✓ | **114 KiB free** ✓ |
+| `make audio` | 310 KiB over ✗ | 285 KiB over ✗ | 2 KiB free ⚠ | **12 KiB over** ✗ |
 
 The default build went from tripping the headroom warning to four times the
-margin the guard asks for. The audio build stopped failing. Both still want a
-hardware pass: the FIFO for frame time, the heap for its real size.
+margin the guard asks for, and has spent about fourteen of that since on
+gameplay: the shared human body and the villagers are the largest single item.
+
+**The audio build is failing again.** It had already slipped from 2 KiB free to
+0 KiB before the people work, on ordinary feature growth; that work took it to
+12 KiB over. Nothing above is wasted, so closing it means either the matrix
+concatenation described under *What was spent* -- worth about 6 KiB and a
+frame-time question -- or one of the two entries below. The default build is
+unaffected and has room.
 
 ## How to measure it yourself
 

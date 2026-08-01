@@ -8,11 +8,12 @@ quarter of a second:
 ```sh
 tools/preview/mob.py pig --strip head-turn
 tools/preview/hand.py iron_sword --reach 0.5
+tools/preview/person.py kalia --walk 0.25
 ```
 
 It reads the vertex arrays, joint offsets and `#define`s straight out of
-`src/graphics.c` and `src/mobs.c` and runs the same `guRotateRPY` /
-`guPerspective` arithmetic the RSP would, so it is the right tool for any
+`src/graphics.c`, `src/humanoid.c` and `src/mobs.c`, and runs the same
+`guRotateRPY` / `guPerspective` arithmetic the RSP would, so it is the right tool for any
 question about pose, framing or occlusion: which way a head ends up facing,
 whether a swing crosses the crosshair, what a model looks like from behind.
 Writing a ten-line script against `tools/preview/render.py` is the normal way

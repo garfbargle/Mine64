@@ -72,41 +72,24 @@ coordinate and world seed they were spawned from, so the same trainer is the
 same fight every time without a byte being written down. They pick their moves
 by what those moves would actually do; wild creatures roll.
 
-A trainer is drawn as a person, not as a creature: `mon_trainer_bodies` holds
-Steve's own measurements written in the rig table's format, and the head wears
-the same 24-vertex face sheet the player's does. Twice the height of anything
-else roaming, a trainer is recognisable across a field — which it has to be,
-because walking up to one starts a three-creature fight rather than a catch.
-Before this the trainer was drawn from the species it happened to spawn
-beside, and the HUD badge reading TRAINER was the only thing that said
-otherwise.
+A trainer is drawn as a person, not as a creature -- and not by 64MON at all
+any more. The body, the gait, the hair and the matrices come from
+`humanoid.c`, which is the same body the player wears and the same one the
+villagers in the hamlets wear; this feature supplies where a trainer stands
+and which way they are facing, and nothing else. Twice the height of anything
+else roaming, they are recognisable across a field, which they have to be:
+walking up to one starts a three-creature fight rather than a catch.
 
-There are eight of them — SAM, TOBY, MILO, ELI, KALIA, MAYA, NORA and IVY —
-and the seed picks which one, so a trainer who is the same fight twice is the
-same person twice, down to the name the badge shows in place of TRAINER and
-the line they open the battle with. All of it comes out of the seed the team
-was already derived from; none of it is stored.
+Which person they are, and their name, comes from the seed their team already
+comes from -- so a trainer who is the same fight twice is the same person
+twice, and the badge shows that name in place of TRAINER while they open the
+battle with it. Before this a trainer was drawn as the species they happened
+to spawn beside, and the badge was the only thing that said otherwise.
 
-They share two bodies, and the bodies share their six box torso: everything
-past it is hair, which is the only thing that tells two blocky people apart at
-this resolution. The short body has a crown, a nape panel and a box at each
-temple; the long one a deeper crown that clothes the back of the skull, a
-fringe, a full strand down each temple, and a ponytail on the tail role, so it
-swings when she walks. Hair is a fourth tone (`MON_TONE_HAIR`) that no species
-uses.
-
-The short body's crown and nape are the player's own — `steve_hair_crown_verts`
-and `steve_hair_nape_verts`, ride the head transform, cost no matrix. Steve
-had nothing but the sheet's painted fringe and sideburns for a long time,
-which passes right up until something stands next to him with hair on top of
-its head.
-
-Every hair box overlaps its neighbours rather than butting against them, and
-the crowns are carried *past* the face plane rather than up to it: hair that
-stops level with the head leaves a bare line of scalp between the crown and
-the face sheet's painted fringe. The temple boxes exist for the same reason
-the fringe does — to cover the sheet's painted sideburns, which are a fixed
-brown and would otherwise pin every trainer to one hair colour.
+They no longer compete with the creatures for a slot, either. A trainer takes
+one of the shared people slots and a creature takes one of the two here, so
+meeting somebody on the road does not cost you the sight of the animal
+standing behind them.
 
 **Player versus player** is **Z + A** while facing another local player. Each
 side's commands come from that side's controller, and the battle takes the

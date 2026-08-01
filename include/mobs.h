@@ -69,7 +69,16 @@ typedef struct {
      a single bounded turn per frame moves `yaw` toward it, which is what
      keeps a change of mind visible instead of instantaneous. */
   float goal_yaw;
+  /* Phase of the limb cycle, in radians, advanced by ground actually covered
+     rather than by time.  See MOB_STRIDE_CYCLE. */
   float walk_time;
+  /* How much of a full walking pace the body is really making, eased toward
+     0 at a standstill and 1 at a walk.  The renderer scales limb swing by it,
+     which is what stops an animal that is holding its spacing -- or pressing
+     against a wall, or waiting out an attack cooldown -- from walking on the
+     spot.  State cannot answer this: a tempted animal holding position and a
+     tempted animal walking in are both MOB_CHASE. */
+  float gait;
   float decision_time;
   float state_time;
   float hurt_time;

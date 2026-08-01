@@ -41,7 +41,12 @@ from PIL import Image, ImageDraw
 
 DTOR = math.pi / 180.0
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-GRAPHICS_C = os.path.join(ROOT, "src", "graphics.c")
+# Models live in two files now: the world's own geometry in graphics.c, and
+# the shared human body in humanoid.c.  Both are parsed, so a preview never
+# has to know which file a model happens to sit in.
+MODEL_SOURCES = [os.path.join(ROOT, "src", "graphics.c"),
+                 os.path.join(ROOT, "src", "humanoid.c")]
+GRAPHICS_C = MODEL_SOURCES[0]
 
 # graphics.c: 320x240 framebuffer, FOV_Y 60, near 10, far 6400.
 WIDTH, HEIGHT = 320, 240
@@ -76,7 +81,13 @@ _VTX_ARRAY = re.compile(
     r"(?:static\s+)?Vtx\s+(\w+)\[\]\s*=\s*\{(.*?)\}", re.S)
 _DEFINE_FN = re.compile(r"^#define\s+(\w+)\(([^)]*)\)\s*(.*)$", re.M)
 _DEFINE_ALIAS = re.compile(r"^#define\s+(\w+)\s+(\w+)\s*$", re.M)
-_STEVE_VERTEX = re.compile(r"STEVE_VERTEX\(([^)]*)\)")
+# STEVE_VERTEX, HUMANOID_VERTEX, MOB_VERTEX: any of the project's vertex
+# macros, all of which take x, y, z and a colour.
+_VERTEX_CALL = re.compile(r"\w*VERTEX\(([^)]*)\)")
+# Object-like defines whose body is a number or a list of them: a named shade
+# or extent is still a number to the rasteriser.
+_DEFINE_NUMBER = re.compile(
+    r"^#define\s+(\w+)\s+((?:\w+)(?:\s*,\s*\w+)*)\s*$", re.M)
 _GFX_ARRAY = re.compile(
     r"^(?:static\s+)?Gfx\s+(\w+)\[\]\s*=\s*\{(.*?)\};", re.M | re.S)
 _TRIANGLES = re.compile(r"gsSP(2?)Triangles?\(([^)]*)\)")
@@ -126,9 +137,14 @@ class Geometry(object):
         self.structs = structs
 
     @classmethod
-    def load(cls, path=GRAPHICS_C):
-        with open(path) as handle:
-            src = re.sub(r"\\\n\s*", " ", handle.read())
+    def load(cls, path=None):
+        sources = [path] if path else MODEL_SOURCES
+        src = "\n".join(open(p).read() for p in sources)
+        src = re.sub(r"\\\n\s*", " ", src)
+        # Resolved twice: a define may be written in terms of another.
+        for _ in range(2):
+            for name, value in _DEFINE_NUMBER.findall(src):
+                src = re.sub(r"\b%s\b(?!\s*\d)" % name, value, src)
 
         # DETAIL_BOX, MOB_BOX, SWORD_BLADE_VERTS and friends all expand to a
         # `static Vtx name[]`, so expanding the macros beats special-casing
@@ -156,7 +172,7 @@ class Geometry(object):
         verts = {}
         for chunk in expanded:
             for name, body in _VTX_ARRAY.findall(chunk):
-                rows = [_ints(m) for m in _STEVE_VERTEX.findall(body)]
+                rows = [_ints(m) for m in _VERTEX_CALL.findall(body)]
                 if rows and all(len(r) == 6 for r in rows):
                     verts[name] = [tuple(r) for r in rows]
 
@@ -178,7 +194,7 @@ class Geometry(object):
                                     .replace("\n", " ").split(",")])
         return cls(verts, lists, structs)
 
-    def mesh(self, verts_name, list_name="steve_box_display_list", count=None):
+    def mesh(self, verts_name, list_name="box_display_list", count=None):
         v = self.verts[verts_name]
         if count:
             v = v[:count]

@@ -1,7 +1,9 @@
 #include <nusys.h>
 #include <assert.h>
 #include "graphics.h"
+#include "humanoid.h"
 #include "mon64.h"
+#include "villagers.h"
 #include "geometry.h"
 #include "items.h"
 #include "mobs.h"
@@ -601,20 +603,6 @@ static Gfx dropped_item_display_list[] = {
   gsSPEndDisplayList()
 };
 
-/* Steve is deliberately built from a handful of shaded boxes instead of a
-   texture atlas.  It is cheap enough to submit once in each co-op viewport,
-   yet still reads as a character at the game's normal view distance. */
-#define STEVE_HEAD 0
-#define STEVE_BODY 1
-#define STEVE_LEFT_ARM 2
-#define STEVE_RIGHT_ARM 3
-#define STEVE_LEFT_LEG 4
-#define STEVE_RIGHT_LEG 5
-#define STEVE_SWORD 6
-#define STEVE_PART_COUNT 7
-
-static Mtx steve_translate[NUM_DISPLAY_LISTS][MAX_PLAYERS][STEVE_PART_COUNT];
-static Mtx steve_rotate[NUM_DISPLAY_LISTS][MAX_PLAYERS][STEVE_PART_COUNT];
 static Mtx first_person_sword_translate[NUM_DISPLAY_LISTS][MAX_PLAYERS];
 static Mtx first_person_sword_rotate[NUM_DISPLAY_LISTS][MAX_PLAYERS];
 /* The held tool shares the arm's translation -- the hand is the origin of both
@@ -704,60 +692,6 @@ static Vtx torch_flame_verts[] = {
   STEVE_VERTEX(4, 55, -4, 238, 110, 28), STEVE_VERTEX(-4, 55, -4, 238, 110, 28),
   STEVE_VERTEX(-8, 38, -8, 218, 64, 19), STEVE_VERTEX(8, 38, -8, 218, 64, 19)
 };
-
-/* Head, torso, arms, and legs.  Limbs start at y = 0 so their rotation has a
-   convincing shoulder/hip pivot instead of spinning around their middles. */
-static Vtx steve_head_verts[] = {
-  STEVE_VERTEX(-16, 16, 16, 172, 111, 74), STEVE_VERTEX(16, 16, 16, 172, 111, 74),
-  STEVE_VERTEX(16, -16, 16, 172, 111, 74), STEVE_VERTEX(-16, -16, 16, 172, 111, 74),
-  STEVE_VERTEX(16, 16, -16, 205, 145, 98), STEVE_VERTEX(-16, 16, -16, 205, 145, 98),
-  STEVE_VERTEX(-16, -16, -16, 205, 145, 98), STEVE_VERTEX(16, -16, -16, 205, 145, 98)
-};
-
-static Vtx steve_body_verts[] = {
-  STEVE_VERTEX(-18, 22, 9, 35, 100, 150), STEVE_VERTEX(18, 22, 9, 35, 100, 150),
-  STEVE_VERTEX(18, -22, 9, 35, 100, 150), STEVE_VERTEX(-18, -22, 9, 35, 100, 150),
-  STEVE_VERTEX(18, 22, -9, 64, 150, 198), STEVE_VERTEX(-18, 22, -9, 64, 150, 198),
-  STEVE_VERTEX(-18, -22, -9, 64, 150, 198), STEVE_VERTEX(18, -22, -9, 64, 150, 198)
-};
-
-static Vtx steve_arm_verts[] = {
-  STEVE_VERTEX(-7, 0, 7, 158, 100, 67), STEVE_VERTEX(7, 0, 7, 158, 100, 67),
-  STEVE_VERTEX(7, -44, 7, 158, 100, 67), STEVE_VERTEX(-7, -44, 7, 158, 100, 67),
-  STEVE_VERTEX(7, 0, -7, 210, 151, 100), STEVE_VERTEX(-7, 0, -7, 210, 151, 100),
-  STEVE_VERTEX(-7, -44, -7, 210, 151, 100), STEVE_VERTEX(7, -44, -7, 210, 151, 100)
-};
-
-static Vtx steve_leg_verts[] = {
-  STEVE_VERTEX(-8, 0, 8, 37, 48, 112), STEVE_VERTEX(8, 0, 8, 37, 48, 112),
-  STEVE_VERTEX(8, -44, 8, 37, 48, 112), STEVE_VERTEX(-8, -44, 8, 37, 48, 112),
-  STEVE_VERTEX(8, 0, -8, 61, 82, 174), STEVE_VERTEX(-8, 0, -8, 61, 82, 174),
-  STEVE_VERTEX(-8, -44, -8, 61, 82, 174), STEVE_VERTEX(8, -44, -8, 61, 82, 174)
-};
-
-/*
- * Hair: a crown over the skull and a panel down the nape, in head-local
- * units, so both ride the head transform the face sheet already uses and cost
- * no matrix of their own.
- *
- * The face sheet paints a hairline and sideburns flat onto the front of the
- * head, and for a long time that was all the hair Steve had -- a fringe and
- * sideburns drawn on a bald skull, which is fine only until something stands
- * next to him with hair on top.  64MON's trainers are built to these exact
- * measurements (see mon_trainer_bodies), so the two boxes below are the same
- * two they wear, in the same brown the painted hairline already uses: the
- * crown covers that hairline and becomes it, and the sideburns run on out
- * from under the crown.
- *
- * Proud of the skull by a unit all round, and two units past the face plane
- * at the front.  Stopping level with the head leaves a bare line of scalp
- * between the crown and the fringe -- invisible from straight on, and the
- * first thing the eye finds from anywhere else.
- */
-DETAIL_BOX(steve_hair_crown_verts, -17, 10, -18, 17, 18, 18,
-  51, 34, 20, 72, 48, 28);
-DETAIL_BOX(steve_hair_nape_verts, -17, -12, 14, 17, 12, 18,
-  51, 34, 20, 72, 48, 28);
 
 /*
  * ANIMALS.  All chunky shaded geometry, matching Steve's inexpensive
@@ -1160,7 +1094,7 @@ static Vtx first_person_arm_verts[] = {
   STEVE_VERTEX(-7, 0, -7, 198, 137, 90), STEVE_VERTEX(7, 0, -7, 198, 137, 90)
 };
 
-static Gfx steve_box_display_list[] = {
+Gfx box_display_list[] = {
   gsSP2Triangles(0, 1, 2, 0, 0, 2, 3, 0),
   gsSP2Triangles(4, 5, 6, 0, 4, 6, 7, 0),
   gsSP2Triangles(1, 4, 7, 0, 1, 7, 2, 0),
@@ -1398,6 +1332,15 @@ static void setEntityShadeCombine(void) {
 
 static void setEntityTint(SkyColor tint) {
   gDPSetPrimColor(dlp++, 0, 0, tint.r, tint.g, tint.b, 255);
+}
+
+/* The same three numbers, for a pass that has to fold something of its own
+   into them: a person's clothes are a primitive colour too, so humanoid.c
+   multiplies rather than overwrites. */
+void graphicsEntityTintRGB(u8 *out_rgb) {
+  out_rgb[0] = entity_tint.r;
+  out_rgb[1] = entity_tint.g;
+  out_rgb[2] = entity_tint.b;
 }
 
 /* Geometry that is a light source rather than a lit surface takes this
@@ -2680,18 +2623,6 @@ static void setWaterTopVertex(Vtx *vertex, s16 x, s16 z, s16 s, s16 t) {
   vertex->v.cn[3] = 255;
 }
 
-static void setStevePartTransform(u8 player_num, u8 part, Vector3 local_offset,
-    float pitch, float yaw) {
-  Player *player = &players[player_num];
-  Vector3 offset = rotateY(local_offset, -player->body_yaw);
-
-  guTranslate(&steve_translate[dl_no][player_num][part],
-    player->position.x + offset.x - render_origin_units_x,
-    player->position.y + offset.y,
-    player->position.z + offset.z - render_origin_units_z);
-  guRotateRPY(&steve_rotate[dl_no][player_num][part], pitch, yaw, 0);
-}
-
 static u8 playerHeldItem(Player *player) {
   ItemStack *held = &player->inventory[INVENTORY_HOTBAR_START +
     player->selected_hotbar_slot];
@@ -2716,7 +2647,15 @@ static float miningSwingAngle(Player *player) {
   return sinf(player->break_progress * 32.f * M_DTOR) * 28.f;
 }
 
-static void makeStevePose(u8 player_num) {
+/*
+ * The player's pose, in the shared body's terms.
+ *
+ * Everything here is what a controller does to a person and nothing else
+ * does: a head that follows the camera rather than the shoulders, a swing
+ * that carries a pickaxe, the tuck of a vault, the shove of being hit.  The
+ * body it drives is the same one the trainers and the villagers wear.
+ */
+static void makePlayerPose(u8 player_num, HumanoidPose *pose) {
   Player *player = &players[player_num];
   float head_pitch = player->pitch > 180 ? player->pitch - 360 : player->pitch;
   float swing = sinf(player->walk_time) * 28 * player->walk_swing;
@@ -2738,27 +2677,25 @@ static void makeStevePose(u8 player_num) {
     right_leg_pitch = -35.f * tuck;
   }
 
+  /* The model is authored from the ground up and a player is positioned at
+     their eye, which is the whole of the conversion. */
+  pose->position = player->position;
+  pose->position.y -= PLAYER_EYE_HEIGHT * BLOCK_SIZE;
   /* Gameplay yaw rotates direction vectors clockwise around Y, whereas
      guRotateRPY's Y angle rotates model geometry counter-clockwise.  A model
      transform therefore uses the stored yaw directly; only the camera view
      transform negates it. */
-  setStevePartTransform(player_num, STEVE_BODY, (Vector3) {hurt_bob, -30, 0},
-    0, player->body_yaw);
-  /* Unlike the torso, this orientation uses the current camera yaw/pitch. */
-  setStevePartTransform(player_num, STEVE_HEAD, (Vector3) {hurt_bob, 8, 0},
-    head_pitch, player->yaw);
-  setStevePartTransform(player_num, STEVE_LEFT_ARM, (Vector3) {-25 + hurt_bob, -8, 0},
-    left_arm_pitch, player->body_yaw);
-  setStevePartTransform(player_num, STEVE_RIGHT_ARM, (Vector3) {25 + hurt_bob, -8, 0},
-    right_arm_pitch, player->body_yaw);
-  /* The sword's origin is the right hand, and it shares the arm's pitch so
-     walking and attacks naturally carry it through the same arc. */
-  setStevePartTransform(player_num, STEVE_SWORD, (Vector3) {25 + hurt_bob, -52, 0},
-    right_arm_pitch, player->body_yaw);
-  setStevePartTransform(player_num, STEVE_LEFT_LEG, (Vector3) {-10 + hurt_bob, -52, 0},
-    left_leg_pitch, player->body_yaw);
-  setStevePartTransform(player_num, STEVE_RIGHT_LEG, (Vector3) {10 + hurt_bob, -52, 0},
-    right_leg_pitch, player->body_yaw);
+  pose->body_yaw = player->body_yaw;
+  /* Unlike the torso, the head uses the current camera yaw and pitch. */
+  pose->head_yaw = player->yaw;
+  pose->head_pitch = head_pitch;
+  pose->left_arm_pitch = left_arm_pitch;
+  pose->right_arm_pitch = right_arm_pitch;
+  pose->left_leg_pitch = left_leg_pitch;
+  pose->right_leg_pitch = right_leg_pitch;
+  pose->bob = hurt_bob;
+  pose->walk_time = player->walk_time;
+  pose->held_item = playerHeldItem(player);
 }
 
 static Vtx *toolHeadVertices(u8 item) {
@@ -2771,7 +2708,7 @@ static Vtx *toolHeadVertices(u8 item) {
   return NULL;
 }
 
-static void drawToolGeometry(u8 item) {
+void drawToolGeometry(u8 item) {
   Vtx *head;
   Vtx *guard;
 
@@ -2784,66 +2721,25 @@ static void drawToolGeometry(u8 item) {
       (item == STONE_SWORD ? stone_sword_guard_verts :
       wood_sword_guard_verts);
     gSPVertex(dlp++, guard, 8, 0);
-    gSPDisplayList(dlp++, steve_box_display_list);
+    gSPDisplayList(dlp++, box_display_list);
     return;
   }
   head = toolHeadVertices(item);
   if (head != NULL) {
     gSPVertex(dlp++, tool_handle_verts, 8, 0);
-    gSPDisplayList(dlp++, steve_box_display_list);
+    gSPDisplayList(dlp++, box_display_list);
     gSPVertex(dlp++, head, 8, 0);
-    gSPDisplayList(dlp++, steve_box_display_list);
+    gSPDisplayList(dlp++, box_display_list);
   }
 }
 
-static void drawStevePart(u8 player_num, u8 part, Vtx *verts, Gfx *part_dl) {
-  gSPMatrix(dlp++, OS_K0_TO_PHYSICAL(&steve_translate[dl_no][player_num][part]),
-    G_MTX_MODELVIEW | G_MTX_LOAD | G_MTX_NOPUSH);
-  gSPMatrix(dlp++, OS_K0_TO_PHYSICAL(&steve_rotate[dl_no][player_num][part]),
-    G_MTX_MODELVIEW | G_MTX_MUL | G_MTX_NOPUSH);
-  gSPVertex(dlp++, verts, 8, 0);
-  gSPDisplayList(dlp++, part_dl);
-}
-
-/* The face sheet and the two hair boxes, all three bound to the head's own
-   matrices: one load between them, and no part of the head can ever drift
-   from the rest of it. */
-static void drawSteveHeadDetail(u8 player_num) {
-  gSPMatrix(dlp++, OS_K0_TO_PHYSICAL(&steve_translate[dl_no][player_num][STEVE_HEAD]),
-    G_MTX_MODELVIEW | G_MTX_LOAD | G_MTX_NOPUSH);
-  gSPMatrix(dlp++, OS_K0_TO_PHYSICAL(&steve_rotate[dl_no][player_num][STEVE_HEAD]),
-    G_MTX_MODELVIEW | G_MTX_MUL | G_MTX_NOPUSH);
-  gSPVertex(dlp++, steve_face_verts, 24, 0);
-  gSPDisplayList(dlp++, steve_face_display_list);
-  gSPVertex(dlp++, steve_hair_crown_verts, 8, 0);
-  gSPDisplayList(dlp++, steve_box_display_list);
-  gSPVertex(dlp++, steve_hair_nape_verts, 8, 0);
-  gSPDisplayList(dlp++, steve_box_display_list);
-}
-
+/* A player is a person in the first slots of the shared pool, which are
+   reserved for them: whatever else is on screen, the players are drawn. */
 static void drawSteve(u8 player_num) {
-  makeStevePose(player_num);
+  HumanoidPose pose;
 
-  drawStevePart(player_num, STEVE_BODY, steve_body_verts, steve_box_display_list);
-  drawStevePart(player_num, STEVE_LEFT_ARM, steve_arm_verts, steve_box_display_list);
-  drawStevePart(player_num, STEVE_RIGHT_ARM, steve_arm_verts, steve_box_display_list);
-  if (itemIsTool(playerHeldItem(&players[player_num]))) {
-    u8 item = playerHeldItem(&players[player_num]);
-    gSPMatrix(dlp++, OS_K0_TO_PHYSICAL(
-      &steve_translate[dl_no][player_num][STEVE_SWORD]),
-      G_MTX_MODELVIEW | G_MTX_LOAD | G_MTX_NOPUSH);
-    gSPMatrix(dlp++, OS_K0_TO_PHYSICAL(
-      &steve_rotate[dl_no][player_num][STEVE_SWORD]),
-      G_MTX_MODELVIEW | G_MTX_MUL | G_MTX_NOPUSH);
-    drawToolGeometry(item);
-  }
-  drawStevePart(player_num, STEVE_LEFT_LEG, steve_leg_verts, steve_box_display_list);
-  drawStevePart(player_num, STEVE_RIGHT_LEG, steve_leg_verts, steve_box_display_list);
-  drawStevePart(player_num, STEVE_HEAD, steve_head_verts, steve_box_display_list);
-
-  /* The face and hair share the head transform, so they match its pitch and
-     yaw exactly without a separate skeleton node. */
-  drawSteveHeadDetail(player_num);
+  makePlayerPose(player_num, &pose);
+  humanoidDraw(player_num, &humanoid_player_look, &pose);
 }
 
 /* The first-person arm pivots at the elbow, not at the hand.  Local +Y of
@@ -2928,7 +2824,7 @@ static void drawFirstPersonHand(u8 player_num) {
   gSPMatrix(dlp++, OS_K0_TO_PHYSICAL(&first_person_sword_rotate[dl_no][player_num]),
     G_MTX_MODELVIEW | G_MTX_MUL | G_MTX_NOPUSH);
   gSPVertex(dlp++, first_person_arm_verts, 8, 0);
-  gSPDisplayList(dlp++, steve_box_display_list);
+  gSPDisplayList(dlp++, box_display_list);
   if (itemIsTool(item)) {
     /* The hand is the origin of the tool as well, so only the rotation has to
        be swapped -- the arm's translation still lands the hilt in the fist. */
@@ -2957,7 +2853,7 @@ static u8 pointVisibleToPlayer(u8 viewer_num, Vector3 point,
 
 static void drawDetailBox(Vtx *vertices) {
   gSPVertex(dlp++, vertices, 8, 0);
-  gSPDisplayList(dlp++, steve_box_display_list);
+  gSPDisplayList(dlp++, box_display_list);
 }
 
 static void drawDetailsForPlayer(u8 viewer_num) {
@@ -3194,7 +3090,10 @@ static const QuadrupedModel pig_model = {
 static void drawQuadrupedMob(u8 mob_num, const QuadrupedModel *model,
     float hurt, float scale, u8 detailed) {
   Mob *mob = &mobs[mob_num];
-  float swing = sinf(mob->walk_time) * model->stride;
+  /* Scaled by gait, not by state: an animal that has walked up to the player
+     and stopped at its spacing is still MOB_CHASE, and its legs have to be
+     still anyway.  See Mob::gait. */
+  float swing = sinf(mob->walk_time) * model->stride * mob->gait;
   /* Grazing is the idle: the head dips to the grass and rocks there.  A
      tempted or frightened animal has its head up, which is exactly the read
      the player needs. */
@@ -3221,36 +3120,37 @@ static void drawQuadrupedMob(u8 mob_num, const QuadrupedModel *model,
     (Vector3) {model->hip_x + hurt, model->hip_y, model->back_hip_z}, scale);
 
   drawMobPart(mob_num, MOB_BODY, MOB_ROT_BODY, model->body, 8,
-    steve_box_display_list);
+    box_display_list);
   drawMobPart(mob_num, MOB_HEAD, MOB_ROT_HEAD, model->head, 8,
-    steve_box_display_list);
+    box_display_list);
   if (detailed) {
     drawMobSheet(model->face, model->face_vertex_count,
       model->face_display_list);
   }
   drawMobPart(mob_num, MOB_LIMB_FRONT_LEFT, MOB_ROT_LIMB_A, model->leg, 8,
-    steve_box_display_list);
+    box_display_list);
   drawMobPart(mob_num, MOB_LIMB_FRONT_RIGHT, MOB_ROT_LIMB_B, model->leg, 8,
-    steve_box_display_list);
+    box_display_list);
   drawMobPart(mob_num, MOB_LIMB_BACK_LEFT, MOB_ROT_LIMB_B, model->leg, 8,
-    steve_box_display_list);
+    box_display_list);
   drawMobPart(mob_num, MOB_LIMB_BACK_RIGHT, MOB_ROT_LIMB_A, model->leg, 8,
-    steve_box_display_list);
+    box_display_list);
   if (detailed) {
     setMobPartTransform(mob_num, MOB_TAIL, (Vector3) {hurt, 0, 0}, scale);
     drawMobPart(mob_num, MOB_TAIL, MOB_ROT_BODY, model->tail, 8,
-      steve_box_display_list);
+      box_display_list);
   }
 }
 
 static void drawChickenMob(u8 mob_num, float hurt, float scale, u8 detailed) {
   Mob *mob = &mobs[mob_num];
-  float swing = sinf(mob->walk_time) * 32.f;
+  float swing = sinf(mob->walk_time) * 32.f * mob->gait;
   /* Always a little unsettled, and properly beating when the bird is on the
-     move.  MOB_IDLE is the only state whose feet are still.  The amplitude
-     doubles as the rest angle so the trough stays clear of zero -- a wing
-     that swings negative folds through the body. */
-  float flap = mob->state == MOB_IDLE ? 4.f : 20.f;
+     move -- which is what gait says and what state does not: a bird stopped
+     an arm's length from a held apple is MOB_CHASE.  The amplitude doubles as
+     the rest angle so the trough stays clear of zero -- a wing that swings
+     negative folds through the body. */
+  float flap = 4.f + 16.f * mob->gait;
   float beat = flap + 2.f + sinf(mob->walk_time * 2.f) * flap;
   float peck = mob->state == MOB_IDLE ?
     -42.f + sinf(mob->walk_time * .7f) * 34.f : -6.f;
@@ -3275,30 +3175,30 @@ static void drawChickenMob(u8 mob_num, float hurt, float scale, u8 detailed) {
     (Vector3) {9 + hurt, 31, 1}, scale);
 
   drawMobPart(mob_num, MOB_BODY, MOB_ROT_BODY, chicken_body_verts, 8,
-    steve_box_display_list);
+    box_display_list);
   drawMobPart(mob_num, MOB_HEAD, MOB_ROT_HEAD, chicken_head_verts, 8,
-    steve_box_display_list);
+    box_display_list);
   if (detailed) {
     drawMobSheet(chicken_face_verts, 24, mob_face_display_list);
   }
   drawMobPart(mob_num, MOB_LIMB_FRONT_LEFT, MOB_ROT_LIMB_A,
-    chicken_leg_verts, 8, steve_box_display_list);
+    chicken_leg_verts, 8, box_display_list);
   drawMobPart(mob_num, MOB_LIMB_FRONT_RIGHT, MOB_ROT_LIMB_B,
-    chicken_leg_verts, 8, steve_box_display_list);
+    chicken_leg_verts, 8, box_display_list);
   drawMobPart(mob_num, MOB_LIMB_BACK_LEFT, MOB_ROT_UPPER_LEFT,
-    chicken_wing_left_verts, 8, steve_box_display_list);
+    chicken_wing_left_verts, 8, box_display_list);
   drawMobPart(mob_num, MOB_LIMB_BACK_RIGHT, MOB_ROT_UPPER_RIGHT,
-    chicken_wing_right_verts, 8, steve_box_display_list);
+    chicken_wing_right_verts, 8, box_display_list);
   if (detailed) {
     setMobPartTransform(mob_num, MOB_TAIL, (Vector3) {hurt, 0, 0}, scale);
     drawMobPart(mob_num, MOB_TAIL, MOB_ROT_BODY, chicken_tail_verts, 8,
-      steve_box_display_list);
+      box_display_list);
   }
 }
 
 static void drawZombieMob(u8 mob_num, float hurt, float scale, u8 detailed) {
   Mob *mob = &mobs[mob_num];
-  float swing = sinf(mob->walk_time) * 34.f;
+  float swing = sinf(mob->walk_time) * 34.f * mob->gait;
   /* Arms out and locked there, with just enough sway that they do not read as
      a static prop.  This is the whole silhouette, so it does not swing with
      the legs the way a living biped's would.  Positive: the limb hangs along
@@ -3326,32 +3226,32 @@ static void drawZombieMob(u8 mob_num, float hurt, float scale, u8 detailed) {
     (Vector3) {17 + hurt, 92, 0}, scale);
 
   drawMobPart(mob_num, MOB_BODY, MOB_ROT_BODY, zombie_body_verts, 8,
-    steve_box_display_list);
+    box_display_list);
   drawMobPart(mob_num, MOB_HEAD, MOB_ROT_HEAD, zombie_head_verts, 8,
-    steve_box_display_list);
+    box_display_list);
   if (detailed) {
     drawMobSheet(zombie_face_verts, 16, mob_quad_sheet_display_list);
   }
   drawMobPart(mob_num, MOB_LIMB_FRONT_LEFT, MOB_ROT_LIMB_A, zombie_leg_verts,
-    8, steve_box_display_list);
+    8, box_display_list);
   drawMobPart(mob_num, MOB_LIMB_FRONT_RIGHT, MOB_ROT_LIMB_B, zombie_leg_verts,
-    8, steve_box_display_list);
+    8, box_display_list);
   drawMobPart(mob_num, MOB_LIMB_BACK_LEFT, MOB_ROT_UPPER_LEFT,
-    zombie_arm_verts, 8, steve_box_display_list);
+    zombie_arm_verts, 8, box_display_list);
   drawMobPart(mob_num, MOB_LIMB_BACK_RIGHT, MOB_ROT_UPPER_RIGHT,
-    zombie_arm_verts, 8, steve_box_display_list);
+    zombie_arm_verts, 8, box_display_list);
 }
 
 static void drawSpiderMob(u8 mob_num, float hurt, float scale, u8 detailed) {
   Mob *mob = &mobs[mob_num];
-  float swing = sinf(mob->walk_time) * 19.f;
+  float swing = sinf(mob->walk_time) * 19.f * mob->gait;
   /* Eight legs near, four far.  The pair sheets put the outer leg first, so
      the distant build is the same data read short. */
   Vtx *left = spider_leg_left_verts;
   Vtx *right = spider_leg_right_verts;
   u8 count = detailed ? 16 : 8;
   Gfx *legs = detailed ? mob_double_box_display_list :
-    steve_box_display_list;
+    box_display_list;
 
   setMobRotation(mob_num, MOB_ROT_BODY, 0, mob->yaw, 0, scale);
   setMobRotation(mob_num, MOB_ROT_HEAD, 0, mob->yaw + mob->head_yaw, 0,
@@ -3373,9 +3273,9 @@ static void drawSpiderMob(u8 mob_num, float hurt, float scale, u8 detailed) {
     (Vector3) {16 + hurt, 34, 16}, scale);
 
   drawMobPart(mob_num, MOB_BODY, MOB_ROT_BODY, spider_body_verts, 8,
-    steve_box_display_list);
+    box_display_list);
   drawMobPart(mob_num, MOB_HEAD, MOB_ROT_HEAD, spider_head_verts, 8,
-    steve_box_display_list);
+    box_display_list);
   if (detailed) {
     drawMobSheet(spider_face_verts, 16, mob_quad_sheet_display_list);
   }
@@ -3403,7 +3303,7 @@ static void drawMob(u8 mob_num, u8 detailed) {
     setMobPartTransform(mob_num, MOB_BODY,
       (Vector3) {hurt, 21 + bounce * 8.f, 0}, scale);
     drawMobPart(mob_num, MOB_BODY, MOB_ROT_BODY, slime_body_verts, 8,
-      steve_box_display_list);
+      box_display_list);
     if (detailed) {
       drawMobSheet(slime_face_verts, 8, mob_eyes_display_list);
     }
@@ -3518,7 +3418,7 @@ static void drawLooseItemGeometry(u8 item) {
     body = iron_chunk_verts;
   } else if (item == APPLE) {
     gSPVertex(dlp++, apple_body_verts, 8, 0);
-    gSPDisplayList(dlp++, steve_box_display_list);
+    gSPDisplayList(dlp++, box_display_list);
     body = apple_stem_verts;
   } else if (item == RAW_MUTTON || item == RAW_PORK) {
     body = item == RAW_PORK ? pork_verts : mutton_verts;
@@ -3526,18 +3426,18 @@ static void drawLooseItemGeometry(u8 item) {
     body = raw_chicken_verts;
   } else if (item == FEATHER) {
     gSPVertex(dlp++, feather_quill_verts, 8, 0);
-    gSPDisplayList(dlp++, steve_box_display_list);
+    gSPDisplayList(dlp++, box_display_list);
     body = feather_vane_verts;
   } else if (item == SLIME_GEL) {
     body = slime_gel_verts;
   } else if (item == TORCH) {
     gSPVertex(dlp++, torch_stick_verts, 8, 0);
-    gSPDisplayList(dlp++, steve_box_display_list);
+    gSPDisplayList(dlp++, box_display_list);
     body = torch_flame_verts;
   }
   if (body != NULL) {
     gSPVertex(dlp++, body, 8, 0);
-    gSPDisplayList(dlp++, steve_box_display_list);
+    gSPDisplayList(dlp++, box_display_list);
   }
 }
 
@@ -4120,6 +4020,9 @@ void drawWorld() {
       gDPPipeSync(dlp++);
       gSPClearGeometryMode(dlp++, G_LIGHTING);
       setEntityTint(entity_tint);
+      /* Hand back the shared people slots: who is worth drawing is a question
+         each viewport answers for itself. */
+      humanoidBeginViewport();
       drawDetailsForPlayer(player_num);
       drawFallingTrees(player_num);
       drawDroppedItems(player_num);
@@ -4128,6 +4031,9 @@ void drawWorld() {
          entity pass, same tint, same combiner -- and never both, so the
          cost is bounded by whichever is larger rather than their sum. */
       mon64DrawForPlayer(player_num);
+      /* The people who live in the hamlets, after the creatures: in a 64MON
+         world a trainer on the road is the one you have to be able to see. */
+      villagersDrawForPlayer(player_num);
     }
     if (!cinematic && (active_player_count > 1 ||
         players[player_num].camera_mode == CAMERA_THIRD_PERSON)) {
