@@ -66,6 +66,11 @@ u8 third_person_avatar_visible[MAX_PLAYERS];
    how far it can go before the horizon suffers is a CRT judgement. */
 u16 solo_max_visible_columns = SOLO_MAX_VISIBLE_COLUMNS;
 
+/* How many visible columns actually reach the fog band, per viewer.  At the
+   shipped fog_start nothing does, and the terrain pass uses the zero to
+   skip the two-cycle far pass outright. */
+u16 visible_far_count[MAX_PLAYERS];
+
 /*
  * Every matrix referenced by an RSP display list must remain unchanged until
  * that task has completed.  The CPU is allowed to prepare the next frame
@@ -257,6 +262,7 @@ static void updateVisibleColumnsFor(u8 player_num, Player *player,
   u16 slot;
   /* A full window is 256 columns, which does not fit the u8 this used to be. */
   u16 visible_count = 0;
+  u16 far_count = 0;
   float dx, dz, farthest_distance;
   u8 multiplayer = view_mode == CAMERA_VIEW_TWO_PLAYER ||
     view_mode == CAMERA_VIEW_FOUR_PLAYER;
@@ -353,9 +359,14 @@ static void updateVisibleColumnsFor(u8 player_num, Player *player,
       if (!windowColumnResident(world_cx, world_cz)) {
         visible = FALSE;
       }
-      visible_columns[player_num][WINDOW_SLOT(world_cx, world_cz)] =
-        visible ? (dx * dx + dz * dz <= fog_near_sq ?
-          COLUMN_VISIBLE_NEAR : COLUMN_VISIBLE_FAR) : FALSE;
+      if (visible && dx * dx + dz * dz > fog_near_sq) {
+        visible_columns[player_num][WINDOW_SLOT(world_cx, world_cz)] =
+          COLUMN_VISIBLE_FAR;
+        far_count++;
+      } else {
+        visible_columns[player_num][WINDOW_SLOT(world_cx, world_cz)] =
+          visible ? COLUMN_VISIBLE_NEAR : FALSE;
+      }
       if (visible) visible_count++;
     }
   }
@@ -392,11 +403,16 @@ static void updateVisibleColumnsFor(u8 player_num, Player *player,
           farthest = i;
         }
       }
+      if (visible_columns[player_num][trim_slots[farthest]] ==
+          COLUMN_VISIBLE_FAR) {
+        far_count--;
+      }
       visible_columns[player_num][trim_slots[farthest]] = FALSE;
       trim_distance[farthest] = -2;
       visible_count--;
     }
   }
+  visible_far_count[player_num] = far_count;
 }
 
 void updateVisibleColumns(u8 player_num) {

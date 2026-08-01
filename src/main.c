@@ -268,10 +268,18 @@ static void stepGameplayStreaming(OSTime work_start, u32 budget_usec,
     prev_block_x = player_block_x;
     prev_block_z = player_block_z;
     heading_valid = TRUE;
-    /* A steady walk settles the average near 0.12 blocks a frame; 0.04
-       is fast enough to catch a new direction within a second or so. */
-    worldSetStreamBias(heading_x > .04f ? 2 : (heading_x < -.04f ? -2 : 0),
-      heading_z > .04f ? 2 : (heading_z < -.04f ? -2 : 0));
+    /* A steady walk settles the average near 0.12 blocks a frame and a
+       sprint near 0.18; 0.04 catches a new direction within a second.  The
+       lead scales with speed, because the complaint being solved is a
+       sprinting player reaching the frontier: the faster they move, the
+       further ahead of them the ring builds first. */
+    worldSetStreamBias(
+      heading_x > .14f ? 5 : (heading_x > .08f ? 3 :
+        (heading_x > .04f ? 2 : (heading_x < -.14f ? -5 :
+        (heading_x < -.08f ? -3 : (heading_x < -.04f ? -2 : 0))))),
+      heading_z > .14f ? 5 : (heading_z > .08f ? 3 :
+        (heading_z > .04f ? 2 : (heading_z < -.14f ? -5 :
+        (heading_z < -.08f ? -3 : (heading_z < -.04f ? -2 : 0))))));
   }
   stepWorldStreaming(pcx, pcz, STREAM_TERRAIN_PER_STEP,
     STREAM_DECORATE_PER_STEP);

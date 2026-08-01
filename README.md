@@ -17,16 +17,23 @@ unmodified 4 MiB console.
   unmodified column costs nothing to evict: it comes back identical.
 * **View distance ~80 blocks**, twice the original fixed world, and view
   distance deliberately outranks near detail: full-detail terrain is a
-  small bubble around the player (baked vertex buffers, no per-quad
-  matrices) and everything beyond it is a surface shell of roughly 20–35
-  quads per column instead of 170 — hardware measurement put the RSP cost
-  of a wide full-detail disc at most of the frame.
-* **One 1 MiB mesh arena**, managed as first-fit blocks with an incremental
-  relocation defrag that slides a single block per frame. This replaced a
-  double-buffered pair plus a stop-the-world compaction pass, and the
-  megabyte it returned is what paid for the wider window.
-* **Distance fog matched to the sky** hides the streaming frontier, so
-  terrain arrives behind haze rather than in visible rows of bare columns.
+  small bubble around the player and everything beyond it is a surface
+  shell of roughly 20–35 quads per column instead of ~170. Every column
+  renders from baked vertex buffers with no per-quad matrices — hardware
+  measurement put the two per-quad matrix operations of the shells' former
+  compact format, across a hundred visible far columns, at the bulk of the
+  RSP's standing frame.
+* **One 1.25 MiB mesh arena**, managed as first-fit blocks with an
+  incremental relocation defrag that slides a single block per frame. This
+  replaced a double-buffered pair plus a stop-the-world compaction pass,
+  and later absorbed the 128 KiB per-block matrix table whose retirement
+  let every column bake its vertices.
+* **Distance fog matched to the sky** is available but parked past the
+  mesh ring by default: fog's two-cycle pass measured 5 fps on hardware,
+  and the shipped choice is a clear view with harder directional
+  preloading instead of haze. Culling classifies columns against the live
+  fog start, so pulling the band in with Z + D-pad Left re-engages it —
+  and only the columns that actually reach it pay the two-cycle rate.
 * **Deferred underground.** Far columns generate surface-only; the cave and
   ore carve runs within five chunks of the player. Caves never breach their
   three-block roof, so the surface is identical either way and the frontier
@@ -370,6 +377,26 @@ after regenerating them.
 For the complete art-to-cartridge walkthrough, see
 [Custom texture workflow](docs/custom-textures.md).
 
+## Emulator screenshots
+
+`tools/emu` captures the GUI without a flashcart. It drives mupen64plus
+(`brew install mupen64plus`) through a replacement input plugin that replays a
+written timeline of controller states, so a run needs no keyboard and no window
+focus and lands on the same screens every time:
+
+```sh
+tools/emu/run.sh tools/emu/scripts/gui-tour.txt
+```
+
+That writes one labelled 640x480 PNG per `shot` in the script to `build/shots`.
+
+Emulation is only good enough for looking at interface layout. It flatters the
+GUI -- a clean digital framebuffer has none of the composite blur or overscan a
+real TV adds -- frame pacing is not representative, and the two faults below do
+not reproduce, so legibility, performance, and RDP work still belong on
+hardware. For the script grammar and the frame-timing rules, see
+[Emulator screenshots](docs/emulator-screenshots.md).
+
 ## Hardware notes
 
 Mine64 renders the same world mesh for every camera rather than duplicating the
@@ -380,8 +407,8 @@ fixed hardware budget, including third-person avatars and pickups. All
 per-frame display lists and referenced matrices are double-buffered so their
 memory stays immutable until the RSP finishes.
 
-The linked release program leaves roughly 300 KiB free below NuSystem's fixed
-framebuffer reservation, including the 1 MiB block window, the 1 MiB mesh
+The linked release program leaves roughly 150 KiB free below NuSystem's fixed
+framebuffer reservation, including the 1 MiB block window, the 1.25 MiB mesh
 arena, NuSystem task buffers, and doubled render state. It remains within the
 stock console's 4 MiB RDRAM; an Expansion Pak is not required.
 `tools/check_ram.py` runs at the end of every build and fails it on an
@@ -508,15 +535,15 @@ submits a task — never wait.
   the same texture, to reduce the number of quads that need to be rendered.
   Greedy geometry is held only for the column currently being compiled; the
   scratch is reused for the next one.
-* Columns near the player compile to **baked vertex buffers** — quads copied
-  out of the shared table and pre-translated into column-local space, batched
-  eight per `gSPVertex` under a single matrix. Distant columns compile to a
-  **surface shell** in the compact matrix-pair format: ~20–35 quads instead of
-  ~170, and no T-junction refinement. The hysteresis between the promote and
-  demote radii keeps a boundary column from re-meshing on every step.
+* Every column compiles to **baked vertex buffers** — quads copied out of
+  the shared table and pre-translated into column-local space, batched eight
+  per `gSPVertex` under a single matrix. Distant columns are additionally a
+  **surface shell**: ~20–35 quads instead of ~170, and no T-junction
+  refinement. The hysteresis between the promote and demote radii keeps a
+  boundary column from re-meshing on every step.
 * `quads.h` contains the vertex data for all possible shapes and orientations
   of merged quad.
-* Meshes live in a single 1 MiB arena as first-fit blocks, one per column,
+* Meshes live in a single 1.25 MiB arena as first-fit blocks, one per column,
   vertex data first and command segments after. A defrag slides one block per
   frame into the lowest gap, patching that block's own vertex addresses and
   the per-texture start pointers. This is only safe because every arena

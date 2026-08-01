@@ -78,10 +78,14 @@ Gfx frame_display_lists[NUM_DISPLAY_LISTS][FRAME_DISPLAY_LIST_SIZE];
  * no compaction pass, no second arena, and no stop-the-world: a fully
  * fragmented arena heals over a few dozen frames while the game runs.
  */
-/* 1 MiB: the radius-10 mesh ring is ~390 shell columns plus the full-detail
-   near disc, and the shells' compact format is what keeps that affordable
-   at all. */
-#define MESH_ARENA_SIZE 131072
+/* 1.25 MiB: the radius-10 mesh ring is ~390 shell columns plus the
+   full-detail near disc, all in baked-vertex form now that the shells'
+   compact matrix-pair format is gone -- its two per-quad matrix operations
+   were the measured bulk of the RSP's standing frame.  The quarter
+   megabyte of growth is paid for by retiring the per-block matrix table
+   the old format needed (128 KiB) plus link headroom, and the A row still
+   reports the margin on hardware. */
+#define MESH_ARENA_SIZE 163840
 static Gfx mesh_arena[MESH_ARENA_SIZE];
 
 typedef struct {
@@ -301,7 +305,18 @@ u8 diagnostics_visible = FALSE;
  * near, and the alternative is a second two-cycle pass.
  */
 u8 fog_enabled = TRUE;
-u16 fog_start = 995;
+/*
+ * 999 puts the fog onset at ~91 blocks -- past the ~80-block mesh ring, so
+ * in the shipped configuration nothing ever reaches the band: culling
+ * classifies every column NEAR, the two-cycle far pass never runs, and fog
+ * costs exactly nothing (measured at 5 fps on hardware when it covered the
+ * ring).  The deliberate trade is a bare streaming frontier when the
+ * player outruns the mesher; the answer to that is preloading harder in
+ * the direction of travel, not hazing the view the wide ring exists to
+ * provide.  Z + D-pad Left still pulls the band in for anyone who prefers
+ * the haze, and the near/far split keeps whatever it covers cheap.
+ */
+u16 fog_start = 999;
 #define FOG_BAND 4
 
 /* Times a runaway loop guard fired in player collision code.  A rising L row
@@ -475,19 +490,18 @@ void diagNoteFrameSubmitted(void) {
  * matrices are rewritten whenever the column bound to it is compiled.
  */
 /*
- * One translation per column, indexed by window slot.  The per-chunk second
- * dimension went with the per-quad matrix scheme: baked columns carry their
- * own full-height local coordinates, and everything else that needs a block
- * translation goes through b_models, which now spans the whole column height
- * -- 2048 matrices instead of 512, cheaper than a chunk dimension on a
- * thousand slots.
+ * One translation per column, indexed by window slot.  Every column bakes
+ * its quads into column-local vertices now, so this is the only terrain
+ * matrix left: the per-block table the shell format used to multiply in
+ * (2048 matrices, 128 KiB) went to the mesh arena instead, where the same
+ * bytes hold the baked vertices that make the table unnecessary.
  */
 static Mtx c_models[WINDOW_SLOTS];
-static Mtx b_models[CHUNK_SIZE * MAX_Y * CHUNK_SIZE];
 
-/* Block translation within a column, matching BLOCK_LOCAL_INDEX's layout. */
-#define B_MODEL_INDEX(bx, y, bz) \
-  ((((u32) (bx) * MAX_Y) + (u32) (y)) * CHUNK_SIZE + (u32) (bz))
+/* The targeting wireframe was the block table's other user; one
+   origin-relative translation per player per frame replaces it, frame
+   buffered like every other matrix the RSP may still be reading. */
+static Mtx wireframe_target_model[NUM_DISPLAY_LISTS][MAX_PLAYERS];
 
 /* Water keeps the normal block footprint but leaves a small lip below an
  * adjacent shore.  Only top faces need a special mesh, so this costs 4 KiB
@@ -1455,10 +1469,13 @@ static void buildFaceTextureTable(void) {
  * 32, to remove the two per-quad matrix operations (a DMA'd LOAD and a full
  * fixed-point MUL each) that dominated the RSP's terrain cost.
  *
- * SHELL is the two-block surface skin in the old matrix-pair format: about
- * 20-35 quads a column instead of ~110-270, so its RSP cost is trivial and
- * the compact format keeps hundreds of far columns affordable in the arena.
- * Shell columns also skip T-junction refinement -- the seams it repairs are
+ * SHELL is the two-block surface skin: about 20-35 quads a column instead
+ * of ~110-270.  It bakes exactly like FULL -- the compact matrix-pair
+ * format it used to keep is gone, because its two per-quad matrix
+ * operations across a hundred visible far columns were the measured bulk
+ * of the RSP's standing frame; the arena grew by the per-block matrix
+ * table those operations needed.  What SHELL still saves is quad count,
+ * and it skips T-junction refinement -- the seams it repairs are
  * sub-pixel at that distance, and the refinement was the dominant cost of
  * compiling a freshly streamed column, which is exactly the moment the frame
  * can least afford it.
@@ -1647,12 +1664,9 @@ static void resolveColumnQuads(int cx, int cz, u8 lod) {
 
 /* Gfx cost of one texture's command segment; the vertex data is accounted
    separately as the block's leading region. */
-static u32 textureSegmentSize(u16 n, u8 lod) {
+static u32 textureSegmentSize(u16 n) {
   if (n == 0) {
     return 0;
-  }
-  if (lod == MESH_LOD_SHELL) {
-    return (u32) n * 4 + 1;
   }
   return 1 + ((u32) n + BAKED_QUADS_PER_BATCH - 1) / BAKED_QUADS_PER_BATCH +
     (u32) n + 1;
@@ -1661,7 +1675,7 @@ static u32 textureSegmentSize(u16 n, u8 lod) {
 /* Emit one texture's segment at the cursors; returns the segment entry (or
    the shared empty list).  The caller sized the block, so this cannot run
    out of room. */
-static Gfx *emitColumnTextureDL(u32 slot, u8 texture, u8 lod,
+static Gfx *emitColumnTextureDL(u32 slot, u8 texture,
     Vtx **verts_cursor, Gfx **cmds_cursor) {
   u16 n = column_baked_counts[texture];
   u16 i, emitted, batch_n;
@@ -1673,33 +1687,6 @@ static Gfx *emitColumnTextureDL(u32 slot, u8 texture, u8 lod,
     /* Most columns use only a subset of the texture bank.  Sharing one empty
        list saves an EndDisplayList command for every absent material. */
     return empty_column_display_list;
-  }
-
-  if (lod == MESH_LOD_SHELL) {
-    /* The compact matrix-pair format: cheap in memory, two matrix ops a
-       quad on the RSP -- affordable precisely because a shell column has so
-       few quads.  Its vertex loads reference the shared static tables, so
-       relocation never touches them. */
-    segment_start = cmds;
-    for (i = 0; i < column_baked_total; i++) {
-      BakedQuad *q = &column_baked[i];
-
-      if (q->texture != texture) {
-        continue;
-      }
-      gSPMatrix(cmds++, OS_K0_TO_PHYSICAL(&c_models[slot]),
-        G_MTX_MODELVIEW | G_MTX_LOAD | G_MTX_NOPUSH);
-      gSPMatrix(cmds++,
-        OS_K0_TO_PHYSICAL(b_models + B_MODEL_INDEX(q->x, q->y, q->z)),
-        G_MTX_MODELVIEW | G_MTX_MUL | G_MTX_NOPUSH);
-      gSPVertex(cmds++, q->water_top ?
-        WATER_TOP_QUAD_ADDR(q->width, q->height) :
-        QUAD_ADDR(q->face, q->width, q->height), 4, 0);
-      gSP1Quadrangle(cmds++, 3, 2, 1, 0, 0);
-    }
-    gSPEndDisplayList(cmds++);
-    *cmds_cursor = cmds;
-    return segment_start;
   }
 
   /*
@@ -1821,9 +1808,10 @@ static u8 makeColumnDisplayLists(int cx, int cz) {
   resolveColumnQuads(cx, cz, lod);
 
   for (texture = 0; texture < NUM_TEXTURES; texture++) {
-    total_cmds += textureSegmentSize(column_baked_counts[texture], lod);
+    total_cmds += textureSegmentSize(column_baked_counts[texture]);
   }
-  total_verts = lod == MESH_LOD_FULL ? (u32) column_baked_total * 8 : 0;
+  /* Every LOD bakes its vertices now; a Vtx is two Gfx of arena space. */
+  total_verts = (u32) column_baked_total * 8;
 
   /*
    * Allocate the replacement before releasing the old block: on failure the
@@ -1868,7 +1856,7 @@ static u8 makeColumnDisplayLists(int cx, int cz) {
     cmds_cursor = mesh_arena + block_start + total_verts;
     for (texture = 0; texture < NUM_TEXTURES; texture++) {
       starts[texture][slot] =
-        emitColumnTextureDL(slot, texture, lod, &verts_cursor, &cmds_cursor);
+        emitColumnTextureDL(slot, texture, &verts_cursor, &cmds_cursor);
     }
   }
   meshed[slot] = TRUE;
@@ -3277,7 +3265,7 @@ void drawWorld() {
     /* Water no longer needs an unlit exception here: its surface vertices
        carry an upward normal like every other top face, so the whole terrain
        bank goes through the one light. */
-    if (fogged) {
+    if (fogged && visible_far_count[player_num] > 0) {
       /*
        * Terrain in two passes split at the distance where fog begins
        * (culling classified each visible column against the live fog_start).
@@ -3292,6 +3280,11 @@ void drawWorld() {
        * pass, whose columns actually reach into the band, pays the two-cycle
        * rate.  Fog blended toward the sky clear color still makes the
        * terrain edge and the streamed-in pop both happen behind haze.
+       *
+       * At the shipped fog_start the band begins past the mesh ring, the
+       * far class is empty, and this branch -- texture loads, mode changes
+       * and all -- is skipped outright: fog costs nothing until the player
+       * tunes it inward.
        */
       for (i = 0; i < NUM_TEXTURES; i++) {
         loadTexture(textures[i]->texture);
@@ -3367,19 +3360,17 @@ void drawWireframes() {
     }
     gSPDisplayList(dlp++, wireframe_setup_display_list);
     loadCameraMatrices(player_num);
-    /* Shift and mask, not / and %: a negative target's quotient truncates
-       toward zero and its remainder goes negative, which walked b_models out
-       of bounds west or north of the origin.  Routing through c_models also
-       keeps the highlight origin-relative for free. */
-    gSPMatrix(dlp++,OS_K0_TO_PHYSICAL(&c_models
-      [WINDOW_SLOT(players[player_num].target_x >> CHUNK_SHIFT,
-                   players[player_num].target_z >> CHUNK_SHIFT)]),
+    /* One origin-relative translation straight to the targeted block.  This
+       composed the column matrix with a 2048-entry per-block table when the
+       shell format kept such a table alive; with every mesh baked, the
+       product of those two translations is cheaper to write than to store. */
+    guTranslate(&wireframe_target_model[dl_no][player_num],
+      (float) (players[player_num].target_x - render_origin_x) * BLOCK_SIZE,
+      (float) players[player_num].target_y * BLOCK_SIZE,
+      (float) (players[player_num].target_z - render_origin_z) * BLOCK_SIZE);
+    gSPMatrix(dlp++,
+      OS_K0_TO_PHYSICAL(&wireframe_target_model[dl_no][player_num]),
       G_MTX_MODELVIEW|G_MTX_LOAD|G_MTX_NOPUSH);
-    gSPMatrix(dlp++,OS_K0_TO_PHYSICAL(b_models + B_MODEL_INDEX(
-      players[player_num].target_x & CHUNK_MASK,
-      players[player_num].target_y,
-      players[player_num].target_z & CHUNK_MASK)),
-      G_MTX_MODELVIEW|G_MTX_MUL|G_MTX_NOPUSH);
     gSPVertex(dlp++, cube_verts, 8, 0);
     gSPDisplayList(dlp++, wireframe_display_list);
     if (players[player_num].breaking) {
@@ -4599,7 +4590,7 @@ void draw(int can_reclaim_mesh_arena) {
 }
 
 void initGraphics() {
-  int x, y, z;
+  int x, z;
 
   nuGfxInit();
   nuGfxDisplayOn();
@@ -4615,15 +4606,6 @@ void initGraphics() {
      to whichever column is bound to it, so makeColumnDisplayLists writes them
      as it compiles that column.  Until the first world is built there is no
      terrain to draw, and nothing reads them. */
-
-  for (x = 0; x < CHUNK_SIZE; x++) {
-    for (y = 0; y < MAX_Y; y++) {
-      for (z = 0; z < CHUNK_SIZE; z++) {
-        guTranslate(&(b_models[B_MODEL_INDEX(x, y, z)]),
-          x * BLOCK_SIZE, y * BLOCK_SIZE, z * BLOCK_SIZE);
-      }
-    }
-  }
 
   for (x = 0; x < CHUNK_SIZE; x++) {
     for (z = 0; z < CHUNK_SIZE; z++) {

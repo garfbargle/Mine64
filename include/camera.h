@@ -20,6 +20,9 @@ extern u8 visible_columns[MAX_PLAYERS][WINDOW_SLOTS];
 extern u8 third_person_avatar_visible[MAX_PLAYERS];
 /* Solo view's visible-column cap; runtime for the Z + C-left preset chord. */
 extern u16 solo_max_visible_columns;
+/* Visible columns that reach the fog band, per viewer; zero lets the
+   terrain pass skip the two-cycle fogged half entirely. */
+extern u16 visible_far_count[MAX_PLAYERS];
 
 void initCamera();
 /* Advances a small first-person resting sway.  Kept in camera state so it
