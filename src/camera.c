@@ -60,6 +60,12 @@ enum CameraViewMode {
 u8 visible_columns[MAX_PLAYERS][WINDOW_SLOTS];
 u8 third_person_avatar_visible[MAX_PLAYERS];
 
+/* Runtime copy of the solo cap, the other half of the Z + C-left LOD and
+   visibility preset chord: distance-trimming a few more of the outermost,
+   nearly fully fogged columns is the cheapest RSP saving on the table, and
+   how far it can go before the horizon suffers is a CRT judgement. */
+u16 solo_max_visible_columns = SOLO_MAX_VISIBLE_COLUMNS;
+
 /*
  * Every matrix referenced by an RSP display list must remain unchanged until
  * that task has completed.  The CPU is allowed to prepare the next frame
@@ -254,9 +260,9 @@ static void updateVisibleColumnsFor(u8 player_num, Player *player,
   float dx, dz, farthest_distance;
   u8 multiplayer = view_mode == CAMERA_VIEW_TWO_PLAYER ||
     view_mode == CAMERA_VIEW_FOUR_PLAYER;
-  u8 max_visible_columns = view_mode == CAMERA_VIEW_LOADING ?
+  u16 max_visible_columns = view_mode == CAMERA_VIEW_LOADING ?
     LOADING_MAX_VISIBLE_COLUMNS : (view_mode == CAMERA_VIEW_SOLO ?
-    SOLO_MAX_VISIBLE_COLUMNS : (view_mode == CAMERA_VIEW_FOUR_PLAYER ?
+    solo_max_visible_columns : (view_mode == CAMERA_VIEW_FOUR_PLAYER ?
     FOUR_PLAYER_MAX_VISIBLE_COLUMNS : COOP_MAX_VISIBLE_COLUMNS));
   float fov_y = view_mode == CAMERA_VIEW_LOADING ? FOV_Y_LOADING :
     (multiplayer ? FOV_Y_COOP : FOV_Y);

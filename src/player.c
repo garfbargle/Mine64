@@ -1574,7 +1574,12 @@ static u8 updatePlayer(u8 player_num, float delta) {
     max(0, 1.f - delta * .16f));
 
   if (cont->button & L_CBUTTONS) {
-    if (!block_dec_held[player_num]) {
+    /* With the overlay up, Z + C-left is the LOD/visibility preset chord
+       (see the diagnostics block in updatePlayers).  Marking the button held
+       keeps the hotbar from also spinning -- including on the Z release. */
+    if (diagnostics_visible && (cont->button & Z_TRIG)) {
+      block_dec_held[player_num] = TRUE;
+    } else if (!block_dec_held[player_num]) {
       u8 selected_slot;
       block_dec_held[player_num] = TRUE;
       selected_slot = player->selected_hotbar_slot == 0 ?
@@ -1911,6 +1916,26 @@ void updatePlayers() {
       }
       if (cont_data[i].trigger & D_JPAD) {
         fog_enabled = !fog_enabled;
+      }
+      if (cont_data[i].trigger & L_CBUTTONS) {
+        /*
+         * Cycle the LOD/visibility presets for on-CRT A/B against the
+         * standing-still frame rate, which W/B measurement showed is set by
+         * the RSP transform of the drawn terrain.  Ordered to change one
+         * variable at a time: full-detail radius first, then the solo
+         * visible-column cap, then both at their floor.  The E row shows
+         * promote * 1000 + cap (3120 is the shipped default).  Columns
+         * re-LOD on their own over a few seconds -- read FPS after W and B
+         * settle back down.
+         */
+        static const u8 preset_promote[] = {3, 2, 2, 1};
+        static const u8 preset_cap[] = {120, 120, 90, 60};
+        static u8 preset;
+
+        preset = (u8) ((preset + 1) % sizeof preset_promote);
+        mesh_lod_promote_radius = preset_promote[preset];
+        mesh_lod_demote_radius = (u8) (preset_promote[preset] + 2);
+        solo_max_visible_columns = preset_cap[preset];
       }
     }
     break;

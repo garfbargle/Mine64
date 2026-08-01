@@ -1471,6 +1471,16 @@ static void buildFaceTextureTable(void) {
 #define MESH_LOD_SHELL 1
 #define MESH_LOD_PROMOTE_RADIUS 3
 #define MESH_LOD_DEMOTE_RADIUS 5
+/*
+ * Runtime copies of the LOD radii, for the Z + C-left diagnostics preset
+ * chord.  The RSP transform of the full-detail near disc is the measured
+ * standing-still frame cost, and the right radius is a picture-quality
+ * trade that can only be judged on a CRT -- so it is a knob, not a
+ * constant.  Columns re-LOD on their own after a change: the periodic
+ * needs-mesh scan compares each column's compiled LOD against these.
+ */
+u8 mesh_lod_promote_radius = MESH_LOD_PROMOTE_RADIUS;
+u8 mesh_lod_demote_radius = MESH_LOD_DEMOTE_RADIUS;
 static u8 column_mesh_lod[WINDOW_SLOTS];
 static u8 staged_mesh_lod[WINDOW_SLOTS];
 
@@ -1504,7 +1514,7 @@ static int columnPlayerDistance(int cx, int cz) {
    underground has not been carved yet only rates a shell -- a full mesh of it
    would bake solid stone where the caves belong. */
 static u8 meshLodFor(int cx, int cz) {
-  return columnPlayerDistance(cx, cz) <= MESH_LOD_PROMOTE_RADIUS + 1 &&
+  return columnPlayerDistance(cx, cz) <= mesh_lod_promote_radius + 1 &&
     worldColumnDeep(cx, cz) ? MESH_LOD_FULL : MESH_LOD_SHELL;
 }
 
@@ -2142,11 +2152,11 @@ u8 graphicsColumnNeedsMesh(int cx, int cz) {
      from re-meshing on every step. */
   lod = column_mesh_lod[slot];
   distance = columnPlayerDistance(cx, cz);
-  if (lod == MESH_LOD_SHELL && distance <= MESH_LOD_PROMOTE_RADIUS &&
+  if (lod == MESH_LOD_SHELL && distance <= mesh_lod_promote_radius &&
       worldColumnDeep(cx, cz)) {
     return TRUE;
   }
-  if (lod == MESH_LOD_FULL && distance >= MESH_LOD_DEMOTE_RADIUS) {
+  if (lod == MESH_LOD_FULL && distance >= mesh_lod_demote_radius) {
     return TRUE;
   }
   return FALSE;
@@ -4335,6 +4345,10 @@ static void drawStreamingDiagnostics() {
   /* Fog start (screen depth), 0 when fog is toggled off.  Tune with
      Z + D-pad Left/Right; Z + D-pad Down toggles. */
   y = drawDiagnosticRow("P", fog_enabled ? fog_start : 0, y);
+  /* The active LOD/visibility preset, promote radius * 1000 + solo visible
+     cap: 3120 is the shipped default.  Z + C-left cycles. */
+  y = drawDiagnosticRow("E",
+    (u32) mesh_lod_promote_radius * 1000 + solo_max_visible_columns, y);
   /* Cast-shadow casters drawn this frame, capped at SHADOW_SLOTS.  The pass
      costs eight triangles and some translucent fill per caster, so S is the
      number to watch if the sky work ever shows up in W or B. */

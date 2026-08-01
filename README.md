@@ -399,8 +399,11 @@ watchdog thread.
 **Z + D-pad Up** toggles it, and it switches itself on whenever an
 integrity counter ticks, so an absorbed anomaly is never silent.  With the
 overlay up, **Z + D-pad Left/Right** walk the fog start — the `P` row —
-and **Z + D-pad Down** toggles fog for an A/B against the bare streaming
-edge): `X Z` player block position, `F` frame heartbeat (frozen F = no frames being built), `O`
+**Z + D-pad Down** toggles fog for an A/B against the bare streaming
+edge, and **Z + C-left** cycles the LOD/visibility presets — the `E` row,
+promote radius × 1000 + solo visible-column cap, 3120 being the shipped
+default; columns re-LOD over a few seconds, so read FPS after `W`/`B`
+settle): `X Z` player block position, `F` frame heartbeat (frozen F = no frames being built), `O`
 origin rebases, `M`/`V` frame-list peak and overflows, `R D Q A C T`
 streaming state (resident / decorated / queued / arena-free% / allocated mesh
 blocks / terrain-pending), `W`/`B` worst frame gap and worst gated-CPU cost in

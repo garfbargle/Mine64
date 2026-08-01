@@ -84,6 +84,11 @@ extern u8 fog_enabled;
 extern u16 fog_start;
 #define FOG_START_MIN 985
 #define FOG_START_MAX 999
+/* Full-detail LOD radii, runtime for the Z + C-left preset chord: the near
+   disc's RSP transform is the measured standing-still frame cost.  Keep
+   demote = promote + 2 so the hysteresis gap survives every preset. */
+extern u8 mesh_lod_promote_radius;
+extern u8 mesh_lod_demote_radius;
 #define DIAG_STEP_OBJECTIVES 1
 #define DIAG_STEP_INPUT 2
 #define DIAG_STEP_VAULT 3
