@@ -3221,7 +3221,10 @@ void drawWorld() {
     buildGroundShadows();
   }
 
-  if (cinematic) {
+  if (current_screen == MENU || current_screen == WORLD_NAMING) {
+    /* Black background while the first world loads. */
+    clearBuffers(GPACK_RGBA5551(0, 0, 0, 1));
+  } else if (cinematic) {
     /* A brighter blue keeps the distant water legible while the warm
        terrain light provides depth in the foreground. */
     clearBuffers(GPACK_RGBA5551(48, 123, 211, 1));
