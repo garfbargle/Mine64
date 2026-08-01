@@ -38,6 +38,75 @@ float tanf(float angle) {
   return sinf(angle) / cosf(angle);
 }
 
+/*
+ * Heading of a direction vector under the gameplay yaw convention, where
+ * forward is (-sin yaw, -cos yaw); pass the raw direction and this handles
+ * the negation.  Result is in [0, 360).
+ *
+ * A polynomial on the octant ratio, not a library call: the arc-tangent is
+ * only ever needed to point an entity somewhere, a tenth of a degree is far
+ * below what a 320-pixel viewport can show, and this costs one divide and
+ * three multiplies where a correctly-rounded atan2f would cost a great deal
+ * more on a machine with no hardware transcendentals.
+ */
+float directionYaw(float x, float z) {
+  float ax = x < 0 ? -x : x;
+  float az = z < 0 ? -z : z;
+  float larger = max(ax, az);
+  float ratio;
+  float square;
+  float angle;
+
+  if (larger < 1e-6f) {
+    return 0;
+  }
+  ratio = min(ax, az) / larger;
+  square = ratio * ratio;
+  /* Degrees directly; the constants are the usual minimax fit scaled by
+     180/pi so no radian conversion survives into the caller. */
+  angle = ((-2.66406f * square + 9.12803f) * square - 18.77136f) *
+    square * ratio + 57.29578f * ratio;
+  if (ax > az) {
+    angle = 90.f - angle;
+  }
+  /* Fold the octant back into a full turn measured from -Z. */
+  if (z > 0) {
+    angle = 180.f - angle;
+  }
+  if (x > 0) {
+    angle = 360.f - angle;
+  }
+  return angle >= 360.f ? angle - 360.f : angle;
+}
+
+float wrapDegrees(float angle) {
+  while (angle >= 180.f) {
+    angle -= 360.f;
+  }
+  while (angle < -180.f) {
+    angle += 360.f;
+  }
+  return angle;
+}
+
+float approachAngle(float from, float to, float step) {
+  float difference = wrapDegrees(to - from);
+
+  if (difference > step) {
+    difference = step;
+  } else if (difference < -step) {
+    difference = -step;
+  }
+  from += difference;
+  while (from >= 360.f) {
+    from -= 360.f;
+  }
+  while (from < 0) {
+    from += 360.f;
+  }
+  return from;
+}
+
 float * at(Vector3 *v, int i) {
   switch (i) {
     case 0:

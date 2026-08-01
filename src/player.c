@@ -197,6 +197,8 @@ void resetPlayerInventory(Player *player) {
     addItemToInventory(player, TORCH, 8);
     addItemToInventory(player, PLANKS, 16);
     addItemToInventory(player, APPLE, 3);
+    player->inventory[INVENTORY_HOTBAR_START].item = APPLE; /*TESTFIXTURE*/
+    player->inventory[INVENTORY_HOTBAR_START].count = 16;
     refreshHeldItem(player);
   }
 }
@@ -1230,7 +1232,8 @@ static u8 consumeHeldFood(Player *player) {
     return FALSE;
   }
   nourishment = held->item == APPLE ? 4 :
-    (held->item == RAW_PORK ? 4 : (held->item == RAW_MUTTON ? 3 : 0));
+    (held->item == RAW_PORK ? 4 : (held->item == RAW_MUTTON ? 3 :
+    (held->item == RAW_CHICKEN ? 3 : 0)));
   if (nourishment == 0) {
     return FALSE;
   }
@@ -1805,6 +1808,13 @@ static u8 updatePlayer(u8 player_num, float delta) {
           player->target_z) == CRAFTING_TABLE) {
       openInventory(player_num);
       return TRUE;
+    }
+    /* An apple held out to an animal feeds the animal, not the player.  The
+       prompt on screen has already named which one, and eating the apple the
+       creature walked across a field for would be the same contradiction the
+       block-placement case above avoids. */
+    if (feedMob(player_num)) {
+      return FALSE;
     }
     if (consumeHeldFood(player)) {
       return FALSE;

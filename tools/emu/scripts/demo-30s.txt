@@ -1,87 +1,94 @@
 # A thirty-second demo reel, meant to be screen-recorded off the emulator.
 #
-#   tools/emu/run.sh tools/emu/scripts/demo-30s.txt
+#   RES=640x480 tools/emu/run.sh tools/emu/scripts/demo-30s.txt
 #
-# The first ~50 seconds are the preroll: the title card builds its preview
-# world, the create-world card is accepted, and the world is entered.  Start
-# recording when the world appears -- the demo proper begins one second later
-# and runs about thirty.
+# The first ~50 seconds are preroll: the title card builds its preview world,
+# the create-world card is accepted, and the world is entered.  Start recording
+# when the world appears -- the demo proper opens on a one-second still, then
+# runs about thirty seconds and stops.
 #
 # Durations are rendered frames, and the emulator draws roughly 23 of them a
-# second in the world, so a second is ~23 frames.  Everything here is tuned to
-# this seed and this spawn: the walk lands the player in front of one specific
-# trunk, and the aim step centres it.  Editing any duration before the chop
-# moves the player somewhere else and the chop stops landing.  The seven shots
-# are the beat markers, and each costs the timeline one frame, so they are part
-# of the tuning too -- removing them shifts everything after them.
+# second in the world, so a second is ~23 frames.  The times in the beat
+# headings are measured from the first frame of the world.
+#
+# NOTHING HERE MAY DEPEND ON THE TERRAIN.  The seed is `(u32) osGetTime()` read
+# once at the title (menu.c, menuPendingSeed), which is not reproducible under
+# mupen64plus: the same script gives a different world from one run to the
+# next.  An earlier draft of this file walked to a particular tree and felled
+# it, which was worth watching exactly as long as the seed held still.  So
+# every beat below works anywhere: the ground is always within reach when you
+# look down, the pack always opens, and the camera always turns.
+#
+# What that costs is the tree: felling one needs a trunk within the six-block
+# reach, and no fixed heading guarantees a trunk.  Mining is shown on the
+# ground instead.  If a demo has to show whole-tree felling and a real craft,
+# it has to be re-tuned against the world that boots that day.
 
 # --- preroll: build and enter the world (not part of the thirty seconds) ---
 wait 960                # the title preview: menuAct will not launch before it
 press A 8
-wait 40                 # create-world card
+wait 40                 # create-world card: terrain, mods, seed
 press START 8
 wait 60                 # name keyboard
 press START 8
 wait 300                # dropped into the world that was orbiting the menu
 
-# --- 1. the world you woke up in (0:00) ---
+# --- 1. where you woke up (0:00) ---
 wait 24
 shot 1-spawn
-stick -14 0 57          # come about onto the meadow: ruins, sheep, treeline
-wait 10
+stick 13 0 100          # come about 150 degrees: horizon, fog, compass, HUD
+wait 12
+shot 2-horizon
 
-# --- 2. walk out to the trees (0:04) ---
-stick 0 70 45
-stick 0 45 60           # slow for the last few blocks, so the trunk reads
-stick -15 0 10          # centre the near trunk; reach is six blocks
-wait 6
-shot 2-target
+# --- 2. out into it (0:04) ---
+stick 0 70 45           # the walk is the point: columns stream in ahead
+stick -9 70 40          # and drift the heading so it does not read as a rail
+stick 0 70 35
+shot 3-walked
 
-# --- 3. fell it (0:10) ---
-press B 25              # bare hands take 36 ticks on wood
-wait 20                 # the whole tree goes over
-stick 0 40 30           # walk into where it fell.  The drops only pull in from
-                        # nearby, and the tree throws them several blocks out,
-                        # so standing at the stump collects leaves and no log --
-                        # and the craft below needs a log.
-wait 22
-shot 3-logs
+# --- 3. mine a block (0:10) ---
+stick 0 -30 10 Z        # Z-look: the stick turns the head, not the body
+wait 8
+shot 4-aimed
+press B 34              # ground is 22 ticks, ~9 frames of held B, and the ray
+                        # drops to the block beneath each time one goes, so a
+                        # held B digs down.  Three of them: one block mined and
+                        # then placed straight back leaves the pack empty, and
+                        # an empty pack is the one state worth not filming.
+wait 30                 # they pop out, settle, and pull in
+shot 5-mined
 
-# --- 4. build with what dropped (0:13) ---
-stick 0 -28 8 Z         # Z-look down at the ground
-wait 6
-press A 8               # place the held log
-wait 14
-shot 4-placed
+# --- 4. put it back (0:13) ---
+press A 8               # place the block that just went in the pack
+wait 20
+shot 6-placed
 
-# --- 5. the pack, and two crafts (0:15) ---
+# --- 5. the pack (0:15) ---
 press START 8
-wait 22
+wait 26
+shot 7-pack
 stick 60 0 40           # hold right: the cursor walks out of the hotbar and
                         # into POCKET CRAFT, where right does nothing more
-press CUP 8             # craft max PLANKS from the log
-wait 14
-shot 5-craft
-stick 0 -60 8           # one row down to STICK
-wait 8
-press CUP 8             # craft max STICK from the planks
-wait 14
-press B 8
-wait 18
-
-# --- 6. third person, and run for the ruins (0:22) ---
-stick 0 28 8 Z          # level the camera again
-press CUP 8             # third person: the avatar, and a nine-block reach
-wait 15
-shot 6-third
-stick 30 0 50           # come about ~170 degrees, back over the meadow: every
-                        # other heading from here reaches the river inside a
-                        # sprint, and the run ends underwater
-stick 0 70 45 L         # L is sprint, and sprinting spends food
-press R 8               # jump
+wait 6
+shot 8-craft            # PLANKS / STICK / CRAFTING TABLE / TORCH and their cost
+stick 0 -60 8           # one row down
 wait 10
-stick 0 70 22 L
-stick -10 0 28          # settle on the view
-shot 7-final
+press B 8
+wait 16
+
+# --- 6. third person, and run (0:21) ---
+stick 0 30 10 Z         # level the camera again
+press CUP 8             # third person: the avatar, and a nine-block reach
+wait 16
+shot 9-third
+stick 0 70 45 L         # L sprints, and sprinting spends food
+stick 0 70 10 L+R       # L+R into a stride is the vault; clear of one, a jump
+wait 8
+stick 11 70 45 L        # lean into the turn rather than snapping round
+stick 0 70 30 L
+shot 10-run
+stick -10 0 30          # settle on the view
+wait 10
+shot 11-final
 
 stop

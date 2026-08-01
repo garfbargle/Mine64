@@ -1,0 +1,94 @@
+# ANIMALS: the herd, its facing, and the apple.
+#
+# BONUS KIT is switched on because the apples it hands out are the only ones
+# available at spawn, and every interaction worth capturing starts with one in
+# the hand.  CRITTERS is switched off so the animals wander instead of walking
+# straight at the camera: a herd that always faces you cannot show whether it
+# is facing the right way.
+
+wait 960
+press A 8
+wait 40
+
+# Seven rows below CLASSIC is CRITTERS; two more is BONUS KIT.
+press DDOWN 8
+wait 5
+press DDOWN 8
+wait 5
+press DDOWN 8
+wait 5
+press DDOWN 8
+wait 5
+press DDOWN 8
+wait 5
+press DDOWN 8
+wait 5
+press DDOWN 8
+wait 20
+press A 8
+wait 20
+press DDOWN 8
+wait 5
+press DDOWN 8
+wait 20
+press A 8
+wait 20
+
+press START 8
+wait 60
+press START 8
+wait 12
+wait 300
+shot spawn
+
+# Watch them wander: gait, facing, and the heads turning to follow the player.
+wait 60
+shot watch-1
+wait 60
+shot watch-2
+wait 60
+shot watch-3
+wait 60
+shot watch-4
+wait 60
+shot watch-5
+
+stick 70 0 40
+wait 20
+shot turn-1
+stick 70 0 40
+wait 20
+shot turn-2
+stick 70 0 40
+wait 20
+shot turn-3
+stick 70 0 40
+wait 20
+shot turn-4
+stick 70 0 40
+wait 20
+shot turn-5
+stick 70 0 40
+wait 20
+shot turn-6
+
+# Walk into the herd holding the apple and offer it.
+stick 0 70 90
+wait 30
+shot approach
+press A 8
+wait 40
+shot fed-1
+wait 90
+shot fed-2
+press A 8
+wait 40
+shot fed-3
+wait 120
+shot after-1
+wait 120
+shot after-2
+wait 180
+shot after-3
+
+stop

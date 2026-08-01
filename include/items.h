@@ -32,7 +32,9 @@
 #define STONE_STAIRS   36
 #define WOOD_DOOR      37
 #define GLASS_WINDOW   38
-#define ITEM_TYPE_COUNT GLASS_WINDOW
+#define RAW_CHICKEN    39
+#define FEATHER        40
+#define ITEM_TYPE_COUNT FEATHER
 #define ITEM_IS_VALID(item) \
   ((item) <= BLOCK_TYPE_COUNT || \
    ((item) >= STICK && (item) <= ITEM_TYPE_COUNT))
