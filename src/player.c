@@ -153,8 +153,6 @@ static u8 inventoryNavigation(NUContData *cont) {
   return pressed;
 }
 
-static void refreshHeldItem(Player *player);
-
 void resetPlayerInventory(Player *player) {
   u8 slot;
   int selected_slot = player->held_block - FIRST_PLACEABLE_BLOCK;
@@ -197,7 +195,6 @@ void resetPlayerInventory(Player *player) {
     addItemToInventory(player, TORCH, 8);
     addItemToInventory(player, PLANKS, 16);
     addItemToInventory(player, APPLE, 3);
-    refreshHeldItem(player);
   }
 }
 
@@ -230,23 +227,40 @@ static void refreshHeldItem(Player *player) {
     player->selected_hotbar_slot].item;
 }
 
+/*
+ * The order anything arriving in the pack fills it: the whole hotbar first,
+ * then the storage rows.  Storage is off screen until the player opens the
+ * pack, so a pickup that lands there looks exactly like a pickup that never
+ * happened -- and the bonus kit, arriving before the world is even entered,
+ * looked like no kit at all.
+ */
+static u8 inventoryFillSlot(u8 order) {
+  if (order < INVENTORY_SIZE - INVENTORY_HOTBAR_START) {
+    return (u8) (INVENTORY_HOTBAR_START + order);
+  }
+  return (u8) (order - (INVENTORY_SIZE - INVENTORY_HOTBAR_START));
+}
+
 u8 addItemToInventory(Player *player, u8 item, u8 count) {
-  u8 slot;
+  u8 order;
   u8 remaining = count;
   u8 max_stack = itemMaxStack(item);
 
-  for (slot = 0; slot < INVENTORY_SIZE && remaining > 0; slot++) {
-    ItemStack *stack = &player->inventory[slot];
+  /* Top up stacks that are really there.  An empty hotbar slot keeps the name
+     of the block it is reserved for, and merging into one of those would drop
+     the item into the middle of the bar with gaps to its left. */
+  for (order = 0; order < INVENTORY_SIZE && remaining > 0; order++) {
+    ItemStack *stack = &player->inventory[inventoryFillSlot(order)];
     u8 added;
-    if (stack->item != item || stack->count >= max_stack) {
+    if (stack->count == 0 || stack->item != item || stack->count >= max_stack) {
       continue;
     }
     added = remaining < max_stack - stack->count ? remaining : max_stack - stack->count;
     stack->count += added;
     remaining -= added;
   }
-  for (slot = 0; slot < INVENTORY_SIZE && remaining > 0; slot++) {
-    ItemStack *stack = &player->inventory[slot];
+  for (order = 0; order < INVENTORY_SIZE && remaining > 0; order++) {
+    ItemStack *stack = &player->inventory[inventoryFillSlot(order)];
     u8 added;
     if (stack->count != 0) {
       continue;
@@ -255,6 +269,11 @@ u8 addItemToInventory(Player *player, u8 item, u8 count) {
     stack->item = item;
     stack->count = added;
     remaining -= added;
+  }
+  if (remaining < count) {
+    /* A pickup can land in the slot the player is holding, and the hand has
+       to become what is now in it. */
+    refreshHeldItem(player);
   }
   return count - remaining;
 }
