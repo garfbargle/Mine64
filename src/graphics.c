@@ -653,8 +653,14 @@ DETAIL_BOX(window_cross_verts, -3, 10, -3, 3, 54, 3,
   124, 179, 181, 64, 110, 121);
 DETAIL_BOX(torch_stick_verts, -4, 0, -4, 4, 39, 4,
   146, 86, 36, 88, 48, 20);
-DETAIL_BOX(torch_flame_verts, -8, 38, -8, 8, 55, 8,
-  255, 213, 72, 232, 91, 26);
+/* A taper costs no more than the old flame box and makes both placed and
+   dropped torches read as fire rather than a glowing cube. */
+static Vtx torch_flame_verts[] = {
+  STEVE_VERTEX(-4, 55, 4, 255, 229, 104), STEVE_VERTEX(4, 55, 4, 255, 229, 104),
+  STEVE_VERTEX(8, 38, 8, 255, 192, 55), STEVE_VERTEX(-8, 38, 8, 255, 192, 55),
+  STEVE_VERTEX(4, 55, -4, 238, 110, 28), STEVE_VERTEX(-4, 55, -4, 238, 110, 28),
+  STEVE_VERTEX(-8, 38, -8, 218, 64, 19), STEVE_VERTEX(8, 38, -8, 218, 64, 19)
+};
 
 /* Head, torso, arms, and legs.  Limbs start at y = 0 so their rotation has a
    convincing shoulder/hip pivot instead of spinning around their middles. */
@@ -752,10 +758,10 @@ static Vtx slime_eye_verts[] = {
 };
 
 static Vtx slime_gel_verts[] = {
-  STEVE_VERTEX(-10, 9, 9, 105, 211, 96), STEVE_VERTEX(10, 9, 9, 105, 211, 96),
-  STEVE_VERTEX(10, -9, 9, 105, 211, 96), STEVE_VERTEX(-10, -9, 9, 105, 211, 96),
-  STEVE_VERTEX(10, 9, -9, 48, 136, 60), STEVE_VERTEX(-10, 9, -9, 48, 136, 60),
-  STEVE_VERTEX(-10, -9, -9, 48, 136, 60), STEVE_VERTEX(10, -9, -9, 48, 136, 60)
+  STEVE_VERTEX(-7, 8, 8, 128, 224, 112), STEVE_VERTEX(8, 7, 8, 128, 224, 112),
+  STEVE_VERTEX(10, -6, 9, 83, 181, 78), STEVE_VERTEX(-10, -7, 9, 83, 181, 78),
+  STEVE_VERTEX(8, 7, -8, 46, 127, 59), STEVE_VERTEX(-7, 8, -9, 46, 127, 59),
+  STEVE_VERTEX(-10, -7, -9, 33, 93, 48), STEVE_VERTEX(10, -6, -8, 33, 93, 48)
 };
 
 /* Two blue eye quads on the local -Z face make it obvious where Steve is
@@ -767,45 +773,48 @@ static Vtx steve_eye_verts[] = {
   STEVE_VERTEX(11, 2, -17, 55, 125, 210), STEVE_VERTEX(5, 2, -17, 55, 125, 210)
 };
 
-/* The blade points down from the hand pivot.  Keeping it as two shaded boxes
-   gives every equipped sword a crisp silhouette without adding a texture or
-   a costly animated skeleton. */
-static Vtx steve_sword_blade_verts[] = {
-  STEVE_VERTEX(-4, 4, 3, 205, 205, 188), STEVE_VERTEX(4, 4, 3, 205, 205, 188),
-  STEVE_VERTEX(4, -42, 3, 205, 205, 188), STEVE_VERTEX(-4, -42, 3, 205, 205, 188),
-  STEVE_VERTEX(4, 4, -3, 165, 165, 154), STEVE_VERTEX(-4, 4, -3, 165, 165, 154),
-  STEVE_VERTEX(-4, -42, -3, 165, 165, 154), STEVE_VERTEX(4, -42, -3, 165, 165, 154)
-};
+/*
+ * Swords are the model held closest to the camera, so a rectangular blade
+ * read more like a ruler than a weapon.  This five-sided prism gives it a
+ * point and a broader base.  It remains one vertex load and one display-list
+ * call; only four very small triangles are added over the old box.
+ */
+#define SWORD_BLADE_VERTS(name, fr, fg, fb, br, bg, bb) \
+static Vtx name[] = { \
+  STEVE_VERTEX(-6, 4, 3, fr, fg, fb), STEVE_VERTEX(6, 4, 3, fr, fg, fb), \
+  STEVE_VERTEX(5, -32, 3, fr, fg, fb), STEVE_VERTEX(0, -46, 3, fr, fg, fb), \
+  STEVE_VERTEX(-5, -32, 3, fr, fg, fb), \
+  STEVE_VERTEX(-6, 4, -3, br, bg, bb), STEVE_VERTEX(6, 4, -3, br, bg, bb), \
+  STEVE_VERTEX(5, -32, -3, br, bg, bb), STEVE_VERTEX(0, -46, -3, br, bg, bb), \
+  STEVE_VERTEX(-5, -32, -3, br, bg, bb) \
+}
 
-static Vtx wood_sword_blade_verts[] = {
-  STEVE_VERTEX(-4, 4, 3, 151, 103, 53), STEVE_VERTEX(4, 4, 3, 151, 103, 53),
-  STEVE_VERTEX(4, -42, 3, 151, 103, 53), STEVE_VERTEX(-4, -42, 3, 151, 103, 53),
-  STEVE_VERTEX(4, 4, -3, 105, 66, 31), STEVE_VERTEX(-4, 4, -3, 105, 66, 31),
-  STEVE_VERTEX(-4, -42, -3, 105, 66, 31), STEVE_VERTEX(4, -42, -3, 105, 66, 31)
-};
+SWORD_BLADE_VERTS(iron_sword_blade_verts, 230, 232, 221, 145, 154, 153);
+SWORD_BLADE_VERTS(stone_sword_blade_verts, 171, 178, 175, 92, 100, 100);
+SWORD_BLADE_VERTS(wood_sword_blade_verts, 178, 121, 60, 96, 58, 27);
 
-static Vtx stone_sword_blade_verts[] = {
-  STEVE_VERTEX(-4, 4, 3, 151, 157, 154), STEVE_VERTEX(4, 4, 3, 151, 157, 154),
-  STEVE_VERTEX(4, -42, 3, 151, 157, 154), STEVE_VERTEX(-4, -42, 3, 151, 157, 154),
-  STEVE_VERTEX(4, 4, -3, 94, 100, 98), STEVE_VERTEX(-4, 4, -3, 94, 100, 98),
-  STEVE_VERTEX(-4, -42, -3, 94, 100, 98), STEVE_VERTEX(4, -42, -3, 94, 100, 98)
-};
+/* One cheap crossguard per sword tier preserves the old draw-call count while
+   making the upgrades visibly feel like different weapons. */
+#define SWORD_GUARD_VERTS(name, fr, fg, fb, br, bg, bb) \
+static Vtx name[] = { \
+  STEVE_VERTEX(-12, 7, 5, fr, fg, fb), STEVE_VERTEX(12, 7, 5, fr, fg, fb), \
+  STEVE_VERTEX(12, 1, 5, fr, fg, fb), STEVE_VERTEX(-12, 1, 5, fr, fg, fb), \
+  STEVE_VERTEX(12, 7, -5, br, bg, bb), STEVE_VERTEX(-12, 7, -5, br, bg, bb), \
+  STEVE_VERTEX(-12, 1, -5, br, bg, bb), STEVE_VERTEX(12, 1, -5, br, bg, bb) \
+}
 
-static Vtx steve_sword_hilt_verts[] = {
-  STEVE_VERTEX(-12, 7, 5, 142, 83, 38), STEVE_VERTEX(12, 7, 5, 142, 83, 38),
-  STEVE_VERTEX(12, 1, 5, 142, 83, 38), STEVE_VERTEX(-12, 1, 5, 142, 83, 38),
-  STEVE_VERTEX(12, 7, -5, 104, 58, 27), STEVE_VERTEX(-12, 7, -5, 104, 58, 27),
-  STEVE_VERTEX(-12, 1, -5, 104, 58, 27), STEVE_VERTEX(12, 1, -5, 104, 58, 27)
-};
+SWORD_GUARD_VERTS(wood_sword_guard_verts, 157, 92, 39, 94, 51, 24);
+SWORD_GUARD_VERTS(stone_sword_guard_verts, 127, 112, 78, 70, 62, 48);
+SWORD_GUARD_VERTS(iron_sword_guard_verts, 157, 166, 171, 78, 90, 99);
 
 /* Pickaxes and axes share one low-poly handle, but keep distinct heads so
    every tool reads immediately both in first person and while spinning as a
    pickup.  Wood and stone tiers use different shaded head geometry. */
 static Vtx tool_handle_verts[] = {
-  STEVE_VERTEX(-3, 8, 3, 145, 91, 43), STEVE_VERTEX(3, 8, 3, 145, 91, 43),
-  STEVE_VERTEX(3, -38, 3, 145, 91, 43), STEVE_VERTEX(-3, -38, 3, 145, 91, 43),
-  STEVE_VERTEX(3, 8, -3, 99, 57, 26), STEVE_VERTEX(-3, 8, -3, 99, 57, 26),
-  STEVE_VERTEX(-3, -38, -3, 99, 57, 26), STEVE_VERTEX(3, -38, -3, 99, 57, 26)
+  STEVE_VERTEX(-4, 8, 4, 157, 98, 44), STEVE_VERTEX(4, 8, 4, 157, 98, 44),
+  STEVE_VERTEX(3, -38, 3, 128, 73, 31), STEVE_VERTEX(-3, -38, 3, 128, 73, 31),
+  STEVE_VERTEX(4, 8, -4, 102, 58, 25), STEVE_VERTEX(-4, 8, -4, 102, 58, 25),
+  STEVE_VERTEX(-3, -38, -3, 77, 43, 20), STEVE_VERTEX(3, -38, -3, 77, 43, 20)
 };
 
 #define TOOL_HEAD_VERTS(name, left, right, top, bottom, r1, g1, b1, r2, g2, b2) \
@@ -816,38 +825,45 @@ static Vtx name[] = { \
   STEVE_VERTEX(left, bottom, -4, r2, g2, b2), STEVE_VERTEX(right, bottom, -4, r2, g2, b2) \
 }
 
-TOOL_HEAD_VERTS(wood_pick_head_verts, -21, 21, 11, 3,
-  165, 111, 59, 109, 68, 32);
-TOOL_HEAD_VERTS(stone_pick_head_verts, -21, 21, 11, 3,
-  177, 181, 176, 111, 116, 113);
-TOOL_HEAD_VERTS(iron_pick_head_verts, -21, 21, 11, 3,
-  220, 223, 216, 156, 163, 160);
-TOOL_HEAD_VERTS(wood_axe_head_verts, -17, 9, 13, -3,
-  165, 111, 59, 109, 68, 32);
-TOOL_HEAD_VERTS(stone_axe_head_verts, -17, 9, 13, -3,
-  177, 181, 176, 111, 116, 113);
-TOOL_HEAD_VERTS(iron_axe_head_verts, -17, 9, 13, -3,
-  220, 223, 216, 156, 163, 160);
+TOOL_HEAD_VERTS(wood_pick_head_verts, -23, 23, 13, 1,
+  177, 119, 61, 100, 61, 29);
+TOOL_HEAD_VERTS(stone_pick_head_verts, -23, 23, 13, 1,
+  183, 187, 181, 100, 106, 105);
+TOOL_HEAD_VERTS(iron_pick_head_verts, -23, 23, 13, 1,
+  231, 234, 224, 137, 148, 151);
+/* The tapered axe bit keeps the same eight vertices and box display list,
+   but its silhouette no longer reads as a second pickaxe head. */
+#define AXE_HEAD_VERTS(name, fr, fg, fb, br, bg, bb) \
+static Vtx name[] = { \
+  STEVE_VERTEX(-19, 15, 4, fr, fg, fb), STEVE_VERTEX(11, 15, 4, fr, fg, fb), \
+  STEVE_VERTEX(5, -5, 4, fr, fg, fb), STEVE_VERTEX(-14, -5, 4, fr, fg, fb), \
+  STEVE_VERTEX(11, 15, -4, br, bg, bb), STEVE_VERTEX(-19, 15, -4, br, bg, bb), \
+  STEVE_VERTEX(-14, -5, -4, br, bg, bb), STEVE_VERTEX(5, -5, -4, br, bg, bb) \
+}
+
+AXE_HEAD_VERTS(wood_axe_head_verts, 177, 119, 61, 100, 61, 29);
+AXE_HEAD_VERTS(stone_axe_head_verts, 183, 187, 181, 100, 106, 105);
+AXE_HEAD_VERTS(iron_axe_head_verts, 231, 234, 224, 137, 148, 151);
 
 static Vtx coal_chunk_verts[] = {
-  STEVE_VERTEX(-10, 10, 9, 47, 50, 51), STEVE_VERTEX(10, 10, 9, 47, 50, 51),
-  STEVE_VERTEX(10, -10, 9, 47, 50, 51), STEVE_VERTEX(-10, -10, 9, 47, 50, 51),
-  STEVE_VERTEX(10, 10, -9, 24, 26, 27), STEVE_VERTEX(-10, 10, -9, 24, 26, 27),
-  STEVE_VERTEX(-10, -10, -9, 24, 26, 27), STEVE_VERTEX(10, -10, -9, 24, 26, 27)
+  STEVE_VERTEX(-7, 11, 7, 61, 65, 66), STEVE_VERTEX(8, 9, 8, 61, 65, 66),
+  STEVE_VERTEX(11, -8, 9, 44, 47, 49), STEVE_VERTEX(-10, -10, 8, 44, 47, 49),
+  STEVE_VERTEX(8, 9, -7, 24, 27, 29), STEVE_VERTEX(-7, 11, -8, 24, 27, 29),
+  STEVE_VERTEX(-10, -10, -8, 13, 15, 16), STEVE_VERTEX(11, -8, -7, 13, 15, 16)
 };
 
 static Vtx iron_chunk_verts[] = {
-  STEVE_VERTEX(-11, 9, 8, 198, 145, 99), STEVE_VERTEX(11, 9, 8, 198, 145, 99),
-  STEVE_VERTEX(11, -9, 8, 198, 145, 99), STEVE_VERTEX(-11, -9, 8, 198, 145, 99),
-  STEVE_VERTEX(11, 9, -8, 129, 90, 64), STEVE_VERTEX(-11, 9, -8, 129, 90, 64),
-  STEVE_VERTEX(-11, -9, -8, 129, 90, 64), STEVE_VERTEX(11, -9, -8, 129, 90, 64)
+  STEVE_VERTEX(-8, 11, 7, 222, 167, 113), STEVE_VERTEX(9, 8, 8, 222, 167, 113),
+  STEVE_VERTEX(12, -7, 8, 180, 122, 79), STEVE_VERTEX(-11, -10, 8, 180, 122, 79),
+  STEVE_VERTEX(9, 8, -7, 137, 91, 65), STEVE_VERTEX(-8, 11, -8, 137, 91, 65),
+  STEVE_VERTEX(-11, -10, -8, 94, 61, 48), STEVE_VERTEX(12, -7, -7, 94, 61, 48)
 };
 
 static Vtx apple_body_verts[] = {
-  STEVE_VERTEX(-11, 10, 10, 218, 49, 42), STEVE_VERTEX(11, 10, 10, 218, 49, 42),
-  STEVE_VERTEX(11, -10, 10, 218, 49, 42), STEVE_VERTEX(-11, -10, 10, 218, 49, 42),
-  STEVE_VERTEX(11, 10, -10, 139, 25, 24), STEVE_VERTEX(-11, 10, -10, 139, 25, 24),
-  STEVE_VERTEX(-11, -10, -10, 139, 25, 24), STEVE_VERTEX(11, -10, -10, 139, 25, 24)
+  STEVE_VERTEX(-8, 11, 8, 228, 56, 43), STEVE_VERTEX(9, 10, 9, 228, 56, 43),
+  STEVE_VERTEX(12, -7, 9, 204, 38, 32), STEVE_VERTEX(-11, -9, 9, 204, 38, 32),
+  STEVE_VERTEX(9, 10, -8, 137, 23, 23), STEVE_VERTEX(-8, 11, -9, 137, 23, 23),
+  STEVE_VERTEX(-11, -9, -9, 106, 18, 20), STEVE_VERTEX(12, -7, -8, 106, 18, 20)
 };
 
 static Vtx apple_stem_verts[] = {
@@ -862,6 +878,13 @@ static Vtx mutton_verts[] = {
   STEVE_VERTEX(8, -9, 7, 172, 75, 67), STEVE_VERTEX(-10, -9, 7, 172, 75, 67),
   STEVE_VERTEX(12, 8, -7, 112, 48, 44), STEVE_VERTEX(-13, 8, -7, 112, 48, 44),
   STEVE_VERTEX(-10, -9, -7, 112, 48, 44), STEVE_VERTEX(8, -9, -7, 112, 48, 44)
+};
+
+static Vtx pork_verts[] = {
+  STEVE_VERTEX(-12, 8, 8, 213, 125, 117), STEVE_VERTEX(11, 8, 8, 213, 125, 117),
+  STEVE_VERTEX(9, -9, 7, 195, 100, 98), STEVE_VERTEX(-9, -9, 7, 195, 100, 98),
+  STEVE_VERTEX(11, 8, -8, 143, 72, 76), STEVE_VERTEX(-12, 8, -8, 143, 72, 76),
+  STEVE_VERTEX(-9, -9, -7, 112, 52, 59), STEVE_VERTEX(9, -9, -7, 112, 52, 59)
 };
 
 /* First person needs the forearm as well as the blade; otherwise a floating
@@ -881,6 +904,19 @@ static Gfx steve_box_display_list[] = {
   gsSP2Triangles(5, 0, 3, 0, 5, 3, 6, 0),
   gsSP2Triangles(5, 4, 1, 0, 5, 1, 0, 0),
   gsSP2Triangles(3, 2, 7, 0, 3, 7, 6, 0),
+  gsSPEndDisplayList()
+};
+
+static Gfx sword_blade_display_list[] = {
+  gsSP2Triangles(0, 1, 2, 0, 0, 2, 3, 0),
+  gsSP1Triangle(0, 3, 4, 0),
+  gsSP2Triangles(5, 7, 6, 0, 5, 8, 7, 0),
+  gsSP1Triangle(5, 9, 8, 0),
+  gsSP2Triangles(0, 5, 6, 0, 0, 6, 1, 0),
+  gsSP2Triangles(1, 6, 7, 0, 1, 7, 2, 0),
+  gsSP2Triangles(2, 7, 8, 0, 2, 8, 3, 0),
+  gsSP2Triangles(3, 8, 9, 0, 3, 9, 4, 0),
+  gsSP2Triangles(4, 9, 5, 0, 4, 5, 0, 0),
   gsSPEndDisplayList()
 };
 
@@ -2404,13 +2440,17 @@ static Vtx *toolHeadVertices(u8 item) {
 
 static void drawToolGeometry(u8 item) {
   Vtx *head;
+  Vtx *guard;
 
   if (itemIsSword(item)) {
-    gSPVertex(dlp++, item == IRON_SWORD ? steve_sword_blade_verts :
+    gSPVertex(dlp++, item == IRON_SWORD ? iron_sword_blade_verts :
       (item == STONE_SWORD ? stone_sword_blade_verts :
-      wood_sword_blade_verts), 8, 0);
-    gSPDisplayList(dlp++, steve_box_display_list);
-    gSPVertex(dlp++, steve_sword_hilt_verts, 8, 0);
+      wood_sword_blade_verts), 10, 0);
+    gSPDisplayList(dlp++, sword_blade_display_list);
+    guard = item == IRON_SWORD ? iron_sword_guard_verts :
+      (item == STONE_SWORD ? stone_sword_guard_verts :
+      wood_sword_guard_verts);
+    gSPVertex(dlp++, guard, 8, 0);
     gSPDisplayList(dlp++, steve_box_display_list);
     return;
   }
@@ -2838,7 +2878,7 @@ static void drawLooseItemGeometry(u8 item) {
     gSPDisplayList(dlp++, steve_box_display_list);
     body = apple_stem_verts;
   } else if (item == RAW_MUTTON || item == RAW_PORK) {
-    body = mutton_verts;
+    body = item == RAW_PORK ? pork_verts : mutton_verts;
   } else if (item == SLIME_GEL) {
     body = slime_gel_verts;
   } else if (item == TORCH) {
@@ -3809,7 +3849,10 @@ static void drawItemIcon(u8 item, u32 x, u32 y, u32 size) {
     } else {
       setHudFillColor(174, 117, 61);
     }
-    gDPFillRectangle(dlp++, x + size / 2 - 1, y + 1, x + size / 2 + 1, y + size - 6);
+    /* A two-step blade keeps the pointed 3D sword recognisable at 10-16 px. */
+    gDPFillRectangle(dlp++, x + size / 2, y + 1, x + size / 2 + 1, y + 3);
+    gDPFillRectangle(dlp++, x + size / 2 - 1, y + 3,
+      x + size / 2 + 1, y + size - 6);
     setHudFillColor(142, 83, 38);
     gDPFillRectangle(dlp++, x + size / 2 - 3, y + size - 6, x + size / 2 + 3, y + size - 4);
     gDPFillRectangle(dlp++, x + size / 2 - 1, y + size - 3, x + size / 2 + 1, y + size - 1);
@@ -3821,7 +3864,8 @@ static void drawItemIcon(u8 item, u32 x, u32 y, u32 size) {
     } else {
       setHudFillColor(174, 117, 61);
     }
-    gDPFillRectangle(dlp++, x + 1, y + 2, x + size - 2, y + 4);
+    gDPFillRectangle(dlp++, x + 2, y + 2, x + size - 3, y + 3);
+    gDPFillRectangle(dlp++, x + 1, y + 4, x + size - 2, y + 5);
     setHudFillColor(142, 83, 38);
     gDPFillRectangle(dlp++, x + size / 2 - 1, y + 4, x + size / 2 + 1, y + size - 1);
   } else if (itemIsAxe(item)) {
@@ -3833,7 +3877,9 @@ static void drawItemIcon(u8 item, u32 x, u32 y, u32 size) {
       setHudFillColor(174, 117, 61);
     }
     gDPFillRectangle(dlp++, x + 2, y + 2, x + size / 2 + 2,
-      y + size / 2);
+      y + size / 2 - 2);
+    gDPFillRectangle(dlp++, x + 4, y + size / 2 - 1, x + size / 2 + 1,
+      y + size / 2 + 1);
     setHudFillColor(142, 83, 38);
     gDPFillRectangle(dlp++, x + size / 2, y + 4, x + size / 2 + 2,
       y + size - 1);
