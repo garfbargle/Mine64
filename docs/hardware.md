@@ -51,6 +51,15 @@ texture rectangle while the RDP is still in `G_CYC_FILL` — for example straigh
 after `clearBuffers()` — locks the console immediately and reproducibly. If new
 drawing code mixes fill rectangles and textured primitives, sync between them.
 
+The same rule covers the RDP's *attribute* registers, `gDPSetFillColor` among
+them, where the penalty is corruption rather than a lock: change one while a
+primitive is still draining and it lands on the tail of that primitive instead
+of the next one. Small sprites are where this shows, because a few stolen spans
+are most of them. `drawHudMeter()` therefore draws the health and food rows in
+three passes grouped by colour — every outline, then every empty interior, then
+every fill — which costs three syncs a row instead of forty. Code that alternates
+two fill colours per symbol will look correct in every emulator.
+
 **Never busy-wait on the graphics thread.** `nuGfxTaskAllEndWait()` spins on a
 counter that is cleared by the scheduler's own graphics thread, which runs at a
 *lower* priority than `callbackGfx` (the priority is set in `nusched.c`, not in

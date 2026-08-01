@@ -4515,6 +4515,277 @@ static void drawHealth(u8 player_num) {
   gDPSetTextureLUT(dlp++, G_TT_RGBA16);
 }
 
+/*
+ * Controller buttons, as the controller wears them: A blue, B green, the four
+ * C buttons yellow with an arrow, START red, and the shoulders long and grey.
+ * Naming a button by drawing it is shorter than naming it in words, and it
+ * survives a player who has never read the manual.
+ *
+ * Same HudSpan machinery as the health and food meters, and the same three
+ * passes: shell, face, glyph.  A button is a fill-mode sprite, so it must be
+ * drawn in a screen's fills phase and never between two runs of text --
+ * swapping the RDP back and forth mid-card is the hazard that locks the
+ * console (see menu_setup_display_list in menu.c).
+ */
+#define HUD_SPAN_NO_CLIP 255
+
+/* Diameter thirteen.  Eleven was tried first and is the wrong answer: it
+   leaves a seven-pixel interior, which a five-by-seven letter fills edge to
+   edge, and a letter with no face showing around it stops looking like a
+   button and starts looking like a smudge.  Thirteen buys two pixels of face
+   on every side, which is the whole difference. */
+static const HudSpan button_round_shell_spans[] = {
+  {4, 0, 8, 0},
+  {2, 1, 10, 1},
+  {1, 2, 11, 3},
+  {0, 4, 12, 8},
+  {1, 9, 11, 10},
+  {2, 11, 10, 11},
+  {4, 12, 8, 12}
+};
+
+static const HudSpan button_round_face_spans[] = {
+  {4, 1, 8, 1},
+  {2, 2, 10, 3},
+  {1, 4, 11, 8},
+  {2, 9, 10, 10},
+  {4, 11, 8, 11}
+};
+
+/* The shoulders are the pair that is not a circle: nineteen by eleven, long
+   the way the moulding is long. */
+static const HudSpan button_wide_shell_spans[] = {
+  {2, 0, 16, 0},
+  {1, 1, 17, 1},
+  {0, 2, 18, 8},
+  {1, 9, 17, 9},
+  {2, 10, 16, 10}
+};
+
+static const HudSpan button_wide_face_spans[] = {
+  {2, 1, 16, 1},
+  {1, 2, 17, 8},
+  {2, 9, 16, 9}
+};
+
+/* Five by seven letters, matching the UI font's proportions. */
+static const HudSpan glyph_a_spans[] = {
+  {1, 0, 3, 0}, {0, 1, 0, 2}, {4, 1, 4, 2}, {0, 3, 4, 3},
+  {0, 4, 0, 6}, {4, 4, 4, 6}
+};
+
+static const HudSpan glyph_b_spans[] = {
+  {0, 0, 3, 0}, {0, 1, 0, 2}, {4, 1, 4, 2}, {0, 3, 3, 3},
+  {0, 4, 0, 5}, {4, 4, 4, 5}, {0, 6, 3, 6}
+};
+
+static const HudSpan glyph_l_spans[] = {
+  {0, 0, 0, 5}, {0, 6, 4, 6}
+};
+
+static const HudSpan glyph_r_spans[] = {
+  {0, 0, 3, 0}, {0, 1, 0, 2}, {4, 1, 4, 2}, {0, 3, 3, 3},
+  {0, 4, 0, 6}, {3, 4, 3, 4}, {4, 5, 4, 6}
+};
+
+static const HudSpan glyph_s_spans[] = {
+  {1, 0, 4, 0}, {0, 1, 0, 2}, {1, 3, 3, 3}, {4, 4, 4, 5}, {0, 6, 3, 6}
+};
+
+static const HudSpan glyph_z_spans[] = {
+  {0, 0, 4, 0}, {4, 1, 4, 1}, {3, 2, 3, 2}, {2, 3, 2, 3},
+  {1, 4, 1, 4}, {0, 5, 0, 5}, {0, 6, 4, 6}
+};
+
+/* Arrows: seven by five lying down, five by seven standing up, both with a
+   two-row base so they stay solid triangles rather than thin darts. */
+static const HudSpan glyph_up_spans[] = {
+  {3, 0, 3, 0}, {2, 1, 4, 1}, {1, 2, 5, 2}, {0, 3, 6, 4}
+};
+
+static const HudSpan glyph_down_spans[] = {
+  {0, 0, 6, 1}, {1, 2, 5, 2}, {2, 3, 4, 3}, {3, 4, 3, 4}
+};
+
+static const HudSpan glyph_left_spans[] = {
+  {3, 0, 4, 0}, {2, 1, 4, 1}, {1, 2, 4, 2}, {0, 3, 4, 3},
+  {1, 4, 4, 4}, {2, 5, 4, 5}, {3, 6, 4, 6}
+};
+
+static const HudSpan glyph_right_spans[] = {
+  {0, 0, 1, 0}, {0, 1, 2, 1}, {0, 2, 3, 2}, {0, 3, 4, 3},
+  {0, 4, 3, 4}, {0, 5, 2, 5}, {0, 6, 1, 6}
+};
+
+typedef struct {
+  const HudSpan *shell;
+  const HudSpan *face;
+  const HudSpan *glyph;
+  u8 shell_spans;
+  u8 face_spans;
+  u8 glyph_spans;
+  u8 glyph_x;
+  u8 glyph_y;
+  u8 width;
+  u8 height;
+  u8 face_color[3];
+  u8 glyph_color[3];
+} ButtonStyle;
+
+/* One near-black shell under every button, so the whole set reads as one
+   family and the shell pass is a single fill colour however many are up. */
+static const u8 button_shell_color[3] = {10, 10, 12};
+
+/* The shape half of a style: everything up to the two colours.  Colours stay
+   spelled out at each button because they are the part worth reading. */
+#define ROUND_BUTTON(glyph, gx, gy) \
+  button_round_shell_spans, button_round_face_spans, glyph, \
+  7, 5, sizeof (glyph) / sizeof (HudSpan), gx, gy, 13, 13
+
+#define WIDE_BUTTON(glyph) \
+  button_wide_shell_spans, button_wide_face_spans, glyph, \
+  5, 3, sizeof (glyph) / sizeof (HudSpan), 7, 2, 19, 11
+
+#define BUTTON_WHITE {238, 240, 245}
+#define BUTTON_YELLOW {232, 190, 46}
+#define BUTTON_GREY {168, 170, 175}
+#define BUTTON_ARROW_DARK {38, 30, 6}
+#define BUTTON_SHOULDER_DARK {32, 33, 36}
+
+static const ButtonStyle button_a = {
+  ROUND_BUTTON(glyph_a_spans, 4, 3), {52, 104, 198}, BUTTON_WHITE
+};
+
+static const ButtonStyle button_b = {
+  ROUND_BUTTON(glyph_b_spans, 4, 3), {56, 158, 84}, BUTTON_WHITE
+};
+
+static const ButtonStyle button_start = {
+  ROUND_BUTTON(glyph_s_spans, 4, 3), {198, 52, 48}, BUTTON_WHITE
+};
+
+static const ButtonStyle button_c_up = {
+  ROUND_BUTTON(glyph_up_spans, 3, 4), BUTTON_YELLOW, BUTTON_ARROW_DARK
+};
+
+static const ButtonStyle button_c_down = {
+  ROUND_BUTTON(glyph_down_spans, 3, 4), BUTTON_YELLOW, BUTTON_ARROW_DARK
+};
+
+static const ButtonStyle button_c_left = {
+  ROUND_BUTTON(glyph_left_spans, 4, 3), BUTTON_YELLOW, BUTTON_ARROW_DARK
+};
+
+static const ButtonStyle button_c_right = {
+  ROUND_BUTTON(glyph_right_spans, 4, 3), BUTTON_YELLOW, BUTTON_ARROW_DARK
+};
+
+static const ButtonStyle button_l = {
+  WIDE_BUTTON(glyph_l_spans), BUTTON_GREY, BUTTON_SHOULDER_DARK
+};
+
+static const ButtonStyle button_r = {
+  WIDE_BUTTON(glyph_r_spans), BUTTON_GREY, BUTTON_SHOULDER_DARK
+};
+
+static const ButtonStyle button_z = {
+  WIDE_BUTTON(glyph_z_spans), BUTTON_GREY, BUTTON_SHOULDER_DARK
+};
+
+typedef struct {
+  const ButtonStyle *style;
+  u16 x;
+  u16 y;
+} ButtonPlacement;
+
+/*
+ * Three passes over the whole group, for the reason drawHudMeter has: every
+ * fill colour costs a pipe sync, and a shell-face-glyph loop per button would
+ * pay nine for a row of three.  Passing over the group instead pays one for
+ * the shells and one more only where consecutive buttons actually differ, so
+ * the four C buttons of a cluster cost three between them.
+ */
+static void drawButtonPass(const ButtonPlacement *list, u8 count, u8 pass) {
+  s16 last[3];
+  u8 i;
+
+  last[0] = last[1] = last[2] = -1;
+  for (i = 0; i < count; i++) {
+    const ButtonStyle *style = list[i].style;
+    const u8 *color = button_shell_color;
+    const HudSpan *spans = style->shell;
+    u8 spans_count = style->shell_spans;
+    u32 x = list[i].x;
+    u32 y = list[i].y;
+
+    if (pass == 1) {
+      color = style->face_color;
+      spans = style->face;
+      spans_count = style->face_spans;
+    } else if (pass == 2) {
+      color = style->glyph_color;
+      spans = style->glyph;
+      spans_count = style->glyph_spans;
+      x += style->glyph_x;
+      y += style->glyph_y;
+    }
+    if (color[0] != last[0] || color[1] != last[1] || color[2] != last[2]) {
+      gDPPipeSync(dlp++);
+      setHudFillColor(color[0], color[1], color[2]);
+      last[0] = color[0];
+      last[1] = color[1];
+      last[2] = color[2];
+    }
+    drawHudSpans(spans, spans_count, x, y, HUD_SPAN_NO_CLIP);
+  }
+}
+
+/* Caller must already have the RDP in G_CYC_FILL. */
+static void drawButtonIcons(const ButtonPlacement *list, u8 count) {
+  drawButtonPass(list, count, 0);
+  drawButtonPass(list, count, 1);
+  drawButtonPass(list, count, 2);
+}
+
+static const ButtonStyle *const button_icons[BUTTON_ICON_COUNT] = {
+  &button_a,
+  &button_b,
+  &button_start,
+  &button_c_up,
+  &button_c_down,
+  &button_c_left,
+  &button_c_right,
+  &button_l,
+  &button_r,
+  &button_z
+};
+
+/*
+ * The one-button entry point, for callers outside this file.  Drawing a row
+ * through drawButtonIcons costs fewer pipe syncs than calling this per button,
+ * so prefer a placement list where a caller has several; this is for the menus
+ * and panels that have one.
+ */
+void drawButtonIcon(ButtonIconId id, u32 x, u32 y) {
+  ButtonPlacement icon;
+
+  if ((u32) id >= BUTTON_ICON_COUNT) {
+    return;
+  }
+  icon.style = button_icons[id];
+  icon.x = x;
+  icon.y = y;
+  drawButtonIcons(&icon, 1);
+}
+
+u32 buttonIconWidth(ButtonIconId id) {
+  return (u32) id < BUTTON_ICON_COUNT ? button_icons[id]->width : 0;
+}
+
+u32 buttonIconHeight(ButtonIconId id) {
+  return (u32) id < BUTTON_ICON_COUNT ? button_icons[id]->height : 0;
+}
+
 static void drawObjectivePanel(Player *player) {
   u8 expanded = player->objective_time > 0;
   u32 left = expanded ? 174 : 190;
@@ -4609,49 +4880,122 @@ static void drawCompass(Player *player) {
   gDPPipeSync(dlp++);
 }
 
-static void drawCButtonGuide(Player *player) {
-  u8 expanded = player->objective_time > 0;
+/*
+ * Both guide panels changed shape when the coloured squares became buttons:
+ * a thirteen-pixel button needs a taller row than a six-pixel swatch did, so
+ * the panels grew upward into empty sky rather than sideways into the held
+ * item name.  The row pitch and the label lane live here, next to the icons,
+ * and drawGameText's labels quote them -- the two passes draw the same panel
+ * fourteen pixels apart in the frame and must not disagree about where its
+ * rows are.
+ */
+#define GUIDE_ROW_PITCH 14
+#define CGUIDE_PANEL_TOP 146
+#define CGUIDE_ICON_X 12
+#define CGUIDE_ROW_Y 151
+#define CGUIDE_LABEL_X 44
+/* Just clear of the longest label, CAMERA, rather than the old swatch-era
+   width -- the icons took the lane the two-letter prefixes used to need. */
+#define CGUIDE_PANEL_RIGHT 94
+#define AGUIDE_PANEL_LEFT 250
+#define AGUIDE_PANEL_TOP 148
+#define AGUIDE_ICON_X 256
+#define AGUIDE_ROW_Y 153
+#define AGUIDE_LABEL_X 278
+/* A round button centred in the lane the nineteen-pixel shoulder needs. */
+#define AGUIDE_ROUND_X (AGUIDE_ICON_X + 3)
+/* Labels are 8px glyph boxes; this drops them level with a 13px button. */
+#define GUIDE_LABEL_DROP 2
 
-  if (!expanded) {
-    return;
-  }
-  gDPPipeSync(dlp++);
-  gDPSetCycleType(dlp++, G_CYC_FILL);
-  gDPSetRenderMode(dlp++, G_RM_NOOP, G_RM_NOOP2);
+static void drawGuidePanel(u32 left, u32 top, u32 right, u32 bottom) {
   setHudFillColor(8, 10, 13);
-  gDPFillRectangle(dlp++, 5, 160, 108, 198);
+  gDPFillRectangle(dlp++, left, top, right, bottom);
   setHudFillColor(131, 137, 139);
-  gDPFillRectangle(dlp++, 7, 162, 106, 196);
+  gDPFillRectangle(dlp++, left + 2, top + 2, right - 2, bottom - 2);
   setHudFillColor(24, 29, 34);
-  gDPFillRectangle(dlp++, 9, 164, 104, 194);
-
-  setHudFillColor(225, 174, 42);
-  gDPFillRectangle(dlp++, 18, 165, 23, 170);
-  gDPFillRectangle(dlp++, 11, 173, 16, 178);
-  gDPFillRectangle(dlp++, 25, 173, 30, 178);
-  gDPFillRectangle(dlp++, 18, 181, 23, 186);
-  gDPPipeSync(dlp++);
+  gDPFillRectangle(dlp++, left + 4, top + 4, right - 4, bottom - 4);
 }
 
-static void drawActionGuide(Player *player) {
+static void drawCButtonGuide(Player *player) {
+  ButtonPlacement icons[4];
+
   if (player->objective_time <= 0) {
     return;
   }
   gDPPipeSync(dlp++);
   gDPSetCycleType(dlp++, G_CYC_FILL);
   gDPSetRenderMode(dlp++, G_RM_NOOP, G_RM_NOOP2);
-  setHudFillColor(8, 10, 13);
-  gDPFillRectangle(dlp++, 258, 160, 314, 198);
-  setHudFillColor(131, 137, 139);
-  gDPFillRectangle(dlp++, 260, 162, 312, 196);
-  setHudFillColor(24, 29, 34);
-  gDPFillRectangle(dlp++, 262, 164, 310, 194);
-  setHudFillColor(47, 106, 191);
-  gDPFillRectangle(dlp++, 266, 166, 277, 176);
-  setHudFillColor(48, 144, 65);
-  gDPFillRectangle(dlp++, 266, 177, 277, 187);
-  setHudFillColor(116, 121, 118);
-  gDPFillRectangle(dlp++, 266, 188, 277, 193);
+  drawGuidePanel(5, CGUIDE_PANEL_TOP, CGUIDE_PANEL_RIGHT, 198);
+
+  /* Camera, items, pack -- and the items row shows both C buttons that do it,
+     which is the one thing the old "LR" label could only say in words. */
+  icons[0].style = &button_c_up;
+  icons[0].x = CGUIDE_ICON_X;
+  icons[0].y = CGUIDE_ROW_Y;
+  icons[1].style = &button_c_left;
+  icons[1].x = CGUIDE_ICON_X;
+  icons[1].y = CGUIDE_ROW_Y + GUIDE_ROW_PITCH;
+  icons[2].style = &button_c_right;
+  icons[2].x = CGUIDE_ICON_X + 15;
+  icons[2].y = CGUIDE_ROW_Y + GUIDE_ROW_PITCH;
+  icons[3].style = &button_c_down;
+  icons[3].x = CGUIDE_ICON_X;
+  icons[3].y = CGUIDE_ROW_Y + GUIDE_ROW_PITCH * 2;
+  drawButtonIcons(icons, 4);
+  gDPPipeSync(dlp++);
+}
+
+static void drawActionGuide(Player *player) {
+  ButtonPlacement icons[3];
+
+  if (player->objective_time <= 0) {
+    return;
+  }
+  gDPPipeSync(dlp++);
+  gDPSetCycleType(dlp++, G_CYC_FILL);
+  gDPSetRenderMode(dlp++, G_RM_NOOP, G_RM_NOOP2);
+  drawGuidePanel(AGUIDE_PANEL_LEFT, AGUIDE_PANEL_TOP, 314, 198);
+
+  icons[0].style = &button_a;
+  icons[0].x = AGUIDE_ROUND_X;
+  icons[0].y = AGUIDE_ROW_Y;
+  icons[1].style = &button_b;
+  icons[1].x = AGUIDE_ROUND_X;
+  icons[1].y = AGUIDE_ROW_Y + GUIDE_ROW_PITCH;
+  icons[2].style = &button_r;
+  icons[2].x = AGUIDE_ICON_X;
+  icons[2].y = AGUIDE_ROW_Y + GUIDE_ROW_PITCH * 2 + 1;
+  drawButtonIcons(icons, 3);
+  gDPPipeSync(dlp++);
+}
+
+/*
+ * The feed prompt is the one button hint with no panel behind it, so it is
+ * centred as a unit: icon, a three-pixel gap, then the word.  Its label is
+ * printed by drawGameText, which recomputes this same centring.
+ */
+#define FEED_PROMPT_GAP 3
+
+static u32 hudStringWidth(const char *text);
+
+static u32 feedPromptX(void) {
+  return (SCREEN_WD - (button_a.width + FEED_PROMPT_GAP +
+    hudStringWidth("FEED"))) / 2;
+}
+
+static void drawFeedPrompt(u8 player_num, u32 bar_y) {
+  ButtonPlacement icon;
+
+  if (mobFeedTarget(player_num) >= MAX_MOBS) {
+    return;
+  }
+  icon.style = &button_a;
+  icon.x = feedPromptX();
+  icon.y = bar_y - 40;
+  gDPPipeSync(dlp++);
+  gDPSetCycleType(dlp++, G_CYC_FILL);
+  gDPSetRenderMode(dlp++, G_RM_NOOP, G_RM_NOOP2);
+  drawButtonIcons(&icon, 1);
   gDPPipeSync(dlp++);
 }
 
@@ -5490,15 +5834,20 @@ static void drawGameText() {
         if (players[player_num].objective_time > 0) {
           setHudTextColor(224, 228, 219);
           drawString(playerObjectiveHint(&players[player_num]), 181, 23);
-          drawString("UP CAMERA", 38, 164);
-          drawString("LR ITEMS", 38, 174);
-          drawString("DN PACK", 38, 184);
-          drawChar('A', 269, 168);
-          drawString("USE", 282, 168);
-          drawChar('B', 269, 179);
-          drawString("MINE", 282, 179);
-          drawChar('R', 269, 188);
-          drawString("JUMP", 282, 188);
+          /* The buttons themselves were drawn in the fills phase; these are
+             only what each one does.  Both panels' geometry comes from the
+             GUIDE_* defines so the words cannot drift off the icons. */
+          drawString("CAMERA", CGUIDE_LABEL_X,
+            CGUIDE_ROW_Y + GUIDE_LABEL_DROP);
+          drawString("ITEMS", CGUIDE_LABEL_X,
+            CGUIDE_ROW_Y + GUIDE_ROW_PITCH + GUIDE_LABEL_DROP);
+          drawString("PACK", CGUIDE_LABEL_X,
+            CGUIDE_ROW_Y + GUIDE_ROW_PITCH * 2 + GUIDE_LABEL_DROP);
+          drawString("USE", AGUIDE_LABEL_X, AGUIDE_ROW_Y + GUIDE_LABEL_DROP);
+          drawString("MINE", AGUIDE_LABEL_X,
+            AGUIDE_ROW_Y + GUIDE_ROW_PITCH + GUIDE_LABEL_DROP);
+          drawString("JUMP", AGUIDE_LABEL_X,
+            AGUIDE_ROW_Y + GUIDE_ROW_PITCH * 2 + GUIDE_LABEL_DROP);
         }
         if (held_stack->count > 0) {
           name_width = hudStringWidth(held_name);
@@ -5512,10 +5861,9 @@ static void drawGameText() {
          both read the target updateMobs resolved this frame. */
       if (mobFeedTarget(player_num) < MAX_MOBS) {
         setHudTextColor(241, 195, 58);
-        drawChar('A', (SCREEN_WD - hudStringWidth("A FEED")) / 2, bar_y - 36);
         drawString("FEED",
-          (SCREEN_WD - hudStringWidth("A FEED")) / 2 + hudStringWidth("A "),
-          bar_y - 36);
+          feedPromptX() + button_a.width + FEED_PROMPT_GAP,
+          bar_y - 40 + GUIDE_LABEL_DROP);
       }
     }
     for (slot = 0; slot < HOTBAR_SLOT_COUNT; slot++) {
@@ -5569,6 +5917,14 @@ void drawHUD() {
         drawObjectivePanel(&players[player_num]);
         drawCButtonGuide(&players[player_num]);
         drawActionGuide(&players[player_num]);
+      }
+      /* The feed prompt has no panel and runs in split screen too, so it
+         follows drawGameText's condition rather than the guides'. */
+      if (!usesFourPlayerLayout()) {
+        HotbarRect bar;
+
+        hotbarRect(player_num, &bar);
+        drawFeedPrompt(player_num, bar.y);
       }
     }
     if (active_player_count > 1) {

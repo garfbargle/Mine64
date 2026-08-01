@@ -57,6 +57,22 @@ tools/preview/hud.py --compact           # the four-player sprites
 tools/preview/hud.py --crt               # fake composite over the result
 ```
 
+`buttons.py` does the same for the controller-button sprites, which are the
+same kind of object: fill rectangles from `HudSpan` tables, placed by
+arithmetic. `--guides` reassembles the two in-game guide panels from the
+`GUIDE_*` defines `drawCButtonGuide`, `drawActionGuide` and `drawGameText`
+all quote, which is the picture worth checking -- a button is only good if it
+still reads at 1x with a label beside it, and the icons and the labels are
+drawn by two different passes fourteen pixels apart in the frame:
+
+```sh
+tools/preview/buttons.py                 # every button, zoomed
+tools/preview/buttons.py --guides --crt
+```
+
+Its `FONT_5X7` is a stand-in, not the game's font: enough to judge whether a
+label sits level with its button and clears the panel edge, and no more.
+
 `--crt` smears chroma sideways and leaves luma alone, which is roughly what a
 composite cable does. It is a sanity check on whether a one-pixel border is
 still a border by the time it reaches a television -- not a television.

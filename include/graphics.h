@@ -162,6 +162,33 @@ extern Gfx steve_face_display_list[];
 void drawWorld();
 void drawWireframes();
 void drawHUD();
+
+/*
+ * Controller buttons as the controller wears them, for naming a control
+ * without spelling it out.  A button is a fill-mode sprite, so the RDP must
+ * already be in G_CYC_FILL and the call must sit in a screen's fills phase --
+ * putting one between two runs of text swaps the RDP back and forth mid-card,
+ * which is the hazard that locks the console (see menu_setup_display_list).
+ */
+typedef enum {
+  BUTTON_ICON_A,
+  BUTTON_ICON_B,
+  BUTTON_ICON_START,
+  BUTTON_ICON_C_UP,
+  BUTTON_ICON_C_DOWN,
+  BUTTON_ICON_C_LEFT,
+  BUTTON_ICON_C_RIGHT,
+  BUTTON_ICON_L,
+  BUTTON_ICON_R,
+  BUTTON_ICON_Z,
+  BUTTON_ICON_COUNT
+} ButtonIconId;
+
+void drawButtonIcon(ButtonIconId id, u32 x, u32 y);
+/* The round buttons are 13x13 and the shoulders 19x11; ask rather than
+   assume, so a label can be laid out beside either. */
+u32 buttonIconWidth(ButtonIconId id);
+u32 buttonIconHeight(ButtonIconId id);
 void draw(int can_reclaim_mesh_arena);
 /* Frames that exceeded the command budget and had to shed terrain or be
    dropped.  Non-zero means the frame list was overflowing. */
