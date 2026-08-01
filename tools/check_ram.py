@@ -5,7 +5,7 @@ NuSystem does not allocate its framebuffers or its audio heap from the linked
 image.  It pins them at absolute addresses at the top of a 4 MiB RDRAM:
 
     Z buffer     NU_GFX_ZBUFFER_ADDR      0x80000400 .. +320*240*2
-    audio heap   NU_AU_HEAP_ADDR          framebuffers - 0x50000  (audio only)
+    audio heap   MINE64_AU_HEAP_ADDR      framebuffers - AUDIO_HEAP_SIZE below
     framebuffers NU_GFX_FRAMEBUFFER_ADDR  0x80400000 - 320*240*2*3
 
 Nothing at link time notices when BSS runs past those, and the two 1 MiB
@@ -19,7 +19,10 @@ import sys
 RDRAM_END = 0x80400000
 FRAMEBUFFER_BYTES = 320 * 240 * 2
 FRAMEBUFFER_ADDR = RDRAM_END - FRAMEBUFFER_BYTES * 3
-AUDIO_HEAP_SIZE = 0x18000
+# Must track MINE64_AU_HEAP_SIZE in src/audio.c -- audio.c passes the size to
+# nuAuMgrInit itself, so this is not an SDK constant to look up but a number
+# the two files have to agree on.
+AUDIO_HEAP_SIZE = 0x16000
 AUDIO_HEAP_ADDR = FRAMEBUFFER_ADDR - AUDIO_HEAP_SIZE
 
 SHF_ALLOC = 0x2

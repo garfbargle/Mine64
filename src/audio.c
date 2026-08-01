@@ -10,8 +10,19 @@
  * buffers and a 2048-entry command list; the SDK's own NU_AU_HEAP_MIN_SIZE
  * formula over those numbers wants about 73 KiB.  The heap must sit directly
  * beneath the framebuffers, so shrinking it also moves its base up.
+ *
+ * 88 KiB rather than the 96 it was, because the audio variant had come within
+ * 3 KiB of fitting for the first time and the homestead models pushed it back
+ * out.  This is the conservative step: it clears the link and still leaves
+ * ~15 KiB over the formula's estimate.
+ *
+ * It is an estimate, and an undersized audio heap fails only on hardware and
+ * only as silence or corruption -- no emulator reproduces it.  So do not cut
+ * this again on the strength of the formula alone: the diagnostics overlay's
+ * U row reports the peak actually taken (see audioHeapPeakKiB), and that
+ * measurement is what a further cut should be made against.
  */
-#define MINE64_AU_HEAP_SIZE 0x18000  /* 96 KiB */
+#define MINE64_AU_HEAP_SIZE 0x16000  /* 88 KiB */
 #define MINE64_AU_HEAP_ADDR (NU_GFX_FRAMEBUFFER_ADDR - MINE64_AU_HEAP_SIZE)
 #include "audio.h"
 #include "music_title_vadpcm.h"
