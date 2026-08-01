@@ -18,7 +18,10 @@ if [[ "$MINE64_AUDIO" == "1" ]]; then
     ROM_NAME="mine64-audio.n64"
     SYMBOL_NAME="mine64-audio.out"
 else
-    MAKE_ARGS=()
+    # Spelled out rather than left empty: macOS ships bash 3.2, where an empty
+    # array expansion counts as unset under `set -u`.  AUDIO=0 is the Makefile
+    # default, so this is the same build.
+    MAKE_ARGS=(AUDIO=0)
     ROM_NAME="mine64.n64"
     SYMBOL_NAME="mine64.out"
 fi
