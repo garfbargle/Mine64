@@ -122,6 +122,32 @@
 #define MOB_LOS_STEP (BLOCK_SIZE * .42f)
 #define MOB_LOS_MAX_STEPS 16
 
+/*
+ * One in this many monsters carries an iron chunk.
+ *
+ * Night used to be pure cost.  Monsters arrived, the player walled themselves
+ * in or ran, and the only thing on the far side of the fight was slime gel
+ * and the coal a zombie was already dropping -- so the correct play was
+ * always to skip the encounter, and a third of the world clock was something
+ * to wait out rather than something to do.
+ *
+ * Iron is what makes it a decision, because iron is the one material the
+ * player cannot otherwise get without first going and finding a cave: it is
+ * the deepest ore and it needs a stone pickaxe before it yields anything.  A
+ * second route to it that costs risk and food instead of digging is a real
+ * alternative rather than a shortcut, and it is one the player chooses at
+ * dusk.
+ *
+ * Spiders pay roughly three times better than zombies for the same reason
+ * they are the rarest hostile roll: they are the fastest thing in the game,
+ * they see furthest, and they wind up in half a zombie's time.  Across the
+ * hostile mix these two work out near one chunk per fourteen kills -- a
+ * night of deliberate fighting is most of a tool, never a full iron kit.
+ * These are the two numbers to move after playing a night on hardware.
+ */
+#define MONSTER_IRON_ODDS_ZOMBIE 12
+#define MONSTER_IRON_ODDS_SPIDER 4
+
 #define WOOD_RUSH_RANGE (BLOCK_SIZE * 2.45f)
 #define STONE_CLEAVE_RANGE (BLOCK_SIZE * 2.15f)
 #define IRON_SHOCKWAVE_RANGE (BLOCK_SIZE * 4.15f)
@@ -306,9 +332,53 @@ static u8 mobTooClose(Mob *self, float x, float z) {
   return FALSE;
 }
 
-static u8 spawnMob(Mob *mob, u8 type) {
+/*
+ * Which animals a stretch of grassland puts on it.
+ *
+ * The ground gate in mobCanStandAt has already settled most of the map: a
+ * grazing animal only ever stands on grass, so open desert, highland and
+ * scree exclude themselves and never reach this.  What is left is that all
+ * three green biomes looked identical -- one flat roll over sheep, chickens
+ * and pigs from the coast to the deepest jungle -- which is the one place a
+ * biome could be made to mean something for nothing.
+ *
+ * Every band still admits every species.  A weighting rather than a
+ * whitelist is what keeps walking into a forest a change in the odds instead
+ * of a wall, and it means no band can ever fail to fill the passive budget
+ * and leave the world empty.
+ *
+ * The desert band shares the plains weighting deliberately: reaching here at
+ * all means grass in a dry region -- a riverbank or an oasis -- and that is
+ * plains by every measure except the noise field.
+ */
+static u8 randomPassiveType(int x, int z) {
+  u8 roll = random(8);
+
+  switch (worldClimateBand(x, z)) {
+    case WORLD_CLIMATE_JUNGLE:
+      /* Chickens are jungle fowl, which is where the bird came from before it
+         came from farmyards. */
+      return roll < 5 ? MOB_CHICKEN : (roll < 7 ? MOB_PIG : MOB_SHEEP);
+    case WORLD_CLIMATE_FOREST:
+      /* Pigs forage under a canopy; sheep want the open ground they are
+         about to walk out into. */
+      return roll < 4 ? MOB_PIG : (roll < 7 ? MOB_CHICKEN : MOB_SHEEP);
+    default:
+      return roll < 5 ? MOB_SHEEP : (roll < 7 ? MOB_PIG : MOB_CHICKEN);
+  }
+}
+
+/*
+ * The anchor is the caller's rather than this function's own.
+ *
+ * Which species belongs here is now a question about the ground around the
+ * anchor (see randomPassiveType), and it is asked before a slot is chosen.
+ * Picking a second anchor down here would let a four-player game roll a
+ * jungle's chickens off one player and then stand them in another player's
+ * plains.
+ */
+static u8 spawnMob(Mob *mob, u8 type, Player *anchor) {
   u8 attempt;
-  Player *anchor = spawnAnchor();
   int origin_x;
   int origin_z;
 
@@ -384,10 +454,17 @@ void initMobs() {
     u8 reserve = mon64RoamerReserve();
     u8 seeded = MOB_PASSIVE_BUDGET > reserve ?
       (u8) (MOB_PASSIVE_BUDGET - reserve) : 0;
+    Player *anchor = spawnAnchor();
+    /* The opening herd is drawn from the same weighting as every later
+       spawn.  A fixed one-of-each herd would have made the first minute of a
+       jungle world contradict every minute after it. */
+    int anchor_x = anchor == NULL ? 0 :
+      (int) floor(anchor->position.x / BLOCK_SIZE);
+    int anchor_z = anchor == NULL ? 0 :
+      (int) floor(anchor->position.z / BLOCK_SIZE);
 
     for (index = 0; index < seeded; index++) {
-      static const u8 opening_herd[3] = {MOB_SHEEP, MOB_CHICKEN, MOB_PIG};
-      spawnMob(&mobs[index], opening_herd[index % 3]);
+      spawnMob(&mobs[index], randomPassiveType(anchor_x, anchor_z), anchor);
     }
   }
 }
@@ -1042,6 +1119,12 @@ static u8 spawnForBudget(u8 night) {
   /* And a village borrows the same way, for as long as the player is near
      one: a hamlet trades its sheep for the people who live there. */
   u8 people_reserve = (u8) (roamer_reserve + villagerReserve());
+  /* Chosen once, for both the species and the search that places it. */
+  Player *anchor = spawnAnchor();
+
+  if (anchor == NULL) {
+    return FALSE;
+  }
 
   passive_budget = passive_budget > people_reserve ?
     (u8) (passive_budget - people_reserve) : 0;
@@ -1049,16 +1132,18 @@ static u8 spawnForBudget(u8 night) {
   countMobs(&passives, &hostiles);
   if (night && !worldModOn(MOD_PEACEFUL) &&
       hostiles < MOB_NIGHT_HOSTILE_BUDGET) {
+    /* Monsters are not a regional fauna.  Night is the same everywhere, and
+       giving it a biome would only make some ground safe to sleep on. */
     type = randomHostileType();
   } else if (passives < passive_budget) {
-    u8 roll = random(8);
-    type = roll < 3 ? MOB_SHEEP : (roll < 6 ? MOB_CHICKEN : MOB_PIG);
+    type = randomPassiveType((int) floor(anchor->position.x / BLOCK_SIZE),
+      (int) floor(anchor->position.z / BLOCK_SIZE));
   } else {
     return FALSE;
   }
   for (index = 0; index < MAX_MOBS; index++) {
     if (!mobs[index].active) {
-      return spawnMob(&mobs[index], type);
+      return spawnMob(&mobs[index], type, anchor);
     }
   }
   return FALSE;
@@ -1370,9 +1455,15 @@ static void emitMobDrops(Mob *target) {
       if (random(4) == 0) {
         spawnDroppedItem(APPLE, 1, x, y, z);
       }
+      if (random(MONSTER_IRON_ODDS_ZOMBIE) == 0) {
+        spawnDroppedItem(IRON_CHUNK, 1, x, y, z);
+      }
       break;
     case MOB_SPIDER:
       spawnDroppedItem(SLIME_GEL, 1, x, y, z);
+      if (random(MONSTER_IRON_ODDS_SPIDER) == 0) {
+        spawnDroppedItem(IRON_CHUNK, 1, x, y, z);
+      }
       break;
     default:
       spawnDroppedItem(WOOL, 1 + random(3), x, y, z);

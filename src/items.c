@@ -34,7 +34,7 @@ const char *itemName(u8 item) {
     "Stone Axe", "Apple", "Raw Mutton", "Raw Pork", "Slime Gel",
     "Iron Sword", "Iron Pickaxe", "Iron Axe", "Torch", "Wood Stairs",
     "Stone Stairs", "Wood Door", "Lattice Window", "Raw Chicken",
-    "Feather"
+    "Feather", "Fence", "Fence Gate"
   };
 
   if (item <= CRAFTING_TABLE) {
@@ -60,8 +60,13 @@ u8 itemIsTool(u8 item) {
   return itemIsSword(item) || itemIsPickaxe(item) || itemIsAxe(item);
 }
 
+/* Two ranges rather than one, because the detail items are not contiguous and
+   deliberately were not made so: storage.c writes raw item IDs into save
+   files, so renumbering TORCH..GLASS_WINDOW to make room would silently
+   reinterpret every existing world's inventory. */
 u8 itemIsDetail(u8 item) {
-  return item >= TORCH && item <= GLASS_WINDOW;
+  return (item >= TORCH && item <= GLASS_WINDOW) ||
+    (item >= FENCE && item <= FENCE_GATE);
 }
 
 u8 rollLeafDrop(u8 *item) {

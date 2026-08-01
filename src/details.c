@@ -10,6 +10,15 @@ u16 detail_count;
 u16 detail_scan_limit;
 u32 detail_overflows;
 
+u8 detailKindIsTall(u8 kind) {
+  return kind == DETAIL_WOOD_DOOR || kind == DETAIL_FENCE ||
+    kind == DETAIL_FENCE_GATE;
+}
+
+u8 detailItemIsTall(u8 item) {
+  return detailKindIsTall(detailKindForItem(item));
+}
+
 static u8 detailCovers(const DetailCell *detail, int x, int y, int z) {
   if (!detail->active || detail->x != x || detail->z != z) {
     return FALSE;
@@ -17,7 +26,7 @@ static u8 detailCovers(const DetailCell *detail, int x, int y, int z) {
   if (detail->y == y) {
     return TRUE;
   }
-  return detail->kind == DETAIL_WOOD_DOOR && detail->y + 1 == y;
+  return detailKindIsTall(detail->kind) && detail->y + 1 == y;
 }
 
 void initDetails(void) {
@@ -70,6 +79,8 @@ u8 detailKindForItem(u8 item) {
   if (item == STONE_STAIRS) return DETAIL_STONE_STAIRS;
   if (item == WOOD_DOOR) return DETAIL_WOOD_DOOR;
   if (item == GLASS_WINDOW) return DETAIL_WINDOW;
+  if (item == FENCE) return DETAIL_FENCE;
+  if (item == FENCE_GATE) return DETAIL_FENCE_GATE;
   return DETAIL_NONE;
 }
 
@@ -79,7 +90,62 @@ u8 detailItemForKind(u8 kind) {
   if (kind == DETAIL_STONE_STAIRS) return STONE_STAIRS;
   if (kind == DETAIL_WOOD_DOOR) return WOOD_DOOR;
   if (kind == DETAIL_WINDOW) return GLASS_WINDOW;
+  if (kind == DETAIL_FENCE) return FENCE;
+  if (kind == DETAIL_FENCE_GATE) return FENCE_GATE;
   return AIR;
+}
+
+/*
+ * The fence post rooted exactly at (x, y, z), or NULL.
+ *
+ * A gate counts: a rail should run into one, which is what makes a gate read
+ * as a way through a fence line rather than a door standing in a gap.
+ *
+ * The root has to match, not merely be covered.  detailAt answers for a tall
+ * detail's upper cell too, so without the `detail->y != y` test a post one
+ * step down the hill would link to its neighbour's head height and hang a
+ * rail in the air.
+ */
+static DetailCell *fencePostAt(int x, int y, int z) {
+  DetailCell *detail = detailAt(x, y, z);
+
+  if (detail == NULL || detail->y != y) {
+    return NULL;
+  }
+  return (detail->kind == DETAIL_FENCE ||
+    detail->kind == DETAIL_FENCE_GATE) ? detail : NULL;
+}
+
+static const int fence_neighbours[4][2] = {{-1, 0}, {1, 0}, {0, -1}, {0, 1}};
+
+static u8 fenceLinkMask(int x, int y, int z) {
+  u8 links = 0;
+
+  if (fencePostAt(x - 1, y, z) != NULL) links |= DETAIL_LINK_NEG_X;
+  if (fencePostAt(x + 1, y, z) != NULL) links |= DETAIL_LINK_POS_X;
+  if (fencePostAt(x, y, z - 1) != NULL) links |= DETAIL_LINK_NEG_Z;
+  if (fencePostAt(x, y, z + 1) != NULL) links |= DETAIL_LINK_POS_Z;
+  return links;
+}
+
+/* Recompute this cell's mask and all four neighbours', which is what stops a
+   rail outliving the post at its far end.  Both edits that can change a fence
+   line -- placing and breaking -- end here. */
+static void fenceRefreshLinks(int x, int y, int z) {
+  DetailCell *self = fencePostAt(x, y, z);
+  u8 i;
+
+  if (self != NULL) {
+    self->links = fenceLinkMask(x, y, z);
+  }
+  for (i = 0; i < 4; i++) {
+    DetailCell *neighbour = fencePostAt(x + fence_neighbours[i][0], y,
+      z + fence_neighbours[i][1]);
+
+    if (neighbour != NULL) {
+      neighbour->links = fenceLinkMask(neighbour->x, y, neighbour->z);
+    }
+  }
 }
 
 static u8 detailHasSupport(int x, int y, int z) {
@@ -99,7 +165,7 @@ u8 detailPlace(u8 item, int x, int y, int z, u8 orientation, u8 flags) {
       !windowColumnResident(x >> CHUNK_SHIFT, z >> CHUNK_SHIFT)) {
     return FALSE;
   }
-  if (kind == DETAIL_WOOD_DOOR &&
+  if (detailKindIsTall(kind) &&
       (y + 1 >= MAX_Y || blockGet(x, y + 1, z) != AIR)) {
     return FALSE;
   }
@@ -124,45 +190,65 @@ u8 detailPlace(u8 item, int x, int y, int z, u8 orientation, u8 flags) {
   detail->z = z;
   detail->y = y;
   detail->kind = kind;
-  detail->orientation = orientation & 3;
+  /* A fence has no facing.  Its rails are named in absolute world directions
+     by the link mask, so letting the player's heading rotate the model would
+     swing them off their neighbours. */
+  detail->orientation = kind == DETAIL_FENCE ? 0 : (orientation & 3);
   detail->state = 0;
   detail->flags = flags;
   detail->active = TRUE;
+  detail->links = 0;
+  detail->reserved = 0;
   detail_count++;
   blockSet(x, y, z, CRAFTING_TABLE);
-  if (kind == DETAIL_WOOD_DOOR) {
+  if (detailKindIsTall(kind)) {
     blockSet(x, y + 1, z, CRAFTING_TABLE);
   }
+  /* After the proxy is written, so this post can see itself. */
+  fenceRefreshLinks(x, y, z);
   return TRUE;
 }
 
 u8 detailRemove(int x, int y, int z, u8 *drop_item) {
   DetailCell *detail = detailAt(x, y, z);
+  int root_x;
+  int root_y;
+  int root_z;
 
   if (detail == NULL) {
     return FALSE;
   }
+  /* Breaking a tall detail's upper cell removes the whole record, so the
+     coordinates to rebuild links around are its root's, not the ones the
+     player was looking at. */
+  root_x = detail->x;
+  root_y = detail->y;
+  root_z = detail->z;
   if (drop_item != NULL) {
     *drop_item = detailItemForKind(detail->kind);
   }
-  if (blockGet(detail->x, detail->y, detail->z) == CRAFTING_TABLE) {
-    blockSet(detail->x, detail->y, detail->z, AIR);
+  if (blockGet(root_x, root_y, root_z) == CRAFTING_TABLE) {
+    blockSet(root_x, root_y, root_z, AIR);
   }
-  if (detail->kind == DETAIL_WOOD_DOOR && detail->y + 1 < MAX_Y &&
-      blockGet(detail->x, detail->y + 1, detail->z) == CRAFTING_TABLE) {
-    blockSet(detail->x, detail->y + 1, detail->z, AIR);
+  if (detailKindIsTall(detail->kind) && root_y + 1 < MAX_Y &&
+      blockGet(root_x, root_y + 1, root_z) == CRAFTING_TABLE) {
+    blockSet(root_x, root_y + 1, root_z, AIR);
   }
   detail->active = FALSE;
   if (detail_count > 0) {
     detail_count--;
   }
+  /* After deactivation, so the neighbours re-survey a gap rather than the
+     post that is on its way out. */
+  fenceRefreshLinks(root_x, root_y, root_z);
   return TRUE;
 }
 
 u8 detailToggle(int x, int y, int z) {
   DetailCell *detail = detailAt(x, y, z);
 
-  if (detail == NULL || detail->kind != DETAIL_WOOD_DOOR) {
+  if (detail == NULL || (detail->kind != DETAIL_WOOD_DOOR &&
+      detail->kind != DETAIL_FENCE_GATE)) {
     return FALSE;
   }
   detail->state ^= DETAIL_STATE_OPEN;
@@ -200,7 +286,11 @@ u8 worldCellSolid(int x, int y, int z) {
   if (detail->kind == DETAIL_TORCH) {
     return FALSE;
   }
-  if (detail->kind == DETAIL_WOOD_DOOR &&
+  /* Both hinged kinds stand open the same way.  A gate's upper cell opens
+     with it, which is what lets a player walk through a fence line without
+     the fence's own head-height block stopping them. */
+  if ((detail->kind == DETAIL_WOOD_DOOR ||
+       detail->kind == DETAIL_FENCE_GATE) &&
       (detail->state & DETAIL_STATE_OPEN)) {
     return FALSE;
   }
@@ -250,7 +340,7 @@ void detailsApplyColumn(int cx, int cz) {
       continue;
     }
     blockSet(detail->x, detail->y, detail->z, CRAFTING_TABLE);
-    if (detail->kind == DETAIL_WOOD_DOOR && detail->y + 1 < MAX_Y) {
+    if (detailKindIsTall(detail->kind) && detail->y + 1 < MAX_Y) {
       blockSet(detail->x, detail->y + 1, detail->z, CRAFTING_TABLE);
     }
   }

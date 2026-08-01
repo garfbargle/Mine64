@@ -245,17 +245,6 @@ static u8 oreInCell(int x, int y, int z, int cell_size, u8 rarity) {
     absolute((float) (z - cell_z * cell_size - center_z)) <= 1.f;
 }
 
-/*
- * Where the world begins, in blocks.  The generator needs it for the same
- * reason the player spawner does -- an archipelago whose player wakes up
- * treading water, or a sky world with no island under their feet, is not a
- * world anyone wants to preview -- and taking it from a fixed coordinate is
- * what keeps those guarantees pure.  Derived from MAX_X/MAX_Z exactly as
- * START_X/START_Z in player.c are, so the two cannot drift apart.
- */
-#define WORLD_SPAWN_X (MAX_X / 2)
-#define WORLD_SPAWN_Z (MAX_Z / 2)
-
 /* FLAT's one surface height: high enough to dig meaningfully below, low
    enough to leave most of the 32-block column as sky to build into. */
 #define FLAT_SURFACE_HEIGHT 9
@@ -495,6 +484,30 @@ static float climateAt(int x, int z) {
 #define CLIMATE_DESERT_MAX 0.32f
 #define CLIMATE_FOREST_MIN 0.62f
 #define CLIMATE_JUNGLE_MIN 0.76f
+
+/*
+ * The same cuts, for callers outside generation.
+ *
+ * Deliberately the climate axis alone, with none of biomeAt's height and
+ * slope patch.  The one caller today is mob spawning, which already refuses
+ * to stand a grazing animal on anything but grass -- so highland, scree and
+ * open desert are settled before this is ever asked, and what is left to ask
+ * is which kind of grassland the animal is standing in.  Reading the raw
+ * field here rather than biomeAt also keeps it callable without a height
+ * patch, exactly as the tree species table is.
+ */
+u8 worldClimateBand(int x, int z) {
+  float climate = climateAt(x, z);
+
+  if (climate < CLIMATE_DESERT_MAX) {
+    return WORLD_CLIMATE_DESERT;
+  }
+  if (climate > CLIMATE_JUNGLE_MIN) {
+    return WORLD_CLIMATE_JUNGLE;
+  }
+  return climate > CLIMATE_FOREST_MIN ?
+    WORLD_CLIMATE_FOREST : WORLD_CLIMATE_PLAINS;
+}
 
 /*
  * Tree species.

@@ -688,6 +688,68 @@ DETAIL_BOX(window_cross_verts, -3, 10, -3, 3, 54, 3,
   124, 179, 181, 64, 110, 121);
 DETAIL_BOX(torch_stick_verts, -4, 0, -4, 4, 39, 4,
   146, 86, 36, 88, 48, 20);
+/*
+ * A fence stands a block and a half high -- 96 of the 128 units its two cells
+ * span -- which is the whole point of it.  The upper cell is solid to the
+ * whole game (see detailKindIsTall), so the post is drawn tall enough that
+ * the collision reads as the thing on screen rather than as an invisible lid
+ * over a knee-high rail.
+ */
+DETAIL_BOX(fence_post_verts, -6, 0, -6, 6, 96, 6,
+  143, 92, 44, 86, 52, 26);
+/*
+ * Two rails a side rather than one.
+ *
+ * One was tried first, on the theory that a fence is the first detail players
+ * build by the dozen and the frame is RSP-bound.  Rendered offline against
+ * tools/preview at every sensible height, a single rail reads as a handrail
+ * or a boundary marker -- something to walk around, not something that holds
+ * anything.  Two read as an enclosure, which is what the cell underneath
+ * actually is.
+ *
+ * It costs less than that argument assumed.  The per-viewport cost is bounded
+ * by MAX_VISIBLE_DETAILS, not by how many are placed, and a five-box fence is
+ * exactly what a window already costs today -- so this reaches the existing
+ * worst case rather than raising it.
+ */
+DETAIL_BOX(fence_rail_neg_x_lo_verts, -32, 24, -4, -6, 42, 4,
+  151, 99, 48, 92, 57, 29);
+DETAIL_BOX(fence_rail_neg_x_hi_verts, -32, 58, -4, -6, 76, 4,
+  151, 99, 48, 92, 57, 29);
+DETAIL_BOX(fence_rail_pos_x_lo_verts, 6, 24, -4, 32, 42, 4,
+  151, 99, 48, 92, 57, 29);
+DETAIL_BOX(fence_rail_pos_x_hi_verts, 6, 58, -4, 32, 76, 4,
+  151, 99, 48, 92, 57, 29);
+DETAIL_BOX(fence_rail_neg_z_lo_verts, -4, 24, -32, 4, 42, -6,
+  151, 99, 48, 92, 57, 29);
+DETAIL_BOX(fence_rail_neg_z_hi_verts, -4, 58, -32, 4, 76, -6,
+  151, 99, 48, 92, 57, 29);
+DETAIL_BOX(fence_rail_pos_z_lo_verts, -4, 24, 6, 4, 42, 32,
+  151, 99, 48, 92, 57, 29);
+DETAIL_BOX(fence_rail_pos_z_hi_verts, -4, 58, 6, 4, 76, 32,
+  151, 99, 48, 92, 57, 29);
+/* The gate is the fence's silhouette with a way through it: the same two
+   uprights a post pair would leave, and one rail at the same height, so an
+   opening in a run reads as part of the run. */
+DETAIL_BOX(fence_gate_left_verts, -28, 0, -4, -18, 90, 4,
+  158, 104, 51, 96, 60, 31);
+DETAIL_BOX(fence_gate_right_verts, 18, 0, -4, 28, 90, 4,
+  158, 104, 51, 96, 60, 31);
+DETAIL_BOX(fence_gate_rail_lo_verts, -18, 24, -4, 18, 42, 4,
+  151, 99, 48, 92, 57, 29);
+DETAIL_BOX(fence_gate_rail_hi_verts, -18, 58, -4, 18, 76, 4,
+  151, 99, 48, 92, 57, 29);
+/* Dropped and held forms.  The loose-item path has no scale matrix -- it
+   draws these at world size, the way the torch's own stick is -- so a pickup
+   needs its own compact token rather than the block-and-a-half post. */
+DETAIL_BOX(fence_item_post_verts, -5, 0, -5, 5, 30, 5,
+  143, 92, 44, 86, 52, 26);
+DETAIL_BOX(fence_item_rail_verts, -17, 17, -3, 17, 23, 3,
+  151, 99, 48, 92, 57, 29);
+DETAIL_BOX(fence_gate_item_left_verts, -17, 0, -3, -11, 30, 3,
+  158, 104, 51, 96, 60, 31);
+DETAIL_BOX(fence_gate_item_right_verts, 11, 0, -3, 17, 30, 3,
+  158, 104, 51, 96, 60, 31);
 /* A taper costs no more than the old flame box and makes both placed and
    dropped torches read as fire rather than a glowing cube. */
 static Vtx torch_flame_verts[] = {
@@ -2958,7 +3020,8 @@ static void drawDetailsForPlayer(u8 viewer_num) {
     DetailCell *detail = &details[selected[render_slot]];
     float yaw = detail->orientation * 90.f;
 
-    if (detail->kind == DETAIL_WOOD_DOOR &&
+    if ((detail->kind == DETAIL_WOOD_DOOR ||
+         detail->kind == DETAIL_FENCE_GATE) &&
         (detail->state & DETAIL_STATE_OPEN)) {
       yaw += 90.f;
     }
@@ -2989,6 +3052,33 @@ static void drawDetailsForPlayer(u8 viewer_num) {
       drawDetailBox(window_top_verts);
       drawDetailBox(window_bottom_verts);
       drawDetailBox(window_cross_verts);
+    } else if (detail->kind == DETAIL_FENCE) {
+      /* Rails come out of the record's cached link mask rather than from
+         four detailAt probes here: at 24 visible posts a viewport that would
+         be up to ninety-six pool scans a frame.  See DETAIL_LINK_* in
+         details.h. */
+      drawDetailBox(fence_post_verts);
+      if (detail->links & DETAIL_LINK_NEG_X) {
+        drawDetailBox(fence_rail_neg_x_lo_verts);
+        drawDetailBox(fence_rail_neg_x_hi_verts);
+      }
+      if (detail->links & DETAIL_LINK_POS_X) {
+        drawDetailBox(fence_rail_pos_x_lo_verts);
+        drawDetailBox(fence_rail_pos_x_hi_verts);
+      }
+      if (detail->links & DETAIL_LINK_NEG_Z) {
+        drawDetailBox(fence_rail_neg_z_lo_verts);
+        drawDetailBox(fence_rail_neg_z_hi_verts);
+      }
+      if (detail->links & DETAIL_LINK_POS_Z) {
+        drawDetailBox(fence_rail_pos_z_lo_verts);
+        drawDetailBox(fence_rail_pos_z_hi_verts);
+      }
+    } else if (detail->kind == DETAIL_FENCE_GATE) {
+      drawDetailBox(fence_gate_left_verts);
+      drawDetailBox(fence_gate_right_verts);
+      drawDetailBox(fence_gate_rail_lo_verts);
+      drawDetailBox(fence_gate_rail_hi_verts);
     }
   }
 
@@ -3475,6 +3565,16 @@ static void drawLooseItemGeometry(u8 item) {
     gSPVertex(dlp++, torch_stick_verts, 8, 0);
     gSPDisplayList(dlp++, box_display_list);
     body = torch_flame_verts;
+  } else if (item == FENCE) {
+    gSPVertex(dlp++, fence_item_post_verts, 8, 0);
+    gSPDisplayList(dlp++, box_display_list);
+    body = fence_item_rail_verts;
+  } else if (item == FENCE_GATE) {
+    gSPVertex(dlp++, fence_gate_item_left_verts, 8, 0);
+    gSPDisplayList(dlp++, box_display_list);
+    gSPVertex(dlp++, fence_gate_item_right_verts, 8, 0);
+    gSPDisplayList(dlp++, box_display_list);
+    body = fence_item_rail_verts;
   }
   if (body != NULL) {
     gSPVertex(dlp++, body, 8, 0);
@@ -5268,6 +5368,60 @@ static s32 compassMarkX(float bearing, float yaw) {
   return (s32)(COMPASS_CENTER_X + delta * COMPASS_PIXELS_PER_DEGREE + 0.5f);
 }
 
+/*
+ * Home, on the rim below the strip.
+ *
+ * Home is the middle of the save extent: the only ground whose changes
+ * survive its column being recycled, and the only ground a save writes.  Walk
+ * out of it and building quietly stops sticking, which makes "which way is
+ * back" a question the HUD ought to answer, and the compass is where a player
+ * already looks to ask it.
+ *
+ * The marker rides the frame under the ribbon rather than the ribbon itself.
+ * There is no free lane up there -- the cardinals fill rows 10 to 16 and the
+ * ticks the rest -- so anything drawn among them would spend part of every
+ * turn hidden behind a letter.  Down here the only thing it can meet is the
+ * fixed index, and that is the one collision worth having: the two touching
+ * is exactly what facing home looks like.
+ *
+ * A bearing outside the ribbon's 120 degree window pins the wedge to the end
+ * of the strip instead of dropping it.  Home is behind the player half the
+ * time, and a marker that vanishes then would work only when it was least
+ * needed; pinned, it still says which way to turn.
+ */
+#define COMPASS_HOME_PIN 2
+/* World units.  Within a couple of blocks the bearing swings a half turn on a
+   sidestep, and the wedge would chase the player's own feet rather than point
+   anywhere; nobody standing on home needs pointing at it either. */
+#define COMPASS_HOME_NEAR (2.f * BLOCK_SIZE)
+
+static void drawCompassHome(Player *player) {
+  float dx = (WORLD_SPAWN_X + .5f) * BLOCK_SIZE - player->position.x;
+  float dz = (WORLD_SPAWN_Z + .5f) * BLOCK_SIZE - player->position.z;
+  s32 x;
+
+  if (dx * dx + dz * dz < COMPASS_HOME_NEAR * COMPASS_HOME_NEAR) {
+    return;
+  }
+  /* directionYaw answers in gameplay yaw, which runs the opposite way round
+     from the ribbon's bearings -- see compassMarkX -- so negating it turns a
+     heading into the bearing the ribbon can place. */
+  x = compassMarkX(-directionYaw(dx, dz), player->yaw);
+  if (x < COMPASS_INNER_LEFT) {
+    x = COMPASS_INNER_LEFT - COMPASS_HOME_PIN;
+  } else if (x > COMPASS_INNER_RIGHT) {
+    x = COMPASS_INNER_RIGHT + COMPASS_HOME_PIN;
+  }
+  /* The panel's own green, and its own sync: this lands on top of the index's
+     yellow, and an unsynced fill colour tints whatever of that is still
+     draining rather than replacing it. */
+  gDPPipeSync(dlp++);
+  setHudFillColor(102, 196, 121);
+  gDPFillRectangle(dlp++, x, 18, x, 18);
+  gDPFillRectangle(dlp++, x - 1, 19, x + 1, 19);
+  gDPFillRectangle(dlp++, x - 2, 20, x + 2, 20);
+}
+
 static void drawCompass(Player *player) {
   u8 mark;
 
@@ -5300,6 +5454,7 @@ static void drawCompass(Player *player) {
   }
   setHudFillColor(238, 194, 67);
   gDPFillRectangle(dlp++, 147, 15, 148, 19);
+  drawCompassHome(player);
   gDPPipeSync(dlp++);
 }
 
@@ -5451,6 +5606,23 @@ static void drawItemIcon(u8 item, u32 x, u32 y, u32 size) {
     setHudFillColor(238, 82, 31);
     gDPFillRectangle(dlp++, x + size / 2 - 1, y + 2,
       x + size / 2 + 2, y + 4);
+  } else if (item == FENCE) {
+    /* Post and rail, the same silhouette the placed model carries, so the
+       slot and the thing it builds are recognisably one item. */
+    setHudFillColor(143, 92, 44);
+    gDPFillRectangle(dlp++, x + size / 2 - 1, y + 2,
+      x + size / 2 + 1, y + size - 2);
+    setHudFillColor(168, 112, 56);
+    gDPFillRectangle(dlp++, x + 2, y + size / 2 - 2,
+      x + size - 3, y + size / 2);
+  } else if (item == FENCE_GATE) {
+    /* Two posts with the gap between them: a fence you can get through. */
+    setHudFillColor(158, 104, 51);
+    gDPFillRectangle(dlp++, x + 3, y + 2, x + 4, y + size - 2);
+    gDPFillRectangle(dlp++, x + size - 5, y + 2, x + size - 4, y + size - 2);
+    setHudFillColor(180, 122, 62);
+    gDPFillRectangle(dlp++, x + 3, y + size / 2 - 2,
+      x + size - 4, y + size / 2);
   } else if (itemIsSword(item)) {
     if (item == IRON_SWORD) {
       setHudFillColor(225, 225, 218);

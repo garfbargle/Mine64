@@ -19,9 +19,6 @@
 #include "details.h"
 #include "edits.h"
 
-#define START_X (MAX_X / 2)
-#define START_Z (MAX_Z / 2)
-
 /*
  * Analog stick shaping.
  *
@@ -163,6 +160,11 @@ const CraftRecipe craft_recipes[CRAFT_RECIPE_COUNT] = {
   {WOOD_STAIRS, 4, {PLANKS, AIR}, {6, 0}},
   {STONE_STAIRS, 4, {COBBLESTONE, AIR}, {6, 0}},
   {WOOD_DOOR, 1, {PLANKS, STICK}, {6, 1}},
+  /* Beside the door on purpose: fence, gate and door are the three ways of
+     enclosing something, and the browser is the only place their relationship
+     is ever stated. */
+  {FENCE, 3, {PLANKS, STICK}, {4, 2}},
+  {FENCE_GATE, 1, {PLANKS, STICK}, {2, 4}},
   /* Coal stands in for firing until the furnace interface lands. */
   {GLASS_WINDOW, 2, {SAND, COAL}, {4, 1}}
 };
@@ -732,7 +734,7 @@ void initPlayers() {
   u8 player_num;
 
   active_player_count = 1;
-  spawnPlayer(&players[0], START_X, START_Z);
+  spawnPlayer(&players[0], WORLD_SPAWN_X, WORLD_SPAWN_Z);
   for (player_num = 1; player_num < MAX_PLAYERS; player_num++) {
     players[player_num].active = FALSE;
     players[player_num].target_present = FALSE;
@@ -744,8 +746,8 @@ void activatePlayer(u8 player_num) {
   if (player_num < MAX_PLAYERS && !players[player_num].active) {
     /* Nearby, staggered spawns avoid an immediate overlap without needing
        a second world copy or an expensive entity system. */
-    spawnPlayer(&players[player_num], START_X + player_num * 3,
-      START_Z + (player_num & 1 ? 0 : 3));
+    spawnPlayer(&players[player_num], WORLD_SPAWN_X + player_num * 3,
+      WORLD_SPAWN_Z + (player_num & 1 ? 0 : 3));
     active_player_count = player_num + 1;
     player_joined_number = player_num + 1;
     player_joined_message = 120;
@@ -1065,9 +1067,11 @@ static void placeBlock(u8 player_num, int x, int y, int z) {
     if (held_stack->item != player->held_block || held_stack->count == 0) {
       return;
     }
-    /* A two-cell door checks both cells against every local avatar.  Other
-       details occupy only their root cell; torches are non-solid but still
-       should not be hidden inside a player's body on placement. */
+    /* A two-cell detail -- a door, and now a fence or gate, whose upper cell
+       is what stops anything jumping the line -- checks both cells against
+       every local avatar.  The rest occupy only their root cell; torches are
+       non-solid but still should not be hidden inside a player's body on
+       placement. */
     for (i = 0; i < active_player_count; i++) {
       boxBlockRange(div(players[i].position, BLOCK_SIZE),
         &min_block, &max_block);
@@ -1075,7 +1079,7 @@ static void placeBlock(u8 player_num, int x, int y, int z) {
         for (by = min_block.y; by <= max_block.y; by++) {
           for (bz = min_block.z; bz <= max_block.z; bz++) {
             if (bx == x && bz == z &&
-                (by == y || (player->held_block == WOOD_DOOR &&
+                (by == y || (detailItemIsTall(player->held_block) &&
                  by == y + 1))) {
               return;
             }
@@ -1691,8 +1695,8 @@ static u8 updatePlayer(u8 player_num, float delta, float look_delta) {
     player->death_time += delta;
     if (player->death_time >= PLAYER_RESPAWN_DELAY &&
         (cont->trigger & A_BUTTON)) {
-      respawnPlayer(player, START_X + player_num * 3,
-        START_Z + (player_num & 1 ? 0 : 3));
+      respawnPlayer(player, WORLD_SPAWN_X + player_num * 3,
+        WORLD_SPAWN_Z + (player_num & 1 ? 0 : 3));
     }
     return FALSE;
   }
@@ -1715,9 +1719,9 @@ static u8 updatePlayer(u8 player_num, float delta, float look_delta) {
     if (last_good_valid[player_num]) {
       player->position = last_good_position[player_num];
     } else {
-      player->position.x = START_X * BLOCK_SIZE;
+      player->position.x = WORLD_SPAWN_X * BLOCK_SIZE;
       player->position.y = (MAX_Y - 2) * BLOCK_SIZE;
-      player->position.z = START_Z * BLOCK_SIZE;
+      player->position.z = WORLD_SPAWN_Z * BLOCK_SIZE;
     }
     player->y_velocity = 0;
     player->knockback_velocity.x = 0;

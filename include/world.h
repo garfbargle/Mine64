@@ -20,6 +20,22 @@
 #define NUM_CHUNKS (CHUNKS_X * CHUNKS_Y * CHUNKS_Z)
 
 /*
+ * Where the world begins, in blocks: the middle of the save extent.
+ *
+ * The generator needs it for the same reason the player spawner does -- an
+ * archipelago whose player wakes up treading water, or a sky world with no
+ * island under their feet, is not a world anyone wants to preview -- and
+ * taking it from a fixed coordinate is what keeps those guarantees pure.
+ *
+ * It lives here, next to the dimensions it is derived from, because three
+ * files now need it and a second copy of `MAX_X / 2` is a drift waiting to
+ * happen: the generator raises land here, the spawner puts players here, and
+ * the compass points home at it.
+ */
+#define WORLD_SPAWN_X (MAX_X / 2)
+#define WORLD_SPAWN_Z (MAX_Z / 2)
+
+/*
  * The world's 16 block types fit in four bits, and terrain lives in a wrapping
  * window of full-height columns rather than in one array sized to a fixed
  * world.  A column maps to its slot by the low bits of its chunk coordinates,
@@ -291,5 +307,20 @@ u8 worldHamletHouse(int block_x, int block_z, u8 house, int *house_x,
 u8 worldGenerationActive();
 u8 worldGenerationProgress();
 u8 tryPlantTree(int x, int y, int z);
+
+/*
+ * Which climate band a horizontal position falls in.
+ *
+ * A pure function of (x, z, world_seed) like every other generation query, so
+ * it needs no residency and no height patch, and it costs one three-octave
+ * noise sample.  That is cheap for an occasional question and much too
+ * expensive for a per-block one -- keep it out of anything blockGet can
+ * reach.
+ */
+#define WORLD_CLIMATE_DESERT 0
+#define WORLD_CLIMATE_PLAINS 1
+#define WORLD_CLIMATE_FOREST 2
+#define WORLD_CLIMATE_JUNGLE 3
+u8 worldClimateBand(int x, int z);
 
 #endif /* WORLD_H */

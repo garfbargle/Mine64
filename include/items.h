@@ -34,7 +34,9 @@
 #define GLASS_WINDOW   38
 #define RAW_CHICKEN    39
 #define FEATHER        40
-#define ITEM_TYPE_COUNT FEATHER
+#define FENCE          41
+#define FENCE_GATE     42
+#define ITEM_TYPE_COUNT FENCE_GATE
 #define ITEM_IS_VALID(item) \
   ((item) <= BLOCK_TYPE_COUNT || \
    ((item) >= STICK && (item) <= ITEM_TYPE_COUNT))

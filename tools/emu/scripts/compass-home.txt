@@ -1,0 +1,45 @@
+# The home marker on the compass, from the one place it is guaranteed to be
+# hidden -- spawn is home -- out to where it has a bearing to point at.
+#
+# The player spawns standing on home facing north, so the first shot is the
+# empty rim: within a couple of blocks the marker is suppressed rather than
+# left to spin on the player's own footsteps.  Walking north is what brings
+# the wedge out, and it comes out pinned, because home is now directly behind.
+# The turn after that is what the marker is for: the same fixed point closing
+# on the index until the two touch, which is what facing home looks like.
+#
+# The turn is deliberately two different speeds.  Full deflection steers about
+# 48 degrees per six rendered frames, which is a third of the strip in one
+# step and cannot stop anywhere near the middle of it; 45 counts is a little
+# over 20 degrees in the same six, and the shaping in player.c is why the
+# smaller number is so much gentler than its size suggests.
+
+wait 400
+press START 8
+
+wait 500
+press START 8           # CREATE WORLD keyboard
+
+wait 60
+press START 8
+
+wait 240
+shot at-home            # standing on home: rim empty, nothing to point at
+
+stick 0 70 240          # walk north, away from home
+wait 30
+shot walked-away        # home behind: wedge pinned to the end of the strip
+
+stick 70 0 20           # come about, bringing home back onto the strip
+wait 12
+shot on-strip           # off to the right, sliding in from the pin
+
+stick 45 0 6
+wait 12
+shot facing-home        # wedge under the index: home is straight ahead
+
+stick 45 0 6
+wait 12
+shot turned-past        # carried on turning: home slides out to the left
+
+stop

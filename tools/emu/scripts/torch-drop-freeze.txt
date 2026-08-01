@@ -1,0 +1,64 @@
+# Repro: bonus kit -> open pack -> drop the torch stack -> close the pack.
+# Reported symptom: the game freezes the moment the pack closes, leaving the
+# freeze square's three bands on screen.
+#
+# The kit puts the torches in hotbar slot 3, which is where the cursor already
+# is when the pack opens, so no navigation is needed.
+
+wait 960
+
+press A 8
+wait 40
+
+# Down to BONUS KIT: nine rows past CLASSIC.
+press DDOWN 8
+wait 5
+press DDOWN 8
+wait 5
+press DDOWN 8
+wait 5
+press DDOWN 8
+wait 5
+press DDOWN 8
+wait 5
+press DDOWN 8
+wait 5
+press DDOWN 8
+wait 5
+press DDOWN 8
+wait 5
+press DDOWN 8
+wait 20
+
+press A 8
+wait 20
+
+press START 8
+wait 60
+press START 8
+wait 300
+
+# Diagnostics overlay up, so the counters are readable before and after.
+press Z+DUP 8
+wait 20
+shot diagnostics
+
+press START 8
+wait 60
+shot pack
+
+press CUP 8
+wait 40
+shot dropped
+
+press B 8
+wait 30
+shot closed
+
+wait 120
+shot after-2s
+
+wait 240
+shot after-6s
+
+stop

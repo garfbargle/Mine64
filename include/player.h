@@ -39,7 +39,7 @@
    the screen before the player has read it. */
 #define PLAYER_RESPAWN_DELAY 40.f
 #define PLAYER_OBJECTIVE_COUNT 8
-#define CRAFT_RECIPE_COUNT 17
+#define CRAFT_RECIPE_COUNT 19
 #define POCKET_RECIPE_COUNT 4
 
 enum InventoryArea {
