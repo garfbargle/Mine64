@@ -571,18 +571,15 @@ static Vtx celestial_verts[NUM_DISPLAY_LISTS][MAX_PLAYERS][8];
  */
 static Mtx celestial_model[NUM_DISPLAY_LISTS][MAX_PLAYERS];
 
-static Mtx dropped_item_translate[NUM_DISPLAY_LISTS][MAX_DROPPED_ITEMS];
-static Mtx dropped_item_rotate[NUM_DISPLAY_LISTS][MAX_DROPPED_ITEMS];
+static Mtx dropped_item_matrix[NUM_DISPLAY_LISTS][MAX_DROPPED_ITEMS];
 
 #define FALLING_TREE_RENDER_SLOTS 4
 #define FALLING_TREE_BOXES 6
 
 /* A falling tree uses a few chunky volumes, not dozens of independently
    transformed cubes.  Individual cube drops appear after it lands. */
-static Mtx falling_tree_translate[NUM_DISPLAY_LISTS][FALLING_TREE_RENDER_SLOTS];
-static Mtx falling_tree_rotate[NUM_DISPLAY_LISTS][FALLING_TREE_RENDER_SLOTS];
-static Mtx falling_tree_box_translate[NUM_DISPLAY_LISTS][FALLING_TREE_RENDER_SLOTS][FALLING_TREE_BOXES];
-static Mtx falling_tree_box_scale[NUM_DISPLAY_LISTS][FALLING_TREE_RENDER_SLOTS][FALLING_TREE_BOXES];
+static Mtx falling_tree_matrix[NUM_DISPLAY_LISTS][FALLING_TREE_RENDER_SLOTS];
+static Mtx falling_tree_box_matrix[NUM_DISPLAY_LISTS][FALLING_TREE_RENDER_SLOTS][FALLING_TREE_BOXES];
 
 #define ITEM_VERTEX(x, y, z, s, t) {x, y, z, 0, s, t, 255, 255, 255, 255}
 
@@ -603,12 +600,11 @@ static Gfx dropped_item_display_list[] = {
   gsSPEndDisplayList()
 };
 
-static Mtx first_person_sword_translate[NUM_DISPLAY_LISTS][MAX_PLAYERS];
-static Mtx first_person_sword_rotate[NUM_DISPLAY_LISTS][MAX_PLAYERS];
+static Mtx first_person_arm_matrix[NUM_DISPLAY_LISTS][MAX_PLAYERS];
 /* The held tool shares the arm's translation -- the hand is the origin of both
    -- but not its rotation, so the blade can sit across the fist and lead the
    strike instead of running straight out along the forearm. */
-static Mtx first_person_tool_rotate[NUM_DISPLAY_LISTS][MAX_PLAYERS];
+static Mtx first_person_tool_matrix[NUM_DISPLAY_LISTS][MAX_PLAYERS];
 
 /*
  * Every animal is built from the same seven anchors, because seven is what
@@ -641,16 +637,24 @@ static Mtx first_person_tool_rotate[NUM_DISPLAY_LISTS][MAX_PLAYERS];
 #define MOB_ROT_UPPER_RIGHT 5
 #define MOB_ROT_COUNT 6
 
-static Mtx mob_translate[NUM_DISPLAY_LISTS][MAX_MOBS][MOB_PART_COUNT];
-static Mtx mob_rotate[NUM_DISPLAY_LISTS][MAX_MOBS][MOB_ROT_COUNT];
+static Mtx mob_matrix[NUM_DISPLAY_LISTS][MAX_MOBS][MOB_PART_COUNT];
+/*
+ * The anchors and orientations an animal is being posed from, held only long
+ * enough to be folded together at the moment a part is drawn.
+ *
+ * They are CPU scratch rather than a second pair of tables: nothing here is
+ * ever referenced by the RSP, so it needs neither the double buffer nor a
+ * slot per animal.  One animal is posed and drawn before the next begins.
+ */
+static Vector3 mob_part_anchor[MOB_PART_COUNT];
+static float mob_orientation[MOB_ROT_COUNT][4][4];
 
 /* Detail records may be numerous in a base, but only a small nearest set is
    submitted per viewport.  The matrices are double-buffered like every other
    RSP reference and indexed by render slot rather than persistent record. */
 #define MAX_VISIBLE_DETAILS 24
 #define DETAIL_RENDER_DISTANCE (BLOCK_SIZE * 28.f)
-static Mtx detail_translate[NUM_DISPLAY_LISTS][MAX_VISIBLE_DETAILS];
-static Mtx detail_rotate[NUM_DISPLAY_LISTS][MAX_VISIBLE_DETAILS];
+static Mtx detail_matrix[NUM_DISPLAY_LISTS][MAX_VISIBLE_DETAILS];
 
 #define STEVE_VERTEX(x, y, z, r, g, b) {x, y, z, 0, 0, 0, r, g, b, 255}
 
@@ -1332,6 +1336,39 @@ static void setEntityShadeCombine(void) {
 
 static void setEntityTint(SkyColor tint) {
   gDPSetPrimColor(dlp++, 0, 0, tint.r, tint.g, tint.b, 255);
+}
+
+/*
+ * One matrix per part, where there used to be two.
+ *
+ * Every model in the game used to load a translation and then multiply a
+ * rotation onto it, which cost two Mtx of RDRAM per part -- doubled again for
+ * the RSP's double buffer -- and two gSPMatrix for the RSP to walk.  It never
+ * needed to.  Vertices go through row-vector, so the pair composes to
+ * `rotation * translation`, and a rotation's bottom row is (0, 0, 0, 1): the
+ * product is the rotation with its bottom row replaced by the translation.
+ * No multiply, one conversion instead of two, and half the matrix memory.
+ *
+ * This holds for any linear part whose bottom row is (0, 0, 0, 1) -- a
+ * rotation, a scale, or the two already combined -- which is every matrix
+ * this game ever pairs with a translation.  The camera is unaffected: it
+ * lives on the projection stack, and the modelview is always loaded fresh.
+ */
+void modelMatrixFrom(Mtx *out, float linear[4][4], float x, float y,
+    float z) {
+  linear[3][0] = x;
+  linear[3][1] = y;
+  linear[3][2] = z;
+  linear[3][3] = 1.f;
+  guMtxF2L(linear, out);
+}
+
+void modelMatrix(Mtx *out, float pitch, float yaw, float roll, float x,
+    float y, float z) {
+  float linear[4][4];
+
+  guRotateRPYF(linear, pitch, yaw, roll);
+  modelMatrixFrom(out, linear, x, y, z);
 }
 
 /* The same three numbers, for a pass that has to fold something of its own
@@ -2810,28 +2847,30 @@ static void drawFirstPersonHand(u8 player_num) {
   /* The rotation turns the model about its own origin -- the hand -- so for the
      elbow to be what stays put the translation has to undo where the rotation
      sends it: translate = elbow - (0, FP_ARM_LENGTH, 0) * rotation. */
-  guTranslate(&first_person_sword_translate[dl_no][player_num],
-    FP_ELBOW_X - FP_SWING_INWARD * reach + FP_ARM_LENGTH * pitch_cos * roll_sin,
-    FP_ELBOW_Y + FP_SWING_RISE * reach - FP_ARM_LENGTH * pitch_cos * roll_cos,
-    FP_ELBOW_Z - FP_SWING_FORWARD * reach - FP_ARM_LENGTH * pitch_sin);
-  guRotateRPY(&first_person_sword_rotate[dl_no][player_num], pitch, 0.f,
-    FP_ARM_ROLL);
-  guRotateRPY(&first_person_tool_rotate[dl_no][player_num],
-    pitch + FP_TOOL_PITCH, FP_TOOL_YAW, FP_ARM_ROLL + FP_TOOL_SLASH * reach);
+  {
+    /* The hand is the origin of the tool as well as the arm, so both matrices
+       are the same translation under a different orientation. */
+    float hand_x = FP_ELBOW_X - FP_SWING_INWARD * reach +
+      FP_ARM_LENGTH * pitch_cos * roll_sin;
+    float hand_y = FP_ELBOW_Y + FP_SWING_RISE * reach -
+      FP_ARM_LENGTH * pitch_cos * roll_cos;
+    float hand_z = FP_ELBOW_Z - FP_SWING_FORWARD * reach -
+      FP_ARM_LENGTH * pitch_sin;
+
+    modelMatrix(&first_person_arm_matrix[dl_no][player_num], pitch, 0.f,
+      FP_ARM_ROLL, hand_x, hand_y, hand_z);
+    modelMatrix(&first_person_tool_matrix[dl_no][player_num],
+      pitch + FP_TOOL_PITCH, FP_TOOL_YAW,
+      FP_ARM_ROLL + FP_TOOL_SLASH * reach, hand_x, hand_y, hand_z);
+  }
   gSPClearGeometryMode(dlp++, G_CULL_BACK);
-  gSPMatrix(dlp++, OS_K0_TO_PHYSICAL(&first_person_sword_translate[dl_no][player_num]),
+  gSPMatrix(dlp++, OS_K0_TO_PHYSICAL(&first_person_arm_matrix[dl_no][player_num]),
     G_MTX_MODELVIEW | G_MTX_LOAD | G_MTX_NOPUSH);
-  gSPMatrix(dlp++, OS_K0_TO_PHYSICAL(&first_person_sword_rotate[dl_no][player_num]),
-    G_MTX_MODELVIEW | G_MTX_MUL | G_MTX_NOPUSH);
   gSPVertex(dlp++, first_person_arm_verts, 8, 0);
   gSPDisplayList(dlp++, box_display_list);
   if (itemIsTool(item)) {
-    /* The hand is the origin of the tool as well, so only the rotation has to
-       be swapped -- the arm's translation still lands the hilt in the fist. */
-    gSPMatrix(dlp++, OS_K0_TO_PHYSICAL(&first_person_sword_translate[dl_no][player_num]),
+    gSPMatrix(dlp++, OS_K0_TO_PHYSICAL(&first_person_tool_matrix[dl_no][player_num]),
       G_MTX_MODELVIEW | G_MTX_LOAD | G_MTX_NOPUSH);
-    gSPMatrix(dlp++, OS_K0_TO_PHYSICAL(&first_person_tool_rotate[dl_no][player_num]),
-      G_MTX_MODELVIEW | G_MTX_MUL | G_MTX_NOPUSH);
     drawToolGeometry(item);
   }
   gSPSetGeometryMode(dlp++, G_CULL_BACK);
@@ -2923,17 +2962,13 @@ static void drawDetailsForPlayer(u8 viewer_num) {
         (detail->state & DETAIL_STATE_OPEN)) {
       yaw += 90.f;
     }
-    guTranslate(&detail_translate[dl_no][render_slot],
+    modelMatrix(&detail_matrix[dl_no][render_slot], 0, yaw, 0,
       (detail->x + .5f) * BLOCK_SIZE - render_origin_units_x,
       detail->y * BLOCK_SIZE,
       (detail->z + .5f) * BLOCK_SIZE - render_origin_units_z);
-    guRotateRPY(&detail_rotate[dl_no][render_slot], 0, yaw, 0);
     gSPMatrix(dlp++, OS_K0_TO_PHYSICAL(
-      &detail_translate[dl_no][render_slot]),
+      &detail_matrix[dl_no][render_slot]),
       G_MTX_MODELVIEW | G_MTX_LOAD | G_MTX_NOPUSH);
-    gSPMatrix(dlp++, OS_K0_TO_PHYSICAL(
-      &detail_rotate[dl_no][render_slot]),
-      G_MTX_MODELVIEW | G_MTX_MUL | G_MTX_NOPUSH);
 
     if (detail->kind == DETAIL_TORCH) {
       /* Stick only.  Its flame is emissive and goes in the second pass
@@ -2969,10 +3004,8 @@ static void drawDetailsForPlayer(u8 viewer_num) {
     gDPPipeSync(dlp++);
     setEntityTint(emissive_tint);
     for (i = 0; i < torch_count; i++) {
-      gSPMatrix(dlp++, OS_K0_TO_PHYSICAL(&detail_translate[dl_no][torch_slots[i]]),
+      gSPMatrix(dlp++, OS_K0_TO_PHYSICAL(&detail_matrix[dl_no][torch_slots[i]]),
         G_MTX_MODELVIEW | G_MTX_LOAD | G_MTX_NOPUSH);
-      gSPMatrix(dlp++, OS_K0_TO_PHYSICAL(&detail_rotate[dl_no][torch_slots[i]]),
-        G_MTX_MODELVIEW | G_MTX_MUL | G_MTX_NOPUSH);
       drawDetailBox(torch_flame_verts);
     }
     gDPPipeSync(dlp++);
@@ -2995,10 +3028,11 @@ static void setMobPartTransform(u8 mob_num, u8 part, Vector3 local_offset,
   Mob *mob = &mobs[mob_num];
   Vector3 offset = rotateY(mul(local_offset, scale), -mob->yaw);
 
-  guTranslate(&mob_translate[dl_no][mob_num][part],
-    mob->position.x + offset.x - render_origin_units_x,
-    mob->position.y + offset.y,
-    mob->position.z + offset.z - render_origin_units_z);
+  mob_part_anchor[part].x =
+    mob->position.x + offset.x - render_origin_units_x;
+  mob_part_anchor[part].y = mob->position.y + offset.y;
+  mob_part_anchor[part].z =
+    mob->position.z + offset.z - render_origin_units_z;
 }
 
 /*
@@ -3008,9 +3042,9 @@ static void setMobPartTransform(u8 mob_num, u8 part, Vector3 local_offset,
  * own -- X, then Y, then Z, row-vector -- so anything already reasoned about
  * in those terms still holds.
  */
-static void setMobRotation(u8 mob_num, u8 slot, float pitch, float yaw,
+static void setMobRotation(u8 slot, float pitch, float yaw,
     float roll, float scale) {
-  float matrix[4][4];
+  float (*matrix)[4] = mob_orientation[slot];
   float sin_pitch = pitch == 0 ? 0.f : sinf(pitch * M_DTOR);
   float cos_pitch = pitch == 0 ? 1.f : cosf(pitch * M_DTOR);
   float sin_yaw = sinf(yaw * M_DTOR);
@@ -3032,15 +3066,17 @@ static void setMobRotation(u8 mob_num, u8 slot, float pitch, float yaw,
   matrix[2][1] = (cos_pitch * sin_yaw * sin_roll - sin_pitch * cos_roll) *
     scale;
   matrix[2][2] = cos_pitch * cos_yaw * scale;
-  guMtxF2L(matrix, &mob_rotate[dl_no][mob_num][slot]);
 }
 
+/* Folded here rather than where either half was computed, because an
+   orientation is shared by several parts and each part sits somewhere else:
+   the pair only becomes one matrix once both are known. */
 static void drawMobPart(u8 mob_num, u8 part, u8 rotation, Vtx *verts,
     u8 vertex_count, Gfx *part_dl) {
-  gSPMatrix(dlp++, OS_K0_TO_PHYSICAL(&mob_translate[dl_no][mob_num][part]),
+  modelMatrixFrom(&mob_matrix[dl_no][mob_num][part], mob_orientation[rotation],
+    mob_part_anchor[part].x, mob_part_anchor[part].y, mob_part_anchor[part].z);
+  gSPMatrix(dlp++, OS_K0_TO_PHYSICAL(&mob_matrix[dl_no][mob_num][part]),
     G_MTX_MODELVIEW | G_MTX_LOAD | G_MTX_NOPUSH);
-  gSPMatrix(dlp++, OS_K0_TO_PHYSICAL(&mob_rotate[dl_no][mob_num][rotation]),
-    G_MTX_MODELVIEW | G_MTX_MUL | G_MTX_NOPUSH);
   gSPVertex(dlp++, verts, vertex_count, 0);
   gSPDisplayList(dlp++, part_dl);
 }
@@ -3100,11 +3136,11 @@ static void drawQuadrupedMob(u8 mob_num, const QuadrupedModel *model,
   float graze = mob->state == MOB_IDLE ?
     model->graze_pitch + sinf(mob->walk_time * .35f) * 5.f : 0;
 
-  setMobRotation(mob_num, MOB_ROT_BODY, 0, mob->yaw, 0, scale);
-  setMobRotation(mob_num, MOB_ROT_HEAD, graze, mob->yaw + mob->head_yaw, 0,
+  setMobRotation(MOB_ROT_BODY, 0, mob->yaw, 0, scale);
+  setMobRotation(MOB_ROT_HEAD, graze, mob->yaw + mob->head_yaw, 0,
     scale);
-  setMobRotation(mob_num, MOB_ROT_LIMB_A, swing, mob->yaw, 0, scale);
-  setMobRotation(mob_num, MOB_ROT_LIMB_B, -swing, mob->yaw, 0, scale);
+  setMobRotation(MOB_ROT_LIMB_A, swing, mob->yaw, 0, scale);
+  setMobRotation(MOB_ROT_LIMB_B, -swing, mob->yaw, 0, scale);
 
   setMobPartTransform(mob_num, MOB_BODY, (Vector3) {hurt, 0, 0}, scale);
   setMobPartTransform(mob_num, MOB_HEAD,
@@ -3155,13 +3191,13 @@ static void drawChickenMob(u8 mob_num, float hurt, float scale, u8 detailed) {
   float peck = mob->state == MOB_IDLE ?
     -42.f + sinf(mob->walk_time * .7f) * 34.f : -6.f;
 
-  setMobRotation(mob_num, MOB_ROT_BODY, 0, mob->yaw, 0, scale);
-  setMobRotation(mob_num, MOB_ROT_HEAD, peck, mob->yaw + mob->head_yaw, 0,
+  setMobRotation(MOB_ROT_BODY, 0, mob->yaw, 0, scale);
+  setMobRotation(MOB_ROT_HEAD, peck, mob->yaw + mob->head_yaw, 0,
     scale);
-  setMobRotation(mob_num, MOB_ROT_LIMB_A, swing, mob->yaw, 0, scale);
-  setMobRotation(mob_num, MOB_ROT_LIMB_B, -swing, mob->yaw, 0, scale);
-  setMobRotation(mob_num, MOB_ROT_UPPER_LEFT, 0, mob->yaw, -beat, scale);
-  setMobRotation(mob_num, MOB_ROT_UPPER_RIGHT, 0, mob->yaw, beat, scale);
+  setMobRotation(MOB_ROT_LIMB_A, swing, mob->yaw, 0, scale);
+  setMobRotation(MOB_ROT_LIMB_B, -swing, mob->yaw, 0, scale);
+  setMobRotation(MOB_ROT_UPPER_LEFT, 0, mob->yaw, -beat, scale);
+  setMobRotation(MOB_ROT_UPPER_RIGHT, 0, mob->yaw, beat, scale);
 
   setMobPartTransform(mob_num, MOB_BODY, (Vector3) {hurt, 0, 0}, scale);
   setMobPartTransform(mob_num, MOB_HEAD, (Vector3) {hurt, 38, -7}, scale);
@@ -3206,13 +3242,13 @@ static void drawZombieMob(u8 mob_num, float hurt, float scale, u8 detailed) {
   float reach = 74.f + sinf(mob->walk_time * .5f) * 7.f;
   float loll = sinf(mob->walk_time * .35f) * 6.f - 4.f;
 
-  setMobRotation(mob_num, MOB_ROT_BODY, 0, mob->yaw, 0, scale);
-  setMobRotation(mob_num, MOB_ROT_HEAD, loll, mob->yaw + mob->head_yaw, 0,
+  setMobRotation(MOB_ROT_BODY, 0, mob->yaw, 0, scale);
+  setMobRotation(MOB_ROT_HEAD, loll, mob->yaw + mob->head_yaw, 0,
     scale);
-  setMobRotation(mob_num, MOB_ROT_LIMB_A, swing, mob->yaw, 0, scale);
-  setMobRotation(mob_num, MOB_ROT_LIMB_B, -swing, mob->yaw, 0, scale);
-  setMobRotation(mob_num, MOB_ROT_UPPER_LEFT, reach, mob->yaw, 0, scale);
-  setMobRotation(mob_num, MOB_ROT_UPPER_RIGHT, reach, mob->yaw, 0, scale);
+  setMobRotation(MOB_ROT_LIMB_A, swing, mob->yaw, 0, scale);
+  setMobRotation(MOB_ROT_LIMB_B, -swing, mob->yaw, 0, scale);
+  setMobRotation(MOB_ROT_UPPER_LEFT, reach, mob->yaw, 0, scale);
+  setMobRotation(MOB_ROT_UPPER_RIGHT, reach, mob->yaw, 0, scale);
 
   setMobPartTransform(mob_num, MOB_BODY, (Vector3) {hurt, 0, 0}, scale);
   setMobPartTransform(mob_num, MOB_HEAD, (Vector3) {hurt, 96, 0}, scale);
@@ -3253,11 +3289,11 @@ static void drawSpiderMob(u8 mob_num, float hurt, float scale, u8 detailed) {
   Gfx *legs = detailed ? mob_double_box_display_list :
     box_display_list;
 
-  setMobRotation(mob_num, MOB_ROT_BODY, 0, mob->yaw, 0, scale);
-  setMobRotation(mob_num, MOB_ROT_HEAD, 0, mob->yaw + mob->head_yaw, 0,
+  setMobRotation(MOB_ROT_BODY, 0, mob->yaw, 0, scale);
+  setMobRotation(MOB_ROT_HEAD, 0, mob->yaw + mob->head_yaw, 0,
     scale);
-  setMobRotation(mob_num, MOB_ROT_LIMB_A, swing, mob->yaw, 0, scale);
-  setMobRotation(mob_num, MOB_ROT_LIMB_B, -swing, mob->yaw, 0, scale);
+  setMobRotation(MOB_ROT_LIMB_A, swing, mob->yaw, 0, scale);
+  setMobRotation(MOB_ROT_LIMB_B, -swing, mob->yaw, 0, scale);
 
   setMobPartTransform(mob_num, MOB_BODY, (Vector3) {hurt, 0, 0}, scale);
   setMobPartTransform(mob_num, MOB_HEAD, (Vector3) {hurt, 32, -10}, scale);
@@ -3299,7 +3335,7 @@ static void drawMob(u8 mob_num, u8 detailed) {
     float bounce = sinf(mob->walk_time);
 
     if (bounce < 0) bounce = -bounce;
-    setMobRotation(mob_num, MOB_ROT_BODY, 0, mob->yaw, 0, scale);
+    setMobRotation(MOB_ROT_BODY, 0, mob->yaw, 0, scale);
     setMobPartTransform(mob_num, MOB_BODY,
       (Vector3) {hurt, 21 + bounce * 8.f, 0}, scale);
     drawMobPart(mob_num, MOB_BODY, MOB_ROT_BODY, slime_body_verts, 8,
@@ -3457,15 +3493,12 @@ static void drawDroppedItems(u8 viewer_num) {
       continue;
     }
 
-    guTranslate(&dropped_item_translate[dl_no][i],
+    modelMatrix(&dropped_item_matrix[dl_no][i], 0, drop->rotation, 0,
       drop->position.x - render_origin_units_x,
       drop->position.y + sinf(drop->rotation * M_DTOR) * 3.f,
       drop->position.z - render_origin_units_z);
-    guRotateRPY(&dropped_item_rotate[dl_no][i], 0, drop->rotation, 0);
-    gSPMatrix(dlp++, OS_K0_TO_PHYSICAL(&dropped_item_translate[dl_no][i]),
+    gSPMatrix(dlp++, OS_K0_TO_PHYSICAL(&dropped_item_matrix[dl_no][i]),
       G_MTX_MODELVIEW | G_MTX_LOAD | G_MTX_NOPUSH);
-    gSPMatrix(dlp++, OS_K0_TO_PHYSICAL(&dropped_item_rotate[dl_no][i]),
-      G_MTX_MODELVIEW | G_MTX_MUL | G_MTX_NOPUSH);
     if (ITEM_IS_VALID(drop->item) && preview_textures[drop->item] != NULL) {
       gSPTexture(dlp++, 0x8000, 0x8000, 0, G_TX_RENDERTILE, G_ON);
       /* The cube's vertices are all white, so modulating the tile against the
@@ -3490,16 +3523,16 @@ static void drawFallingTreeBox(u8 slot, u8 box, u8 item, float x, float y,
   const float cube_scale = BLOCK_SIZE / 28.f;
 
   loadTexture(preview_textures[item]);
-  guTranslate(&falling_tree_box_translate[dl_no][slot][box], x, y, z);
-  guScale(&falling_tree_box_scale[dl_no][slot][box], sx * cube_scale,
-    sy * cube_scale, sz * cube_scale);
-  gSPMatrix(dlp++, OS_K0_TO_PHYSICAL(&falling_tree_translate[dl_no][slot]),
+  float box_scale[4][4];
+
+  /* Scale the cube, offset it inside the trunk, then the trunk's own fall and
+     position: four matrices collapse to the two the chain actually needs. */
+  guScaleF(box_scale, sx * cube_scale, sy * cube_scale, sz * cube_scale);
+  modelMatrixFrom(&falling_tree_box_matrix[dl_no][slot][box], box_scale,
+    x, y, z);
+  gSPMatrix(dlp++, OS_K0_TO_PHYSICAL(&falling_tree_matrix[dl_no][slot]),
     G_MTX_MODELVIEW | G_MTX_LOAD | G_MTX_NOPUSH);
-  gSPMatrix(dlp++, OS_K0_TO_PHYSICAL(&falling_tree_rotate[dl_no][slot]),
-    G_MTX_MODELVIEW | G_MTX_MUL | G_MTX_NOPUSH);
-  gSPMatrix(dlp++, OS_K0_TO_PHYSICAL(&falling_tree_box_translate[dl_no][slot][box]),
-    G_MTX_MODELVIEW | G_MTX_MUL | G_MTX_NOPUSH);
-  gSPMatrix(dlp++, OS_K0_TO_PHYSICAL(&falling_tree_box_scale[dl_no][slot][box]),
+  gSPMatrix(dlp++, OS_K0_TO_PHYSICAL(&falling_tree_box_matrix[dl_no][slot][box]),
     G_MTX_MODELVIEW | G_MTX_MUL | G_MTX_NOPUSH);
   gSPVertex(dlp++, dropped_item_verts, 8, 0);
   gSPDisplayList(dlp++, dropped_item_display_list);
@@ -3542,11 +3575,10 @@ static void drawFallingTree(TreeRecord *tree, u8 slot, int abs_x, int abs_z) {
     pitch = -angle;
   }
 
-  guTranslate(&falling_tree_translate[dl_no][slot],
+  modelMatrix(&falling_tree_matrix[dl_no][slot], pitch, 0, roll,
     (abs_x + 0.5f) * BLOCK_SIZE - render_origin_units_x,
     (tree->base_y + 1) * BLOCK_SIZE,
     (abs_z + 0.5f) * BLOCK_SIZE - render_origin_units_z);
-  guRotateRPY(&falling_tree_rotate[dl_no][slot], pitch, 0, roll);
 
   drawFallingTreeBox(slot, 0, WOOD, 0, height * BLOCK_SIZE / 2.f, 0,
     1, height, 1);

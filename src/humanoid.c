@@ -9,11 +9,10 @@
  * why is in humanoid.h; this is the geometry, the transforms and the pool.
  */
 
-/* Two matrices per anchor, double-buffered by dl_no like every other
-   RSP-referenced structure: the RSP may still be walking last frame's copy
-   while this one is written. */
-static Mtx humanoid_translate[NUM_DISPLAY_LISTS][HUMANOID_SLOTS][HUMANOID_PART_COUNT];
-static Mtx humanoid_rotate[NUM_DISPLAY_LISTS][HUMANOID_SLOTS][HUMANOID_PART_COUNT];
+/* One matrix per anchor -- see modelMatrix -- double-buffered by dl_no like
+   every other RSP-referenced structure: the RSP may still be walking last
+   frame's copy while this one is written. */
+static Mtx humanoid_matrix[NUM_DISPLAY_LISTS][HUMANOID_SLOTS][HUMANOID_PART_COUNT];
 
 /* How many NPC slots this viewport has handed out. */
 static u8 claimed_npc_slots;
@@ -153,18 +152,15 @@ static void setPartTransform(u8 slot, u8 part, Vector3 position,
     float body_yaw, Vector3 local_offset, float pitch, float yaw) {
   Vector3 offset = rotateY(local_offset, -body_yaw);
 
-  guTranslate(&humanoid_translate[dl_no][slot][part],
+  modelMatrix(&humanoid_matrix[dl_no][slot][part], pitch, yaw, 0,
     position.x + offset.x - render_origin_units_x,
     position.y + offset.y,
     position.z + offset.z - render_origin_units_z);
-  guRotateRPY(&humanoid_rotate[dl_no][slot][part], pitch, yaw, 0);
 }
 
 static void bindPart(u8 slot, u8 part) {
-  gSPMatrix(dlp++, OS_K0_TO_PHYSICAL(&humanoid_translate[dl_no][slot][part]),
+  gSPMatrix(dlp++, OS_K0_TO_PHYSICAL(&humanoid_matrix[dl_no][slot][part]),
     G_MTX_MODELVIEW | G_MTX_LOAD | G_MTX_NOPUSH);
-  gSPMatrix(dlp++, OS_K0_TO_PHYSICAL(&humanoid_rotate[dl_no][slot][part]),
-    G_MTX_MODELVIEW | G_MTX_MUL | G_MTX_NOPUSH);
 }
 
 /*

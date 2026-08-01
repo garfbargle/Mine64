@@ -44,21 +44,8 @@
    frame budget. */
 #define CREATURE_RENDER_DISTANCE (BLOCK_SIZE * 26.f)
 
-static Mtx creature_translate[NUM_DISPLAY_LISTS][MON_RENDER_SLOTS][MON_MAX_PARTS];
-static Mtx creature_rotate[NUM_DISPLAY_LISTS][MON_RENDER_SLOTS][MON_MAX_PARTS];
+static Mtx creature_matrix[NUM_DISPLAY_LISTS][MON_RENDER_SLOTS][MON_MAX_PARTS];
 static Vtx creature_verts[NUM_DISPLAY_LISTS][MON_RENDER_SLOTS][MON_MAX_PARTS][8];
-
-/* The same triangle order every box model in the game uses, so the vertex
-   layout below is the layout drawSteve and drawMob already produce. */
-static Gfx creature_box_display_list[] = {
-  gsSP2Triangles(0, 1, 2, 0, 0, 2, 3, 0),
-  gsSP2Triangles(4, 5, 6, 0, 4, 6, 7, 0),
-  gsSP2Triangles(1, 4, 7, 0, 1, 7, 2, 0),
-  gsSP2Triangles(5, 0, 3, 0, 5, 3, 6, 0),
-  gsSP2Triangles(5, 4, 1, 0, 5, 1, 0, 0),
-  gsSP2Triangles(3, 2, 7, 0, 3, 7, 6, 0),
-  gsSPEndDisplayList()
-};
 
 typedef struct {
   float walk_time;
@@ -255,18 +242,14 @@ static void drawCreature(u8 slot, u8 species_id, Vector3 position, float yaw,
     offset.y = oy;
     offset.z = oz;
     offset = rotateY(offset, -yaw);
-    guTranslate(&creature_translate[dl_no][slot][part_index],
+    modelMatrix(&creature_matrix[dl_no][slot][part_index], 0, -yaw, 0,
       position.x + offset.x - render_origin_units_x,
       position.y + offset.y,
       position.z + offset.z - render_origin_units_z);
-    guRotateRPY(&creature_rotate[dl_no][slot][part_index], 0, -yaw, 0);
 
     gSPMatrix(dlp++,
-      OS_K0_TO_PHYSICAL(&creature_translate[dl_no][slot][part_index]),
+      OS_K0_TO_PHYSICAL(&creature_matrix[dl_no][slot][part_index]),
       G_MTX_MODELVIEW | G_MTX_LOAD | G_MTX_NOPUSH);
-    gSPMatrix(dlp++,
-      OS_K0_TO_PHYSICAL(&creature_rotate[dl_no][slot][part_index]),
-      G_MTX_MODELVIEW | G_MTX_MUL | G_MTX_NOPUSH);
     gSPVertex(dlp++, verts, 8, 0);
     gSPDisplayList(dlp++, box_display_list);
   }

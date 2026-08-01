@@ -177,6 +177,18 @@ void drawToolGeometry(u8 item);
 /* The day/night level the entity passes load as their primitive colour, for
    a pass that has its own colour to fold into it. */
 void graphicsEntityTintRGB(u8 *out_rgb);
+/*
+ * A part's whole modelview: rotate about the model's own origin, then move it
+ * into the world, in one matrix and one gSPMatrix.  See graphics.c for why
+ * the pair a model used to load never needed to be a pair.
+ *
+ * `modelMatrixFrom` takes a linear transform already built -- a scale, or a
+ * rotation with a scale folded in -- and writes into it, so the caller's
+ * scratch must be a local rather than a table it wants to keep.
+ */
+void modelMatrix(Mtx *out, float pitch, float yaw, float roll, float x,
+  float y, float z);
+void modelMatrixFrom(Mtx *out, float linear[4][4], float x, float y, float z);
 void drawWorld();
 void drawWireframes();
 void drawHUD();

@@ -243,6 +243,47 @@ plus a third; the real figure is whatever `nuAuHeapGetUsed()` returns, and the
 D-pad Up**). Read `U` on hardware, set `MINE64_AU_HEAP_SIZE` from it with a
 sensible reserve, and the difference comes straight back as headroom.
 
+### 4. One matrix per part instead of two — 24 KiB, both builds
+
+Every model in the game loaded a translation and then multiplied a rotation
+onto it: two `Mtx` of RDRAM per part, doubled again for the RSP's double
+buffer, and two `gSPMatrix` for the RSP to walk.
+
+It never needed to be two. Vertices go through row-vector, so the pair composes
+to `rotation * translation` -- and a rotation's bottom row is (0, 0, 0, 1), so
+the product is *the rotation with its bottom row replaced by the translation*.
+There is no multiply to do. `modelMatrix` in `graphics.c` builds the rotation in
+float, writes three numbers into the bottom row and converts once, which is less
+CPU work than the two `gu` calls it replaces, not more.
+
+It holds for any linear part whose bottom row is (0, 0, 0, 1) -- a rotation, a
+scale, or the two already combined -- which is every matrix this game pairs with
+a translation. The camera is untouched: it lives on the projection stack, and
+the modelview is always loaded fresh, which is what makes collapsing the pair
+safe.
+
+| | before | after |
+|---|---|---|
+| mobs | 13,312 | 7,168 |
+| people | 12,288 | 6,144 |
+| details | 6,144 | 3,072 |
+| creatures | 5,632 | 2,816 |
+| dropped items | 4,096 | 2,048 |
+| falling trees | 7,168 | 3,584 |
+| first person | 1,536 | 1,024 |
+
+An animal's orientations are shared between its parts and its anchors are not,
+so those two are held in CPU scratch and folded at the moment a part is drawn.
+That scratch is not RSP-visible, so it needs neither the double buffer nor a
+slot per animal -- which is why the mob saving is larger than a halving.
+
+The RSP also walks one matrix command per part instead of two. That is a
+frame-time win on the pass that owns the 20 fps ceiling, and like every other
+frame-time claim here it wants hardware to confirm.
+
+**Measured:** `make` went from 114 KiB free to 138 KiB, and `make audio` from
+12 KiB over to 12 KiB free.
+
 ### Verified how
 
 All three changes were applied together in a throwaway worktree at the same
@@ -262,33 +303,38 @@ audio output, and RDP timing generally. Items 1 and 3 are structural and the
 emulator run is good evidence. Item 2 is a performance change and only hardware
 can sign it off — check `W`/`B` before and after.
 
-## What was spent
+## What was spent, and what paid for it
 
-### One body for every person — ~5 KiB, both builds · `humanoid.c`
+### One body for every person — ~11 KiB, both builds
 
 Players, 64MON's trainers and the villagers used to be two model
-representations and one draw path each; they are now one body out of one
-matrix pool. The pool is `HUMANOID_SLOTS` (four players plus two NPCs) times
-eight anchors times two matrices, double-buffered: 12 KiB, against the 7 KiB
-the player-only array it replaced cost.
+representations and one draw path each; they are now one body out of one matrix
+pool, and there are villagers where there were none. About half of that is the
+pool and half is the code that did not exist before.
 
 The geometry itself became free rather than costing more. The boxes carry
 shading only and the garment colour arrives as the primitive colour, so eight
-people on screen would share one set of vertices -- where the creature path
-writes eight vertices per box per slot per frame.
+people on screen share one set of vertices -- where the creature path writes
+eight vertices per box per slot per frame. `HUMANOID_NPC_SLOTS` is the dial for
+a busier world; each one is a kilobyte.
 
-**`HUMANOID_NPC_SLOTS` is the dial.** Each one is 2 KiB. The obvious lever if
-more are wanted is concatenating each anchor's translation and rotation into a
-single matrix on the CPU, which would halve the pool *and* halve the matrix
-commands the RSP walks per person. It was not done here because the two-matrix
-form is what every other model in the game uses, and changing it is a frame-time
-question that belongs on hardware.
+That spending is what turned up the entry below, which more than paid for it.
 
 ## What is still on the table
 
 Neither of these is free — both trade frame time for memory, and Mine64 has more
 memory than frame time now. Listed because the analysis found them, not because
 they are next.
+
+There is also a correctness debt in the same neighbourhood as the matrix work,
+which is not a saving but will cost one. `detail_*`, `creature_*` and
+`humanoid_*` are indexed by *per-viewport render slot*, and every viewport
+writes into one display list that the RSP walks after the whole frame is built
+— so in split-screen the second viewport overwrites the matrices the first
+viewport's commands still point at. `mob_matrix` is indexed by the animal
+itself and does not have this problem. Fixing the other three means widening
+them to per-viewport ranges, which is about 13 KiB of the 24 the collapse just
+returned.
 
 ### Narrow the index — up to 64 KiB, both builds
 
@@ -354,21 +400,17 @@ exactly where the Z buffer ends. Nothing is wasted between them.
 
 Measured, not projected — every column is a real build in the container.
 
-| | before | + microcodes | after all three | **today** |
+| | before | + microcodes | + fifo & heap | + one matrix per part |
 |---|---|---|---|---|
-| `make` | 35 KiB free ⚠ | 64 KiB free ✓ | 128 KiB free ✓ | **114 KiB free** ✓ |
-| `make audio` | 310 KiB over ✗ | 285 KiB over ✗ | 2 KiB free ⚠ | **12 KiB over** ✗ |
+| `make` | 35 KiB free ⚠ | 64 KiB free ✓ | 128 KiB free ✓ | **138 KiB free** ✓ |
+| `make audio` | 310 KiB over ✗ | 285 KiB over ✗ | 2 KiB free ⚠ | **12 KiB free** ⚠ |
 
-The default build went from tripping the headroom warning to four times the
-margin the guard asks for, and has spent about fourteen of that since on
-gameplay: the shared human body and the villagers are the largest single item.
-
-**The audio build is failing again.** It had already slipped from 2 KiB free to
-0 KiB before the people work, on ordinary feature growth; that work took it to
-12 KiB over. Nothing above is wasted, so closing it means either the matrix
-concatenation described under *What was spent* -- worth about 6 KiB and a
-frame-time question -- or one of the two entries below. The default build is
-unaffected and has room.
+The default build went from tripping the headroom warning to more than four
+times the margin the guard asks for. The audio build has been the tight one
+throughout: it reached 2 KiB free, drifted to zero on ordinary feature growth,
+went 12 KiB over when the people work landed, and the matrix collapse that work
+turned up took it to 12 KiB free. It is still the build to measure after any
+change, and it still wants a hardware pass for the heap's real size.
 
 ## How to measure it yourself
 
