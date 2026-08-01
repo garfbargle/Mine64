@@ -740,29 +740,35 @@ static Vtx steve_leg_verts[] = {
 #define MOB_BOX DETAIL_BOX
 
 MOB_BOX(sheep_body_verts, -25, 30, -18, 25, 66, 24,
-  201, 198, 184, 238, 236, 224);
+  201, 198, 184, 240, 238, 226);
+/* Deliberately several shades under the fleece.  A sheep whose head matched
+   its body read as one white box with eyes painted on the corner. */
 MOB_BOX(sheep_head_verts, -13, -14, -28, 13, 12, 2,
-  186, 183, 170, 230, 227, 213);
+  158, 152, 141, 198, 192, 178);
 MOB_BOX(sheep_leg_verts, -6, -34, -6, 6, 0, 6,
   74, 68, 60, 102, 95, 84);
 MOB_BOX(sheep_tail_verts, -5, 50, 24, 5, 62, 32,
-  196, 193, 180, 226, 223, 210);
+  196, 193, 180, 228, 225, 212);
 
-/* Muzzle, then two ears cocked out from the skull, then two eyes standing a
-   little proud of the face so they never z-fight with it. */
+/*
+ * Muzzle, two ears, two eyes.  Both pairs of quads sit clear of the head box
+ * rather than on its surface -- the ears above its roofline, the eyes a unit
+ * proud of its face -- because vertex positions are integers and a coplanar
+ * quad has no sub-unit offset available to break the z-fight with.
+ */
 static Vtx sheep_face_verts[] = {
-  STEVE_VERTEX(-8, -3, -27, 178, 158, 138), STEVE_VERTEX(8, -3, -27, 178, 158, 138),
-  STEVE_VERTEX(8, -13, -27, 178, 158, 138), STEVE_VERTEX(-8, -13, -27, 178, 158, 138),
-  STEVE_VERTEX(8, -3, -36, 214, 194, 172), STEVE_VERTEX(-8, -3, -36, 214, 194, 172),
-  STEVE_VERTEX(-8, -13, -36, 214, 194, 172), STEVE_VERTEX(8, -13, -36, 214, 194, 172),
-  STEVE_VERTEX(-13, 8, -12, 214, 210, 196), STEVE_VERTEX(-23, 3, -12, 190, 186, 172),
-  STEVE_VERTEX(-23, 3, -1, 190, 186, 172), STEVE_VERTEX(-13, 8, -1, 214, 210, 196),
-  STEVE_VERTEX(13, 8, -12, 214, 210, 196), STEVE_VERTEX(23, 3, -12, 190, 186, 172),
-  STEVE_VERTEX(23, 3, -1, 190, 186, 172), STEVE_VERTEX(13, 8, -1, 214, 210, 196),
-  STEVE_VERTEX(-10, 3, -29, 34, 28, 24), STEVE_VERTEX(-4, 3, -29, 34, 28, 24),
-  STEVE_VERTEX(-4, -2, -29, 34, 28, 24), STEVE_VERTEX(-10, -2, -29, 34, 28, 24),
-  STEVE_VERTEX(4, 3, -29, 34, 28, 24), STEVE_VERTEX(10, 3, -29, 34, 28, 24),
-  STEVE_VERTEX(10, -2, -29, 34, 28, 24), STEVE_VERTEX(4, -2, -29, 34, 28, 24)
+  STEVE_VERTEX(-8, -3, -27, 176, 156, 140), STEVE_VERTEX(8, -3, -27, 176, 156, 140),
+  STEVE_VERTEX(8, -13, -27, 176, 156, 140), STEVE_VERTEX(-8, -13, -27, 176, 156, 140),
+  STEVE_VERTEX(8, -3, -36, 216, 196, 178), STEVE_VERTEX(-8, -3, -36, 216, 196, 178),
+  STEVE_VERTEX(-8, -13, -36, 216, 196, 178), STEVE_VERTEX(8, -13, -36, 216, 196, 178),
+  STEVE_VERTEX(-13, 12, -16, 172, 166, 154), STEVE_VERTEX(-5, 12, -16, 172, 166, 154),
+  STEVE_VERTEX(-6, 21, -16, 146, 140, 130), STEVE_VERTEX(-13, 20, -16, 146, 140, 130),
+  STEVE_VERTEX(5, 12, -16, 172, 166, 154), STEVE_VERTEX(13, 12, -16, 172, 166, 154),
+  STEVE_VERTEX(13, 20, -16, 146, 140, 130), STEVE_VERTEX(6, 21, -16, 146, 140, 130),
+  STEVE_VERTEX(-11, 4, -29, 32, 27, 24), STEVE_VERTEX(-5, 4, -29, 32, 27, 24),
+  STEVE_VERTEX(-5, -2, -29, 32, 27, 24), STEVE_VERTEX(-11, -2, -29, 32, 27, 24),
+  STEVE_VERTEX(5, 4, -29, 32, 27, 24), STEVE_VERTEX(11, 4, -29, 32, 27, 24),
+  STEVE_VERTEX(11, -2, -29, 32, 27, 24), STEVE_VERTEX(5, -2, -29, 32, 27, 24)
 };
 
 MOB_BOX(pig_body_verts, -24, 26, -18, 24, 56, 24,
@@ -784,52 +790,52 @@ static Vtx pig_face_verts[] = {
   STEVE_VERTEX(-2, -9, -35, 122, 60, 66), STEVE_VERTEX(-6, -9, -35, 122, 60, 66),
   STEVE_VERTEX(2, -4, -35, 122, 60, 66), STEVE_VERTEX(6, -4, -35, 122, 60, 66),
   STEVE_VERTEX(6, -9, -35, 122, 60, 66), STEVE_VERTEX(2, -9, -35, 122, 60, 66),
-  STEVE_VERTEX(-6, 13, -16, 220, 138, 144), STEVE_VERTEX(-15, 20, -13, 190, 112, 120),
-  STEVE_VERTEX(-15, 20, -5, 190, 112, 120), STEVE_VERTEX(-6, 13, -5, 220, 138, 144),
-  STEVE_VERTEX(6, 13, -16, 220, 138, 144), STEVE_VERTEX(15, 20, -13, 190, 112, 120),
-  STEVE_VERTEX(15, 20, -5, 190, 112, 120), STEVE_VERTEX(6, 13, -5, 220, 138, 144),
+  STEVE_VERTEX(-14, 13, -16, 214, 132, 138), STEVE_VERTEX(-5, 13, -16, 214, 132, 138),
+  STEVE_VERTEX(-6, 24, -16, 182, 104, 112), STEVE_VERTEX(-14, 22, -16, 182, 104, 112),
+  STEVE_VERTEX(5, 13, -16, 214, 132, 138), STEVE_VERTEX(14, 13, -16, 214, 132, 138),
+  STEVE_VERTEX(14, 22, -16, 182, 104, 112), STEVE_VERTEX(6, 24, -16, 182, 104, 112),
   STEVE_VERTEX(-10, 6, -27, 32, 24, 26), STEVE_VERTEX(-5, 6, -27, 32, 24, 26),
   STEVE_VERTEX(-5, 1, -27, 32, 24, 26), STEVE_VERTEX(-10, 1, -27, 32, 24, 26),
   STEVE_VERTEX(5, 6, -27, 32, 24, 26), STEVE_VERTEX(10, 6, -27, 32, 24, 26),
   STEVE_VERTEX(10, 1, -27, 32, 24, 26), STEVE_VERTEX(5, 1, -27, 32, 24, 26)
 };
 
-MOB_BOX(chicken_body_verts, -10, 18, -12, 10, 40, 16,
-  206, 203, 196, 246, 244, 238);
-MOB_BOX(chicken_head_verts, -7, -6, -8, 7, 10, 6,
-  210, 207, 200, 250, 248, 242);
-MOB_BOX(chicken_leg_verts, -2, -18, -2, 2, 0, 2,
+MOB_BOX(chicken_body_verts, -9, 16, -11, 9, 34, 15,
+  204, 201, 194, 246, 244, 238);
+MOB_BOX(chicken_head_verts, -6, -6, -7, 6, 8, 5,
+  208, 205, 198, 250, 248, 242);
+MOB_BOX(chicken_leg_verts, -2, -16, -2, 2, 0, 2,
   190, 132, 42, 236, 176, 62);
 /* The wings hang from their inner top corner, which is where the roll that
    beats them has to pivot; that makes them the one mirrored pair here. */
-MOB_BOX(chicken_wing_left_verts, -3, -15, -9, 0, 0, 9,
-  196, 192, 184, 238, 236, 229);
-MOB_BOX(chicken_wing_right_verts, 0, -15, -9, 3, 0, 9,
-  196, 192, 184, 238, 236, 229);
+MOB_BOX(chicken_wing_left_verts, -3, -13, -8, 0, 0, 8,
+  194, 190, 182, 238, 236, 229);
+MOB_BOX(chicken_wing_right_verts, 0, -13, -8, 3, 0, 8,
+  194, 190, 182, 238, 236, 229);
 
 /* Tail feathers rake up and back, so this one box is written by hand rather
    than squared off by the macro. */
 static Vtx chicken_tail_verts[] = {
-  STEVE_VERTEX(-7, 44, 26, 62, 60, 66), STEVE_VERTEX(7, 44, 26, 62, 60, 66),
-  STEVE_VERTEX(7, 32, 20, 62, 60, 66), STEVE_VERTEX(-7, 32, 20, 62, 60, 66),
-  STEVE_VERTEX(7, 40, 16, 96, 94, 100), STEVE_VERTEX(-7, 40, 16, 96, 94, 100),
-  STEVE_VERTEX(-7, 28, 12, 96, 94, 100), STEVE_VERTEX(7, 28, 12, 96, 94, 100)
+  STEVE_VERTEX(-6, 38, 22, 78, 76, 82), STEVE_VERTEX(6, 38, 22, 78, 76, 82),
+  STEVE_VERTEX(6, 27, 18, 78, 76, 82), STEVE_VERTEX(-6, 27, 18, 78, 76, 82),
+  STEVE_VERTEX(6, 33, 13, 112, 110, 116), STEVE_VERTEX(-6, 33, 13, 112, 110, 116),
+  STEVE_VERTEX(-6, 24, 11, 112, 110, 116), STEVE_VERTEX(6, 24, 11, 112, 110, 116)
 };
 
 /* Beak, comb, wattle, eyes. */
 static Vtx chicken_face_verts[] = {
-  STEVE_VERTEX(-3, 1, -7, 196, 142, 40), STEVE_VERTEX(3, 1, -7, 196, 142, 40),
-  STEVE_VERTEX(3, -4, -7, 196, 142, 40), STEVE_VERTEX(-3, -4, -7, 196, 142, 40),
-  STEVE_VERTEX(3, 1, -15, 242, 186, 66), STEVE_VERTEX(-3, 1, -15, 242, 186, 66),
-  STEVE_VERTEX(-3, -4, -15, 242, 186, 66), STEVE_VERTEX(3, -4, -15, 242, 186, 66),
-  STEVE_VERTEX(0, 16, -6, 226, 78, 70), STEVE_VERTEX(0, 16, 2, 226, 78, 70),
-  STEVE_VERTEX(0, 10, 4, 196, 56, 52), STEVE_VERTEX(0, 10, -8, 196, 56, 52),
+  STEVE_VERTEX(-3, 1, -6, 196, 142, 40), STEVE_VERTEX(3, 1, -6, 196, 142, 40),
+  STEVE_VERTEX(3, -4, -6, 196, 142, 40), STEVE_VERTEX(-3, -4, -6, 196, 142, 40),
+  STEVE_VERTEX(3, 1, -14, 242, 186, 66), STEVE_VERTEX(-3, 1, -14, 242, 186, 66),
+  STEVE_VERTEX(-3, -4, -14, 242, 186, 66), STEVE_VERTEX(3, -4, -14, 242, 186, 66),
+  STEVE_VERTEX(0, 8, -6, 226, 78, 70), STEVE_VERTEX(0, 8, 3, 226, 78, 70),
+  STEVE_VERTEX(0, 16, 1, 196, 56, 52), STEVE_VERTEX(0, 16, -5, 196, 56, 52),
   STEVE_VERTEX(0, -4, -12, 214, 64, 58), STEVE_VERTEX(0, -4, -6, 214, 64, 58),
-  STEVE_VERTEX(0, -11, -6, 186, 46, 44), STEVE_VERTEX(0, -11, -12, 186, 46, 44),
-  STEVE_VERTEX(-6, 4, -8, 28, 24, 22), STEVE_VERTEX(-3, 4, -8, 28, 24, 22),
-  STEVE_VERTEX(-3, 1, -8, 28, 24, 22), STEVE_VERTEX(-6, 1, -8, 28, 24, 22),
-  STEVE_VERTEX(3, 4, -8, 28, 24, 22), STEVE_VERTEX(6, 4, -8, 28, 24, 22),
-  STEVE_VERTEX(6, 1, -8, 28, 24, 22), STEVE_VERTEX(3, 1, -8, 28, 24, 22)
+  STEVE_VERTEX(0, -11, -6, 186, 46, 44), STEVE_VERTEX(0, -11, -11, 186, 46, 44),
+  STEVE_VERTEX(-6, 3, -8, 28, 24, 22), STEVE_VERTEX(-2, 3, -8, 28, 24, 22),
+  STEVE_VERTEX(-2, -1, -8, 28, 24, 22), STEVE_VERTEX(-6, -1, -8, 28, 24, 22),
+  STEVE_VERTEX(2, 3, -8, 28, 24, 22), STEVE_VERTEX(6, 3, -8, 28, 24, 22),
+  STEVE_VERTEX(6, -1, -8, 28, 24, 22), STEVE_VERTEX(2, -1, -8, 28, 24, 22)
 };
 
 static Vtx slime_body_verts[] = {
@@ -3070,15 +3076,15 @@ static void drawChickenMob(u8 mob_num, float hurt, float scale, u8 detailed) {
   setMobRotation(mob_num, MOB_ROT_WING_RIGHT, 0, mob->yaw, beat, scale);
 
   setMobPartTransform(mob_num, MOB_BODY, (Vector3) {hurt, 0, 0}, scale);
-  setMobPartTransform(mob_num, MOB_HEAD, (Vector3) {hurt, 42, -6}, scale);
+  setMobPartTransform(mob_num, MOB_HEAD, (Vector3) {hurt, 38, -7}, scale);
   setMobPartTransform(mob_num, MOB_LIMB_FRONT_LEFT,
-    (Vector3) {-5 + hurt, 18, 2}, scale);
+    (Vector3) {-4 + hurt, 16, 1}, scale);
   setMobPartTransform(mob_num, MOB_LIMB_FRONT_RIGHT,
-    (Vector3) {5 + hurt, 18, 2}, scale);
+    (Vector3) {4 + hurt, 16, 1}, scale);
   setMobPartTransform(mob_num, MOB_LIMB_BACK_LEFT,
-    (Vector3) {-10 + hurt, 36, 0}, scale);
+    (Vector3) {-9 + hurt, 31, 1}, scale);
   setMobPartTransform(mob_num, MOB_LIMB_BACK_RIGHT,
-    (Vector3) {10 + hurt, 36, 0}, scale);
+    (Vector3) {9 + hurt, 31, 1}, scale);
 
   drawMobPart(mob_num, MOB_BODY, MOB_ROT_BODY, chicken_body_verts, 8,
     steve_box_display_list);

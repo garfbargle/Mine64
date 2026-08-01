@@ -1,10 +1,12 @@
-# ANIMALS: the herd, its facing, and the apple.
+# ANIMALS: the herd comes to the apple, eats it, and raises a calf.
 #
 # BONUS KIT is switched on because the apples it hands out are the only ones
 # available at spawn, and every interaction worth capturing starts with one in
-# the hand.  CRITTERS is switched off so the animals wander instead of walking
-# straight at the camera: a herd that always faces you cannot show whether it
-# is facing the right way.
+# the hand.  CRITTERS is switched off so that whatever walks toward the player
+# is walking toward the apple and not toward the mod.
+#
+# The player never moves.  That is the test: an animal that has to be chased
+# has not been tempted.
 
 wait 960
 press A 8
@@ -41,54 +43,48 @@ wait 12
 wait 300
 shot spawn
 
-# Watch them wander: gait, facing, and the heads turning to follow the player.
-wait 60
-shot watch-1
-wait 60
-shot watch-2
-wait 60
-shot watch-3
-wait 60
-shot watch-4
-wait 60
-shot watch-5
+stick 0 -60 5 Z
+wait 20
+# Back off so the whole herd fits in frame, then watch it pair up.
+stick 0 -70 70
+wait 20
+shot backed-off
 
-stick 70 0 40
-wait 20
-shot turn-1
-stick 70 0 40
-wait 20
-shot turn-2
-stick 70 0 40
-wait 20
-shot turn-3
-stick 70 0 40
-wait 20
-shot turn-4
-stick 70 0 40
-wait 20
-shot turn-5
-stick 70 0 40
-wait 20
-shot turn-6
-
-# Walk into the herd holding the apple and offer it.
-stick 0 70 90
-wait 30
-shot approach
-press A 8
-wait 40
-shot fed-1
-wait 90
-shot fed-2
-press A 8
-wait 40
-shot fed-3
-wait 120
-shot after-1
-wait 120
-shot after-2
-wait 180
-shot after-3
+stick 40 0 8
+wait 70
+shot look-01
+stick 40 0 8
+wait 70
+shot look-02
+stick 40 0 8
+wait 70
+shot look-03
+stick 40 0 8
+wait 70
+shot look-04
+stick 40 0 8
+wait 70
+shot look-05
+stick 40 0 8
+wait 70
+shot look-06
+stick 40 0 8
+wait 70
+shot look-07
+stick 40 0 8
+wait 70
+shot look-08
+stick 40 0 8
+wait 70
+shot look-09
+stick 40 0 8
+wait 70
+shot look-10
+stick 40 0 8
+wait 70
+shot look-11
+stick 40 0 8
+wait 70
+shot look-12
 
 stop

@@ -37,30 +37,38 @@ wait 300                # dropped into the world that was orbiting the menu
 wait 24
 shot 1-spawn
 stick 13 0 100          # come about 150 degrees: horizon, fog, compass, HUD
-wait 12
+wait 20
 shot 2-horizon
 
 # --- 2. out into it (0:04) ---
-stick 0 70 45           # the walk is the point: columns stream in ahead
-stick -9 70 40          # and drift the heading so it does not read as a rail
-stick 0 70 35
+# Walks are kept short and the heading is changed between them.  A blind
+# script cannot see a hillside coming, and forty blocks committed to one
+# heading is how the camera ends up pressed into a wall of dirt for the rest
+# of the take.
+stick 0 70 26           # the walk is the point: columns stream in ahead
+stick -9 70 22          # drift the heading so it does not read as a rail
+wait 10
 shot 3-walked
 
-# --- 3. mine a block (0:10) ---
-stick 0 -30 10 Z        # Z-look: the stick turns the head, not the body
+# --- 3. mine (0:09) ---
+stick 0 -26 10 Z        # Z-look down: the stick turns the head, not the body
 wait 8
 shot 4-aimed
-press B 34              # ground is 22 ticks, ~9 frames of held B, and the ray
-                        # drops to the block beneath each time one goes, so a
-                        # held B digs down.  Three of them: one block mined and
-                        # then placed straight back leaves the pack empty, and
-                        # an empty pack is the one state worth not filming.
-wait 30                 # they pop out, settle, and pull in
+press B 22              # ground is 22 ticks, ~9 frames of held B.  Two blocks,
+                        # not more: the ray drops to the block beneath each one
+                        # that goes, so a long hold digs a pit and films it
+                        # from the bottom.  One block alone is worse -- placed
+                        # straight back it leaves an empty pack.
+wait 34                 # they pop out, settle, and pull in
 shot 5-mined
 
-# --- 4. put it back (0:13) ---
+# --- 4. put one back (0:13) ---
 press A 8               # place the block that just went in the pack
-wait 20
+wait 12
+stick 0 -45 14          # step back off it, so the placed block is seen from
+                        # outside rather than through the camera's nose
+stick 0 20 8 Z          # and lift the view back toward the horizon
+wait 8
 shot 6-placed
 
 # --- 5. the pack (0:15) ---
@@ -69,26 +77,26 @@ wait 26
 shot 7-pack
 stick 60 0 40           # hold right: the cursor walks out of the hotbar and
                         # into POCKET CRAFT, where right does nothing more
-wait 6
+wait 12
 shot 8-craft            # PLANKS / STICK / CRAFTING TABLE / TORCH and their cost
 stick 0 -60 8           # one row down
-wait 10
+wait 16
 press B 8
 wait 16
 
 # --- 6. third person, and run (0:21) ---
-stick 0 30 10 Z         # level the camera again
+stick 0 20 5 Z          # level the camera again: -29 down, +18 back, +11 here
 press CUP 8             # third person: the avatar, and a nine-block reach
 wait 16
 shot 9-third
-stick 0 70 45 L         # L sprints, and sprinting spends food
+stick 0 70 55 L         # L sprints, and sprinting spends food
 stick 0 70 10 L+R       # L+R into a stride is the vault; clear of one, a jump
 wait 8
 stick 11 70 45 L        # lean into the turn rather than snapping round
-stick 0 70 30 L
+stick 0 70 40 L
 shot 10-run
-stick -10 0 30          # settle on the view
-wait 10
+stick -10 0 38          # settle on the view
+wait 16
 shot 11-final
 
 stop

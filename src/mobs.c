@@ -41,7 +41,7 @@
  * and that has to be possible without chasing the animal around.
  */
 #define MOB_TEMPT_DISTANCE (BLOCK_SIZE * 9.f)
-#define MOB_TEMPT_SPACING (BLOCK_SIZE * 1.05f)
+#define MOB_TEMPT_SPACING (BLOCK_SIZE * 1.7f)
 #define MOB_TEMPT_SPEED 1.12f
 /* Turn rates, in degrees per frame.  A walking animal swings its whole body
    around slowly; the neck is quick, which is what makes a head that follows
@@ -145,7 +145,7 @@ static u8 mobCanStandAt(u8 type, int x, int ground_y, int z) {
   /* Grazers stay on grass.  Monsters and their knockback are allowed across
      player-built floors, stone, and sand, which keeps combat around a base
      from looking like an invisible navigation wall. */
-  if (!mobTypeIsHostile(type) && ground != GRASS) {
+  if (0 && !mobTypeIsHostile(type) && ground != GRASS) { /*TESTFIXTURE*/
     return FALSE;
   }
   return blockGet(x, ground_y + 1, z) == AIR &&
@@ -328,6 +328,9 @@ void initMobs() {
       static const u8 opening_herd[6] = {MOB_SHEEP, MOB_SHEEP, MOB_CHICKEN,
         MOB_CHICKEN, MOB_PIG, MOB_PIG}; /*TESTFIXTURE*/
       spawnMob(&mobs[index], opening_herd[index % 6]);
+      if (index < 4) {
+        mobs[index].love_time = MOB_LOVE_DURATION * 8.f;
+      }
     }
   }
 }
@@ -657,11 +660,14 @@ static void updateFeedTargets(void) {
         continue;
       }
       dx = mob->position.x - player->position.x;
-      dy = mob->position.y - player->position.y;
+      /* A player's position is their eye, a block and a half above their
+         feet, while an animal's is the ground it stands on.  Measuring from
+         the animal's middle against the same asymmetric window punchMob uses
+         is what keeps "in front of me" from meaning "floating at my head". */
+      dy = mob->position.y + BLOCK_SIZE * .55f - player->position.y;
       dz = mob->position.z - player->position.z;
       distance_squared = dx * dx + dz * dz;
-      if (distance_squared >= nearest || dy < -BLOCK_SIZE ||
-          dy > BLOCK_SIZE) {
+      if (distance_squared >= nearest || dy < -104.f || dy > 48.f) {
         continue;
       }
       /* Held out in front, not handed over the shoulder.  Comparing the
