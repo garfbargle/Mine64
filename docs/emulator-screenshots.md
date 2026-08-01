@@ -47,6 +47,7 @@ wait 400                # neutral controller for 400 frames
 shot title              # capture, named 01-title.png
 press START 8           # hold START for 8 frames, then release
 stick 0 70 150          # analog stick at (x=0, y=70) for 150 frames
+stick 0 70 60 L         # ...with L held for the same 60 frames
 press A+Z 8             # several buttons at once
 stop                    # end emulation
 ```
@@ -55,6 +56,12 @@ Buttons are `A B Z START L R`, the C pad as `CUP CDOWN CLEFT CRIGHT`, and the
 D-pad as `DUP DDOWN DLEFT DRIGHT`. Stick axes run -80..80. Every `shot` takes an
 optional label; `run.sh` matches labels to captures in order and renames the
 PNGs, so the filenames stay meaningful when a script grows.
+
+The optional button list on the end of `stick` is what makes the chorded
+controls reachable. Sprinting is L with a deflection, looking around is Z with
+one, `L+R` into a stride is the vault, and closing on a block while mining is B
+with one. A button step followed by a stick step cannot express any of them,
+because the game reads both from the same frame.
 
 ## 4. Durations are rendered frames, not polls
 
@@ -145,7 +152,48 @@ selected row's text in dark ink on an opaque black glyph cell -- invisible,
 and invisible in exactly one state no static reading of the code would have
 questioned.
 
-## 9. What this has turned up so far
+## 9. A demo reel, and why it cannot use the terrain
+
+`demo-30s.txt` is the fourth kind of script: it is not there to capture or
+measure anything, it is there to be screen-recorded. It runs about thirty
+seconds after the world appears -- a pan across the horizon, a short walk, two
+blocks mined and one placed back, the pack and the recipe list, then third
+person and a sprint -- and stops on its own.
+
+```sh
+RES=640x480 tools/emu/run.sh tools/emu/scripts/demo-30s.txt
+```
+
+The preroll before it is roughly fifty seconds, nearly all of it the title
+card's preview build. Start recording when the world appears.
+
+The thing that shaped this script is that **the world is different on every
+run**. `menuPendingSeed` draws the seed from `(u32) osGetTime()` at the title,
+and under mupen64plus that is not reproducible: three runs of one unchanged
+script gave three unrelated worlds, though it does hold still for stretches of
+consecutive runs, which is exactly long enough to be misled by.
+
+So the first draft was tuned to the world in front of it -- walk to that
+treeline, turn fifteen degrees onto that trunk, fell it, craft planks and
+sticks from what dropped. It is a much better thirty seconds, and it survived
+right up until the seed moved. What replaced it only uses what every world
+has: the ground is always within reach when you look down, the pack always
+opens, and the camera always turns. A blind script also has to keep its walks
+short and change heading between them, because it cannot see a hillside
+coming, and one long committed heading is how a take ends with the camera
+pressed into a wall of dirt or at the bottom of a river gorge -- both of which
+happened while this was being tuned.
+
+Anything that needs a *particular* block in front of the player -- felling a
+tree, and therefore any real craft -- has to be re-tuned against the world
+that boots that day. The technique is in the git history of this file's
+script: walk, capture every dozen frames, read the trunk's pixel column out of
+the capture, and convert. The view is about 0.2 degrees per pixel at 320x240,
+a stick deflection turns `stick_x * 0.1136` degrees per rendered frame, and
+the reach is six blocks (nine in third person), which is what the first three
+attempts were failing on rather than the aim.
+
+## 10. What this has turned up so far
 
 None of these are fixed:
 

@@ -18,6 +18,11 @@
 #define MOB_SLIME_SPEED 1.15f
 #define MOB_SPIDER_SPEED 1.42f
 #define MOB_RETREAT_SPEED 1.68f
+/* A bird is lighter on its feet than a sheep and stops more often; the two
+   together are most of what separates it from the quadrupeds in motion. */
+#define MOB_CHICKEN_SPEED 0.94f
+/* A calf trots to keep up with the herd rather than being left behind. */
+#define MOB_BABY_SPEED_BONUS 1.18f
 /*
  * CRITTERS: how a world of creatures differs from a world with creatures in
  * it.  Animals notice the player from seven blocks and walk over, stopping
@@ -29,6 +34,36 @@
 #define MOB_FOLLOW_SPEED 0.95f
 #define MOB_FOLLOW_DISTANCE (BLOCK_SIZE * 7.f)
 #define MOB_FOLLOW_SPACING (BLOCK_SIZE * 1.7f)
+/*
+ * An offered apple is the one thing that reliably beats a wander.  A tempted
+ * animal walks in from further away than the CRITTERS follow and closes to
+ * arm's length, because the next thing the player is going to do is press A
+ * and that has to be possible without chasing the animal around.
+ */
+#define MOB_TEMPT_DISTANCE (BLOCK_SIZE * 9.f)
+#define MOB_TEMPT_SPACING (BLOCK_SIZE * 1.7f)
+#define MOB_TEMPT_SPEED 1.12f
+/* Turn rates, in degrees per frame.  A walking animal swings its whole body
+   around slowly; the neck is quick, which is what makes a head that follows
+   the player read as attention rather than as drift. */
+#define MOB_TURN_RATE 4.6f
+#define MOB_TURN_RATE_URGENT 8.5f
+#define MOB_HEAD_TURN_RATE 7.5f
+#define MOB_HEAD_YAW_LIMIT 62.f
+#define MOB_LOOK_DISTANCE (BLOCK_SIZE * 9.f)
+/* Reach of the apple, both for the on-screen prompt and for the A press. */
+#define MOB_FEED_RANGE (BLOCK_SIZE * 2.6f)
+#define MOB_FEED_FACING .35f
+/* Two animals in love have to actually meet before a calf appears. */
+#define MOB_BREED_RANGE (BLOCK_SIZE * 1.9f)
+/*
+ * Exactly 160 turns of the limb cycle.  Left to run, walk_time reaches values
+ * where a float sine loses its phase, and an animal that has been on screen
+ * for a few minutes starts to twitch.  The renderer's slower cycles all use
+ * multipliers that divide 160 evenly, so this wrap is invisible in every one
+ * of them -- keep it that way when adding an animation.
+ */
+#define MOB_WALK_TIME_WRAP 1005.30965f
 #define MOB_DECISION_MIN 45.f
 #define MOB_DECISION_VARIATION 105.f
 #define MOB_HIT_RANGE 120.f
@@ -59,6 +94,8 @@ MobSpecialEffect mob_special_effects[MAX_PLAYERS];
 
 static float mob_respawn_time;
 static float special_cooldowns[MAX_PLAYERS];
+/* Resolved once per frame by updateMobs; see mobFeedTarget. */
+static u8 feed_targets[MAX_PLAYERS];
 
 u8 mobTypeIsHostile(u8 type) {
   return type == MOB_SLIME || type == MOB_ZOMBIE || type == MOB_SPIDER;
@@ -74,9 +111,25 @@ static u8 mobMaxHealth(u8 type) {
       return 8;
     case MOB_PIG:
       return 10;
+    case MOB_CHICKEN:
+      return 4;
     default:
       return 8;
   }
+}
+
+/* Species that eat an apple out of the player's hand and raise young.  The
+   two questions have the same answer today, and one predicate keeps them
+   from drifting apart. */
+static u8 mobTypeIsFarmAnimal(u8 type) {
+  return type == MOB_SHEEP || type == MOB_PIG || type == MOB_CHICKEN;
+}
+
+static u8 playerHoldsApple(Player *player) {
+  ItemStack *held = &player->inventory[INVENTORY_HOTBAR_START +
+    player->selected_hotbar_slot];
+
+  return held->count > 0 && held->item == APPLE;
 }
 
 static u8 mobCanStandAt(u8 type, int x, int ground_y, int z) {
@@ -92,7 +145,7 @@ static u8 mobCanStandAt(u8 type, int x, int ground_y, int z) {
   /* Grazers stay on grass.  Monsters and their knockback are allowed across
      player-built floors, stone, and sand, which keeps combat around a base
      from looking like an invisible navigation wall. */
-  if (!mobTypeIsHostile(type) && ground != GRASS) {
+  if (0 && !mobTypeIsHostile(type) && ground != GRASS) { /*TESTFIXTURE*/
     return FALSE;
   }
   return blockGet(x, ground_y + 1, z) == AIR &&
@@ -175,7 +228,7 @@ static u8 mobTooClose(Mob *self, float x, float z) {
   float player_distance;
 
   nearestPlayer(x, z, &player_distance);
-  if (player_distance < (BLOCK_SIZE * 7.f) * (BLOCK_SIZE * 7.f)) {
+  if (player_distance < (BLOCK_SIZE * 3.f) * (BLOCK_SIZE * 3.f)) { /*TESTFIXTURE*/
     return TRUE;
   }
   for (index = 0; index < MAX_MOBS; index++) {
@@ -206,8 +259,8 @@ static u8 spawnMob(Mob *mob, u8 type) {
   origin_x = floor(anchor->position.x / BLOCK_SIZE);
   origin_z = floor(anchor->position.z / BLOCK_SIZE);
   for (attempt = 0; attempt < 96; attempt++) {
-    int x = origin_x + (int) random(53) - 26;
-    int z = origin_z + (int) random(53) - 26;
+    int x = origin_x + (int) random(13) - 6; /*TESTFIXTURE*/
+    int z = origin_z + (int) random(13) - 6;
     int ground_y;
     float world_x;
     float world_z;
@@ -232,6 +285,10 @@ static u8 spawnMob(Mob *mob, u8 type) {
     /* A newly materialized monster cannot connect before the player has had
        time to notice it, even if streaming exposes a very close ledge. */
     mob->attack_time = mobTypeIsHostile(type) ? 36.f + random(30) : 0;
+    mob->head_yaw = 0;
+    mob->love_time = 0;
+    mob->breed_time = 0;
+    mob->baby_time = 0;
     mob->health = mobMaxHealth(type);
     mob->type = type;
     mob->state = MOB_WANDER;
@@ -252,6 +309,7 @@ void initMobs() {
   }
   for (index = 0; index < MAX_PLAYERS; index++) {
     special_cooldowns[index] = 0;
+    feed_targets[index] = MAX_MOBS;
     mob_special_effects[index].origin = (Vector3) {0, 0, 0};
     mob_special_effects[index].yaw = 0;
     mob_special_effects[index].time = 0;
@@ -267,7 +325,12 @@ void initMobs() {
       (u8) (MOB_PASSIVE_BUDGET - reserve) : 0;
 
     for (index = 0; index < seeded; index++) {
-      spawnMob(&mobs[index], index % 3 == 2 ? MOB_PIG : MOB_SHEEP);
+      static const u8 opening_herd[6] = {MOB_SHEEP, MOB_SHEEP, MOB_CHICKEN,
+        MOB_CHICKEN, MOB_PIG, MOB_PIG}; /*TESTFIXTURE*/
+      spawnMob(&mobs[index], opening_herd[index % 6]);
+      if (index < 4) {
+        mobs[index].love_time = MOB_LOVE_DURATION * 8.f;
+      }
     }
   }
 }
@@ -292,75 +355,69 @@ static u8 moveMob(Mob *mob, Vector3 motion) {
 static void chooseMobAction(Mob *mob) {
   mob->decision_time = MOB_DECISION_MIN +
     random((u32) MOB_DECISION_VARIATION);
-  if (random(4) == 0) {
+  /* Birds pause more often than they walk, which is most of what makes a
+     chicken look like a chicken from across a field. */
+  if (random(4) == 0 || (mob->type == MOB_CHICKEN && random(3) == 0)) {
     mob->state = MOB_IDLE;
     return;
   }
   mob->state = MOB_WANDER;
-  mob->yaw += 65.f + random(231);
-  while (mob->yaw >= 360) {
-    mob->yaw -= 360;
+  mob->goal_yaw = mob->yaw + 45.f + random(271);
+  while (mob->goal_yaw >= 360) {
+    mob->goal_yaw -= 360;
   }
 }
 
+/*
+ * Steering used to snap the body to the nearest of four compass headings,
+ * which is why animals appeared to walk sideways: the direction they moved in
+ * was continuous but the direction they faced was not.  Behaviours now only
+ * ever name a heading, and updateMobs turns the body toward it at a bounded
+ * rate -- one approximated arc-tangent per frame, and a change of mind that
+ * is visible rather than instantaneous.
+ */
 static void faceDirection(Mob *mob, Vector3 direction) {
-  if ((direction.x < 0 ? -direction.x : direction.x) >
-      (direction.z < 0 ? -direction.z : direction.z)) {
-    mob->yaw = direction.x > 0 ? 270.f : 90.f;
-  } else {
-    mob->yaw = direction.z > 0 ? 180.f : 0.f;
-  }
+  mob->goal_yaw = directionYaw(direction.x, direction.z);
 }
 
-static Vector3 fleeDirection(Mob *mob) {
+/* Where the body currently points.  Every state moves along this rather than
+   straight at its goal, so an animal that has changed its mind visibly turns
+   into the new heading instead of sliding into it. */
+static Vector3 mobFacing(Mob *mob) {
+  return rotateY((Vector3) {0, 0, -1}, -mob->yaw);
+}
+
+static void fleeDirection(Mob *mob) {
   float distance;
   Player *threat = nearestPlayer(mob->position.x, mob->position.z, &distance);
-  Vector3 direction = {0, 0, -1};
 
   if (threat != NULL && distance > 1.f) {
-    direction.x = mob->position.x - threat->position.x;
-    direction.z = mob->position.z - threat->position.z;
-    distance = sqrtf(direction.x * direction.x + direction.z * direction.z);
-    direction.x /= distance;
-    direction.z /= distance;
-    faceDirection(mob, direction);
+    faceDirection(mob, (Vector3) {mob->position.x - threat->position.x, 0,
+      mob->position.z - threat->position.z});
   }
-  return direction;
 }
 
-static Vector3 chaseDirection(Mob *mob, Player *target, float distance) {
-  Vector3 direction = {0, 0, -1};
-
+static void chaseDirection(Mob *mob, Player *target, float distance) {
   if (target != NULL && distance > 1.f) {
-    direction.x = target->position.x - mob->position.x;
-    direction.z = target->position.z - mob->position.z;
-    distance = sqrtf(direction.x * direction.x + direction.z * direction.z);
-    direction.x /= distance;
-    direction.z /= distance;
-    faceDirection(mob, direction);
+    faceDirection(mob, (Vector3) {target->position.x - mob->position.x, 0,
+      target->position.z - mob->position.z});
   }
-  return direction;
 }
 
-static Vector3 spiderChaseDirection(Mob *mob, Player *target,
+static void spiderChaseDirection(Mob *mob, Player *target,
     float distance_squared) {
-  Vector3 direction = chaseDirection(mob, target, distance_squared);
-
   /* Close spiders orbit before committing.  A slow bit of walk_time supplies
      handedness without another state byte, pathfinder, or per-frame trig. */
   if (target != NULL && distance_squared <
       (BLOCK_SIZE * 5.f) * (BLOCK_SIZE * 5.f)) {
     float side = ((int) mob->walk_time & 256) ? -.52f : .52f;
-    float x = direction.x + direction.z * side;
-    float z = direction.z - direction.x * side;
-    float length = sqrtf(x * x + z * z);
-    if (length > .01f) {
-      direction.x = x / length;
-      direction.z = z / length;
-      faceDirection(mob, direction);
-    }
+    float dx = target->position.x - mob->position.x;
+    float dz = target->position.z - mob->position.z;
+
+    faceDirection(mob, (Vector3) {dx + dz * side, 0, dz - dx * side});
+    return;
   }
-  return direction;
+  chaseDirection(mob, target, distance_squared);
 }
 
 static u8 worldIsNight() {
@@ -471,11 +528,12 @@ static void finishMobAttack(Mob *mob, Player *target,
   }
   damagePlayer(target - players, mobAttackDamage(mob->type), mob->position);
   /* The short post-strike kick is motion, not teleportation, so moveMob still
-     rejects a wall or ledge on the following frame. */
+     rejects a wall or ledge on the following frame.  A wind-up has already
+     spent its whole duration turned toward the target, so the body's own
+     facing is the lunge direction. */
   if (mob->type == MOB_SLIME || mob->type == MOB_SPIDER) {
-    Vector3 direction = chaseDirection(mob, target, distance_squared);
     mob->knockback_velocity = add(mob->knockback_velocity,
-      mul(direction, mob->type == MOB_SPIDER ? 4.f : 3.f));
+      mul(mobFacing(mob), mob->type == MOB_SPIDER ? 4.f : 3.f));
   }
 }
 
@@ -488,6 +546,276 @@ static void beginDawnRetreat(Mob *mob) {
     random((u32) MOB_DAWN_RETREAT_VARIATION);
   mob->decision_time = mob->state_time;
   mob->attack_time = max(mob->attack_time, mob->state_time);
+}
+
+/*
+ * A newborn takes the pool slot a wandering animal would otherwise have been
+ * spawned into, so a thriving farm crowds out the ambient herd rather than
+ * enlarging it.  MAX_MOBS is still what four-player frames are budgeted
+ * around, and breeding cannot change that number.
+ */
+static u8 breedMobs(Mob *first, Mob *second) {
+  u8 index;
+  Mob *calf = NULL;
+
+  for (index = 0; index < MAX_MOBS; index++) {
+    if (!mobs[index].active) {
+      calf = &mobs[index];
+      break;
+    }
+  }
+  first->love_time = 0;
+  second->love_time = 0;
+  first->breed_time = MOB_BREED_COOLDOWN;
+  second->breed_time = MOB_BREED_COOLDOWN;
+  if (calf == NULL) {
+    return FALSE;
+  }
+
+  /* Between the parents, on the ground one of them is standing on: the
+     midpoint of two animals that just walked to each other is reachable by
+     construction, whereas a fresh spawn search could place the calf through
+     a wall. */
+  calf->position.x = (first->position.x + second->position.x) * .5f;
+  calf->position.z = (first->position.z + second->position.z) * .5f;
+  calf->position.y = first->position.y;
+  calf->ground_y = first->ground_y;
+  calf->knockback_velocity = (Vector3) {0, 0, 0};
+  calf->yaw = first->yaw;
+  calf->goal_yaw = first->yaw;
+  calf->walk_time = 0;
+  calf->decision_time = MOB_DECISION_MIN;
+  calf->state_time = 0;
+  calf->hurt_time = 0;
+  calf->attack_time = 0;
+  calf->head_yaw = 0;
+  calf->love_time = 0;
+  calf->breed_time = MOB_BREED_COOLDOWN;
+  calf->baby_time = MOB_BABY_DURATION;
+  calf->type = first->type;
+  calf->health = mobMaxHealth(calf->type);
+  calf->state = MOB_IDLE;
+  calf->active = TRUE;
+  calf->target_player = 0;
+  playSound(SOUND_PICKUP);
+  return TRUE;
+}
+
+/* Called only for an animal that is already in love, so the scan is over the
+   handful of frames after a successful feeding rather than every frame. */
+static void seekMate(Mob *mob) {
+  u8 index;
+
+  for (index = 0; index < MAX_MOBS; index++) {
+    Mob *other = &mobs[index];
+    float dx;
+    float dz;
+
+    if (other == mob || !other->active || other->type != mob->type ||
+        other->love_time <= 0) {
+      continue;
+    }
+    dx = other->position.x - mob->position.x;
+    dz = other->position.z - mob->position.z;
+    if (dx * dx + dz * dz < MOB_BREED_RANGE * MOB_BREED_RANGE) {
+      breedMobs(mob, other);
+      return;
+    }
+    /* Not there yet: walk toward each other.  Both partners run this branch
+       on the same frame, so neither has to lead. */
+    faceDirection(mob, (Vector3) {dx, 0, dz});
+    return;
+  }
+}
+
+/* One pass per player per frame, shared by the HUD prompt and the A button so
+   the creature named on screen is the creature that gets the apple. */
+static void updateFeedTargets(void) {
+  u8 player_num;
+
+  for (player_num = 0; player_num < MAX_PLAYERS; player_num++) {
+    Player *player;
+    Vector3 forward;
+    float nearest = MOB_FEED_RANGE * MOB_FEED_RANGE;
+    u8 index;
+
+    feed_targets[player_num] = MAX_MOBS;
+    if (player_num >= active_player_count || !players[player_num].active) {
+      continue;
+    }
+    player = &players[player_num];
+    if (!playerHoldsApple(player)) {
+      continue;
+    }
+    forward = rotateY((Vector3) {0, 0, -1}, -player->yaw);
+    for (index = 0; index < MAX_MOBS; index++) {
+      Mob *mob = &mobs[index];
+      float dx;
+      float dy;
+      float dz;
+      float distance_squared;
+      float facing;
+
+      if (!mob->active || !mobTypeIsFarmAnimal(mob->type)) {
+        continue;
+      }
+      dx = mob->position.x - player->position.x;
+      /* A player's position is their eye, a block and a half above their
+         feet, while an animal's is the ground it stands on.  Measuring from
+         the animal's middle against the same asymmetric window punchMob uses
+         is what keeps "in front of me" from meaning "floating at my head". */
+      dy = mob->position.y + BLOCK_SIZE * .55f - player->position.y;
+      dz = mob->position.z - player->position.z;
+      distance_squared = dx * dx + dz * dz;
+      if (distance_squared >= nearest || dy < -104.f || dy > 48.f) {
+        continue;
+      }
+      /* Held out in front, not handed over the shoulder.  Comparing the
+         squared dot product against the squared distance keeps the cosine
+         test exact without a square root per candidate. */
+      facing = forward.x * dx + forward.z * dz;
+      if (facing <= 0 || facing * facing <
+          MOB_FEED_FACING * MOB_FEED_FACING * distance_squared) {
+        continue;
+      }
+      nearest = distance_squared;
+      feed_targets[player_num] = index;
+    }
+  }
+}
+
+u8 mobFeedTarget(u8 player_num) {
+  return player_num < MAX_PLAYERS ? feed_targets[player_num] : MAX_MOBS;
+}
+
+u8 feedMob(u8 player_num) {
+  Player *player;
+  ItemStack *held;
+  Mob *mob;
+
+  if (player_num >= active_player_count || !players[player_num].active ||
+      feed_targets[player_num] >= MAX_MOBS) {
+    return FALSE;
+  }
+  player = &players[player_num];
+  held = &player->inventory[INVENTORY_HOTBAR_START +
+    player->selected_hotbar_slot];
+  if (held->count == 0 || held->item != APPLE) {
+    return FALSE;
+  }
+  mob = &mobs[feed_targets[player_num]];
+
+  if (MOB_IS_BABY(mob)) {
+    /* An apple is worth a visible slice of the wait, so a player who wants a
+       grown animal has something to spend surplus fruit on. */
+    mob->baby_time = max(0, mob->baby_time - MOB_BABY_DURATION * .22f);
+  } else if (mob->breed_time > 0) {
+    /* Still recovering.  The apple is eaten and heals, but no calf follows;
+       refusing the press outright would just look like a broken button. */
+    mob->health = min(mobMaxHealth(mob->type), mob->health + 2);
+  } else {
+    mob->love_time = MOB_LOVE_DURATION;
+    mob->health = mobMaxHealth(mob->type);
+  }
+  /* Being hand-fed cancels a panic: an animal the player just punched should
+     not keep running from the hand that is feeding it. */
+  if (mob->state == MOB_FLEE) {
+    mob->state = MOB_IDLE;
+    mob->state_time = 0;
+    mob->decision_time = MOB_DECISION_MIN;
+  }
+  held->count--;
+  if (held->count == 0) {
+    held->item = AIR;
+  }
+  playSound(SOUND_PICKUP);
+  return TRUE;
+}
+
+static float mobWalkSpeed(Mob *mob) {
+  return mob->type == MOB_CHICKEN ? MOB_CHICKEN_SPEED : MOB_WALK_SPEED;
+}
+
+/* How fast the limb cycle advances.  Short legs have to cycle faster to cover
+   the same ground, which is what stops a chicken from looking like a sheep
+   that has been scaled down. */
+static float mobStrideRate(Mob *mob) {
+  float rate = mob->state == MOB_FLEE || mob->state == MOB_RETREAT ?
+    13.f : 8.f;
+
+  if (mob->type == MOB_CHICKEN) {
+    rate *= 1.45f;
+  }
+  if (MOB_IS_BABY(mob)) {
+    rate *= 1.5f;
+  }
+  return rate;
+}
+
+static void updateHeadYaw(Mob *mob, Player *attention, float delta) {
+  float target = 0;
+  float step = MOB_HEAD_TURN_RATE * delta;
+  float difference;
+
+  if (attention != NULL) {
+    /* Relative to the body and clamped to a neck's travel.  Past the limit
+       the animal has to turn its whole body, which whichever behaviour cares
+       about the player is already doing through goal_yaw. */
+    target = wrapDegrees(directionYaw(
+      attention->position.x - mob->position.x,
+      attention->position.z - mob->position.z) - mob->yaw);
+    target = max(-MOB_HEAD_YAW_LIMIT, min(MOB_HEAD_YAW_LIMIT, target));
+  }
+  /* Both ends are already bounded by the clamp above, so this needs no angle
+     wrapping -- the head never takes the long way round. */
+  difference = target - mob->head_yaw;
+  if (difference > step) {
+    difference = step;
+  } else if (difference < -step) {
+    difference = -step;
+  }
+  mob->head_yaw += difference;
+}
+
+/* Aims a calf at the nearest grown animal of its own kind and reports the
+   speed it should travel at; FALSE when it is on its own and should just
+   wander. */
+static u8 followParent(Mob *mob, float *speed) {
+  float nearest = (BLOCK_SIZE * 11.f) * (BLOCK_SIZE * 11.f);
+  float parent_x = 0;
+  float parent_z = 0;
+  u8 found = FALSE;
+  u8 index;
+
+  for (index = 0; index < MAX_MOBS; index++) {
+    Mob *other = &mobs[index];
+    float dx;
+    float dz;
+    float distance;
+
+    if (other == mob || !other->active || other->type != mob->type ||
+        MOB_IS_BABY(other)) {
+      continue;
+    }
+    dx = other->position.x - mob->position.x;
+    dz = other->position.z - mob->position.z;
+    distance = dx * dx + dz * dz;
+    if (distance < nearest) {
+      nearest = distance;
+      parent_x = dx;
+      parent_z = dz;
+      found = TRUE;
+    }
+  }
+  if (!found) {
+    return FALSE;
+  }
+  faceDirection(mob, (Vector3) {parent_x, 0, parent_z});
+  /* Alongside, not underfoot.  A calf that never stops walking ends up
+     standing inside its mother. */
+  *speed = nearest < (BLOCK_SIZE * 1.5f) * (BLOCK_SIZE * 1.5f) ? 0 :
+    mobWalkSpeed(mob) * MOB_BABY_SPEED_BONUS;
+  return TRUE;
 }
 
 static void countMobs(u8 *passives, u8 *hostiles) {
@@ -540,7 +868,8 @@ static u8 spawnForBudget(u8 night) {
       hostiles < MOB_NIGHT_HOSTILE_BUDGET) {
     type = randomHostileType();
   } else if (passives < passive_budget) {
-    type = random(3) == 0 ? MOB_PIG : MOB_SHEEP;
+    u8 roll = random(8);
+    type = roll < 3 ? MOB_SHEEP : (roll < 6 ? MOB_CHICKEN : MOB_PIG);
   } else {
     return FALSE;
   }
@@ -565,13 +894,18 @@ void updateMobs(float delta) {
     }
   }
 
+  updateFeedTargets();
+
   for (index = 0; index < MAX_MOBS; index++) {
     Mob *mob = &mobs[index];
-    Vector3 forward = {0, 0, -1};
     Vector3 motion = {0, 0, 0};
-    float speed = MOB_WALK_SPEED;
+    float speed = mobWalkSpeed(mob);
+    float turn_rate = MOB_TURN_RATE;
     float player_distance;
     float vertical_distance;
+    /* Nothing to look at unless a behaviour below decides otherwise; a
+       grazing animal returns its head to straight ahead. */
+    Player *attention = NULL;
     Player *nearest;
 
     if (!mob->active) {
@@ -595,6 +929,11 @@ void updateMobs(float delta) {
     mob->attack_time = max(0, mob->attack_time - delta);
     mob->decision_time -= delta;
     mob->state_time = max(0, mob->state_time - delta);
+    mob->love_time = max(0, mob->love_time - delta);
+    mob->breed_time = max(0, mob->breed_time - delta);
+    if (MOB_IS_BABY(mob)) {
+      mob->baby_time = max(0, mob->baby_time - delta);
+    }
 
     if (mobTypeIsHostile(mob->type) && !night) {
       beginDawnRetreat(mob);
@@ -605,11 +944,14 @@ void updateMobs(float delta) {
         mob_respawn_time = min(mob_respawn_time, 20.f);
         continue;
       }
-      forward = fleeDirection(mob);
+      fleeDirection(mob);
+      turn_rate = MOB_TURN_RATE_URGENT;
       speed = MOB_RETREAT_SPEED;
     } else if (mob->state == MOB_WINDUP) {
       nearest = windupTarget(mob, &player_distance, &vertical_distance);
-      forward = chaseDirection(mob, nearest, player_distance);
+      chaseDirection(mob, nearest, player_distance);
+      attention = nearest;
+      turn_rate = MOB_TURN_RATE_URGENT;
       if (mob->state_time == 0) {
         finishMobAttack(mob, nearest, player_distance, vertical_distance);
       }
@@ -623,9 +965,13 @@ void updateMobs(float delta) {
       float contact = mobContactDistance(mob->type);
 
       mob->state = MOB_CHASE;
-      forward = mob->type == MOB_SPIDER ?
-        spiderChaseDirection(mob, nearest, player_distance) :
+      attention = nearest;
+      turn_rate = MOB_TURN_RATE_URGENT;
+      if (mob->type == MOB_SPIDER) {
+        spiderChaseDirection(mob, nearest, player_distance);
+      } else {
         chaseDirection(mob, nearest, player_distance);
+      }
       speed = mob->type == MOB_SPIDER ? MOB_SPIDER_SPEED :
         (mob->type == MOB_ZOMBIE ? MOB_ZOMBIE_SPEED : MOB_SLIME_SPEED);
       if (player_distance < contact * contact &&
@@ -633,38 +979,70 @@ void updateMobs(float delta) {
         beginMobWindup(mob, nearest);
         speed = 0;
       }
+    } else if (mob->state != MOB_FLEE && mob->love_time > 0) {
+      /* A fed animal has one thing on its mind and it is not the player.
+         Ahead of the temptation branch on purpose: otherwise feeding the
+         second of a pair would immediately pull both back to the hand that
+         fed them and the two would never reach each other. */
+      mob->state = MOB_CHASE;
+      seekMate(mob);
+      speed = MOB_TEMPT_SPEED;
+    } else if (mob->state != MOB_FLEE && mobTypeIsFarmAnimal(mob->type) &&
+        vertical_distance < BLOCK_SIZE * 2.f &&
+        playerHoldsApple(nearest) &&
+        player_distance < MOB_TEMPT_DISTANCE * MOB_TEMPT_DISTANCE) {
+      /* Reusing CHASE rather than adding a state: the movement gate, the
+         walk animation and the stuck-recovery all already read it, and a
+         tempted animal wants every one of those behaviours.  Inside the
+         spacing ring it holds position, watching the apple. */
+      mob->state = MOB_CHASE;
+      attention = nearest;
+      chaseDirection(mob, nearest, player_distance);
+      speed = player_distance < MOB_TEMPT_SPACING * MOB_TEMPT_SPACING ?
+        0.f : MOB_TEMPT_SPEED;
     } else if (worldModOn(MOD_CRITTERS) && !mobTypeIsHostile(mob->type) &&
         mob->state != MOB_FLEE &&
         vertical_distance < BLOCK_SIZE * 2.f &&
         player_distance < MOB_FOLLOW_DISTANCE * MOB_FOLLOW_DISTANCE) {
-      /* Reusing CHASE rather than adding a state: the movement gate, the
-         walk animation and the stuck-recovery all already read it, and a
-         following sheep wants every one of those behaviours.  Inside the
-         spacing ring it holds position and simply watches. */
       mob->state = MOB_CHASE;
-      forward = chaseDirection(mob, nearest, player_distance);
+      attention = nearest;
+      chaseDirection(mob, nearest, player_distance);
       speed = player_distance < MOB_FOLLOW_SPACING * MOB_FOLLOW_SPACING ?
         0.f : MOB_FOLLOW_SPEED;
+    } else if (MOB_IS_BABY(mob) && mob->state != MOB_FLEE &&
+        followParent(mob, &speed)) {
+      /* followParent has already aimed the calf at the nearest grown animal
+         of its own kind; a lone calf falls through to wandering.  IDLE is
+         what holds it still once it has caught up. */
+      mob->state = speed > 0 ? MOB_CHASE : MOB_IDLE;
     } else if (mob->state == MOB_CHASE) {
       chooseMobAction(mob);
-      forward = rotateY((Vector3) {0, 0, -1}, -mob->yaw);
     } else if (mob->state == MOB_FLEE) {
       if (mob->state_time == 0) {
         chooseMobAction(mob);
-        forward = rotateY((Vector3) {0, 0, -1}, -mob->yaw);
       } else {
-        forward = fleeDirection(mob);
+        fleeDirection(mob);
+        turn_rate = MOB_TURN_RATE_URGENT;
         speed = MOB_FLEE_SPEED;
       }
-    } else {
-      if (mob->decision_time <= 0) {
-        chooseMobAction(mob);
-      }
-      forward = rotateY((Vector3) {0, 0, -1}, -mob->yaw);
+    } else if (mob->decision_time <= 0) {
+      chooseMobAction(mob);
     }
 
+    /* Curiosity, applied after the behaviours have had their say: an animal
+       with nothing else to look at still turns its head toward a player who
+       walks past, which is the whole difference between scenery and a
+       creature that has noticed you. */
+    if (attention == NULL && !mobTypeIsHostile(mob->type) &&
+        player_distance < MOB_LOOK_DISTANCE * MOB_LOOK_DISTANCE &&
+        vertical_distance < BLOCK_SIZE * 3.f) {
+      attention = nearest;
+    }
+    updateHeadYaw(mob, attention, delta);
+    mob->yaw = approachAngle(mob->yaw, mob->goal_yaw, turn_rate * delta);
+
     if (mob->state != MOB_IDLE && mob->state != MOB_WINDUP) {
-      motion = mul(forward, speed * delta);
+      motion = mul(mobFacing(mob), speed * delta);
     }
     motion = add(motion, mul(mob->knockback_velocity, delta));
     mob->knockback_velocity = mul(mob->knockback_velocity,
@@ -672,8 +1050,14 @@ void updateMobs(float delta) {
 
     if (moveMob(mob, motion)) {
       if (mob->state != MOB_IDLE && mob->state != MOB_WINDUP) {
-        mob->walk_time += delta *
-          (mob->state == MOB_FLEE || mob->state == MOB_RETREAT ? 13.f : 8.f);
+        mob->walk_time += delta * mobStrideRate(mob);
+      } else {
+        /* Idle animals still breathe: the graze and peck cycles read from
+           walk_time, so it has to keep advancing when the feet stop. */
+        mob->walk_time += delta * .9f;
+      }
+      if (mob->walk_time >= MOB_WALK_TIME_WRAP) {
+        mob->walk_time -= MOB_WALK_TIME_WRAP;
       }
     } else {
       mob->knockback_velocity.x = 0;
@@ -681,8 +1065,8 @@ void updateMobs(float delta) {
       /* Chasers recompute their heading next frame.  Wanderers use this turn
          to escape local corners without a pathfinding allocation. */
       if (mob->state != MOB_CHASE && mob->state != MOB_WINDUP) {
-        mob->yaw += 120.f + random(121);
-        if (mob->yaw >= 360) mob->yaw -= 360;
+        mob->goal_yaw = mob->yaw + 120.f + random(121);
+        if (mob->goal_yaw >= 360) mob->goal_yaw -= 360;
       }
       mob->decision_time = 20.f;
     }
@@ -753,9 +1137,20 @@ static void emitMobDrops(Mob *target) {
   int y = floor(target->position.y / BLOCK_SIZE);
   int z = floor(target->position.z / BLOCK_SIZE);
 
+  /* A calf is not worth farming.  Without this, breeding would be a meat
+     press rather than a reason to keep animals alive. */
+  if (MOB_IS_BABY(target)) {
+    return;
+  }
   switch (target->type) {
     case MOB_PIG:
       spawnDroppedItem(RAW_PORK, 1 + random(3), x, y, z);
+      break;
+    case MOB_CHICKEN:
+      spawnDroppedItem(RAW_CHICKEN, 1, x, y, z);
+      if (random(2) == 0) {
+        spawnDroppedItem(FEATHER, 1 + random(2), x, y, z);
+      }
       break;
     case MOB_SLIME:
       spawnDroppedItem(SLIME_GEL, 1 + random(2), x, y, z);
@@ -791,6 +1186,9 @@ static void damageMob(Mob *target, u8 damage, Vector3 source,
   target->health -= damage;
   target->hurt_time = PLAYER_ATTACK_DURATION;
   if (!mobTypeIsHostile(target->type)) {
+    /* Being hit ends the mood.  A struck animal that kept walking toward its
+       mate would be reading as tame at the exact moment it is being hurt. */
+    target->love_time = 0;
     target->state = MOB_FLEE;
     target->state_time = MOB_FLEE_DURATION;
   } else if (target->state != MOB_RETREAT) {

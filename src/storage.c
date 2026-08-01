@@ -8,6 +8,7 @@
 #include "player.h"
 #include "trees.h"
 #include "world.h"
+#include "home.h"
 #include "mods.h"
 #include "day_cycle.h"
 
@@ -865,19 +866,17 @@ u8 beginSaveGame(void) {
     return SAVE_FAILED;
   }
   /*
-   * The v10 format writes the whole fixed extent out of live block data.
-   * Once streaming has evicted any of it, blockGet answers BLOCK_NOT_RESIDENT
-   * there and the payload pass would pack 0xF garbage over the player's world
-   * -- silent corruption discovered only on the next load.  Refuse instead.
-   * (The caller checks this first and shows its own message; this is the
-   * backstop for any other path.)  Per-chunk diffs remove the restriction.
+   * The payload comes out of the home store, which holds the whole extent
+   * whether or not it is currently in the block window.  This is what retired
+   * the old "too far from spawn to save" refusal: the format still writes the
+   * whole fixed extent, but it no longer needs all of it resident to do it.
    *
-   * Nothing can evict a column out from under the rest of the save: the job
-   * driver runs this stage in place of the streaming step, not beside it.
+   * A resident column may hold edits made since it was last flushed, so fold
+   * those in before the payload pass reads the store.  Nothing can evict a
+   * column out from under it afterwards: the job driver runs this stage in
+   * place of the streaming step, not beside it.
    */
-  if (!worldFixedExtentResident()) {
-    return SAVE_FAILED;
-  }
+  homeFlushResident();
   /* The residency ring is wider than the world, so live tree records can sit
      in columns past the extent -- coordinates treesValid rejects on load.
      Retire them before the checksum sees them, or this save reads as corrupt
@@ -939,14 +938,14 @@ u8 stepSaveGame(u16 slabs) {
   }
 
   /* Blocks stay nibble-packed on disk in the original x-major order, so this
-     re-packs pairs out of the column window rather than copying a flat array.
+     re-packs pairs out of the home store rather than copying a flat array.
      MAX_Z is even, so a pair never straddles a row and the byte stream is
      identical to what earlier versions wrote. */
   while (save_job.stage == SAVE_STAGE_BLOCKS && slabs > 0) {
     for (block_y = 0; block_y < MAX_Y; block_y++) {
       for (block_z = 0; block_z < MAX_Z; block_z += 2) {
-        u8 high = blockGet(save_job.block_x, block_y, block_z);
-        u8 low = blockGet(save_job.block_x, block_y, block_z + 1);
+        u8 high = homeBlockGet(save_job.block_x, block_y, block_z);
+        u8 low = homeBlockGet(save_job.block_x, block_y, block_z + 1);
 
         file_buffer[cursor_pos++] = (u8) ((high << 4) | (low & 0x0F));
         /* Folded in here, in the order the loader will read them back. */
@@ -1352,6 +1351,10 @@ static u8 finishLoadGame(void) {
       (!load_job.full_inventory_saved ||
         load_job.checksum == load_job.expected_checksum) &&
       (!load_job.tree_records_saved || treesValid())) {
+    /* The payload pass filled every extent column, so the store is now the
+       loaded world rather than a generated one.  Without this, the first
+       column to regenerate would capture generated terrain over it. */
+    homeMarkAllPresent();
     return LOAD_DONE;
   }
   if (recoverBackup(game_file_num - 1)) {
@@ -1399,8 +1402,13 @@ u8 stepLoadGame(u16 slabs) {
         if (!BLOCK_IS_VALID(packed & 0x0F)) {
           packed &= 0xF0;
         }
+        /* Into the window so the world is visible immediately, and into the
+           home store because that is what the next save reads and what a
+           column regenerating later is restored from. */
         blockSet(load_job.block_x, block_y, block_z, packed >> 4);
         blockSet(load_job.block_x, block_y, block_z + 1, packed & 0x0F);
+        homeBlockSet(load_job.block_x, block_y, block_z, packed >> 4);
+        homeBlockSet(load_job.block_x, block_y, block_z + 1, packed & 0x0F);
         if (load_job.full_inventory_saved) {
           load_job.checksum = checksumByte(load_job.checksum, packed >> 4);
           load_job.checksum = checksumByte(load_job.checksum, packed & 0x0F);

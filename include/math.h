@@ -40,6 +40,17 @@ int floor(float v);
 
 float tanf(float angle);
 
+/* Heading, in [0, 360), that makes an entity's forward vector point along
+   (x, z).  See the definition for why this is an approximation. */
+float directionYaw(float x, float z);
+
+/* The equivalent angle in (-180, 180]; the short way round. */
+float wrapDegrees(float angle);
+
+/* Turn `from` toward `to` by at most `step` degrees, taking the short way and
+   staying in [0, 360). */
+float approachAngle(float from, float to, float step);
+
 float * at(Vector3 *v, int i);
 
 int * ati(Vector3i *v, int i);

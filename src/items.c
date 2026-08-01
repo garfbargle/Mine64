@@ -33,7 +33,8 @@ const char *itemName(u8 item) {
     "Iron Chunk", "Stone Sword", "Stone Pickaxe", "Wood Axe",
     "Stone Axe", "Apple", "Raw Mutton", "Raw Pork", "Slime Gel",
     "Iron Sword", "Iron Pickaxe", "Iron Axe", "Torch", "Wood Stairs",
-    "Stone Stairs", "Wood Door", "Lattice Window"
+    "Stone Stairs", "Wood Door", "Lattice Window", "Raw Chicken",
+    "Feather"
   };
 
   if (item <= CRAFTING_TABLE) {

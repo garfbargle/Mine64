@@ -1249,7 +1249,8 @@ static u8 consumeHeldFood(Player *player) {
     return FALSE;
   }
   nourishment = held->item == APPLE ? 4 :
-    (held->item == RAW_PORK ? 4 : (held->item == RAW_MUTTON ? 3 : 0));
+    (held->item == RAW_PORK ? 4 : (held->item == RAW_MUTTON ? 3 :
+    (held->item == RAW_CHICKEN ? 3 : 0)));
   if (nourishment == 0) {
     return FALSE;
   }
@@ -1825,6 +1826,13 @@ static u8 updatePlayer(u8 player_num, float delta) {
       openInventory(player_num);
       return TRUE;
     }
+    /* An apple held out to an animal feeds the animal, not the player.  The
+       prompt on screen has already named which one, and eating the apple the
+       creature walked across a field for would be the same contradiction the
+       block-placement case above avoids. */
+    if (feedMob(player_num)) {
+      return FALSE;
+    }
     if (consumeHeldFood(player)) {
       return FALSE;
     }
@@ -2148,13 +2156,7 @@ void updatePlayers() {
       if ((cont_data[i].button & Z_TRIG) == 0 &&
           cont_data[i].trigger &
           (U_JPAD | D_JPAD | L_JPAD | R_JPAD)) {
-        if (!worldFixedExtentResident()) {
-          /* The save format still writes the whole original extent, and part
-             of it has been evicted by streaming.  Refusing is temporary state
-             -- walking back reloads the extent -- so unlike a write failure
-             it must not permanently disable saving. */
-          save_far_message = 120;
-        } else if (!worldJobActive()) {
+        if (!worldJobActive()) {
           /* Sliced across callbacks now, so the game keeps drawing and the
              player keeps moving while it writes; menuSaveFinished posts the
              confirmation.  Asking again mid-write would open a second file

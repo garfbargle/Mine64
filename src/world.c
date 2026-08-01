@@ -8,6 +8,7 @@
 #include "graphics.h"
 #include "details.h"
 #include "edits.h"
+#include "home.h"
 
 u8 window_blocks[WINDOW_SLOTS][COLUMN_BLOCK_BYTES];
 u32 window_keys[WINDOW_SLOTS];
@@ -138,10 +139,12 @@ u8 *windowClaimColumn(int cx, int cz) {
   u32 key = COLUMN_KEY(cx, cz);
 
   /* Rebinding a slot is the eviction: whatever column occupied it is simply
-     forgotten.  Callers that need to preserve player edits must have written
-     the outgoing column's diff before claiming over it. */
+     forgotten, so anything worth keeping has to be written out here. */
   if (window_keys[slot] != key) {
     if (window_keys[slot] != COLUMN_KEY_EMPTY) {
+      /* Inside the extent the blocks themselves are worth keeping, and this
+         is the last moment they exist. */
+      homeFlushColumn(windowSlotChunkX(slot), windowSlotChunkZ(slot));
       /* Derived state keyed to the outgoing column has to go with it.  Tree
          records are a small fixed pool, so a walk that never released them
          would exhaust it and quietly stop growing trees. */
@@ -1872,18 +1875,33 @@ u8 worldAdvanceColumnDecoration(int cx, int cz) {
       return FALSE;
     }
     if (worldModOn(MOD_FORESTS)) {
+      u8 seeded = FALSE;
+
+      /* Canopy from this column reaches into its neighbours, so any of them
+         holding edits that have not reached the store yet must be captured
+         before the tree pass can write over them. */
+      homeFlushDirtyNeighbours(cx, cz);
       for (bx = 0; bx < CHUNK_SIZE; bx++) {
         for (bz = 0; bz < CHUNK_SIZE; bz++) {
           if (treeSeededAt(base_x + bx, base_z + bz)) {
             trySpawnTree(base_x + bx, base_z + bz);
+            seeded = TRUE;
           }
         }
       }
+      /* ...and put the neighbours back afterwards, undoing whatever the
+         canopy wrote into them.  Gated on a tree actually being seeded here:
+         most columns seed none, and this copies a kilobyte per neighbour. */
+      if (seeded) {
+        homeResyncNeighbours(cx, cz);
+      }
     }
-    /* Regenerated terrain is only the base layer.  Saved player edits and
-       persistent detail proxies are overlays, so they win over both the
-       deterministic town and any tree that would otherwise grow through it. */
-    worldApplyEditsToColumn(cx, cz);
+    /* Regenerated terrain is only the base layer.  Inside the extent the
+       column's stored blocks are the truth and are copied back over it here;
+       persistent detail proxies are an overlay on top of that.  Both win over
+       the deterministic town and any tree that would otherwise grow through
+       them, which is why this runs after the tree pass rather than before. */
+    homeRestoreColumn(cx, cz);
     detailsApplyColumn(cx, cz);
     column_state[slot] = COLUMN_DECORATED;
   }
@@ -2007,6 +2025,7 @@ static void releaseColumnsOutsideRing(int pcx, int pcz) {
     if (chebyshev(dx, dz) <= STREAM_TERRAIN_RADIUS) {
       continue;
     }
+    homeFlushColumn(cx, cz);
     treesEvictColumn(cx, cz);
     detailsEvictGeneratedColumn(cx, cz);
     graphicsInvalidateColumnSlot(slot);
@@ -2177,6 +2196,11 @@ void beginWorldGeneration(u32 chosen_seed) {
   world_seed = chosen_seed;
   seed = world_seed;
   setDayCycleWorldTicks(DAY_CYCLE_START_TICK);
+  /* The home store is the previous world's blocks until this happens.  Left
+     alone, the first column to decorate would be "restored" from a world with
+     a different seed and a different mod mask -- so a reroll would produce
+     the terrain it was asked to replace. */
+  initHome();
   initTrees();
   resetStructurePlanCache();
   /* A new world starts at spawn, near coordinate zero.  Without this, a menu
@@ -2260,6 +2284,11 @@ u8 stepWorldGeneration(u32 columns) {
         world_gen_stage++;
         if (world_gen_stage > WORLD_GEN_TREES) {
           world_gen_stage = WORLD_GEN_IDLE;
+          /* Every extent column is finished now, including the canopy its
+             neighbours reached into it.  This is the first moment a snapshot
+             of one is worth keeping -- taken per column as it decorated, it
+             would be missing whatever its neighbours wrote afterwards. */
+          homeCaptureExtent();
         }
       }
     }

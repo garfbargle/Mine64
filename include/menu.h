@@ -41,7 +41,6 @@ static __inline__ __attribute__((unused)) u8 screenIsWorldPicker(
 }
 extern u32 save_message_cooldown;
 extern u8 save_failed_message;
-extern u8 save_far_message;
 extern u8 world_incomplete_message;
 extern u8 player_joined_message;
 extern u8 player_joined_number;

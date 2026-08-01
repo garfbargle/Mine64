@@ -1,0 +1,90 @@
+# ANIMALS: the herd comes to the apple, eats it, and raises a calf.
+#
+# BONUS KIT is switched on because the apples it hands out are the only ones
+# available at spawn, and every interaction worth capturing starts with one in
+# the hand.  CRITTERS is switched off so that whatever walks toward the player
+# is walking toward the apple and not toward the mod.
+#
+# The player never moves.  That is the test: an animal that has to be chased
+# has not been tempted.
+
+wait 960
+press A 8
+wait 40
+
+# Seven rows below CLASSIC is CRITTERS; two more is BONUS KIT.
+press DDOWN 8
+wait 5
+press DDOWN 8
+wait 5
+press DDOWN 8
+wait 5
+press DDOWN 8
+wait 5
+press DDOWN 8
+wait 5
+press DDOWN 8
+wait 5
+press DDOWN 8
+wait 20
+press A 8
+wait 20
+press DDOWN 8
+wait 5
+press DDOWN 8
+wait 20
+press A 8
+wait 20
+
+press START 8
+wait 60
+press START 8
+wait 12
+wait 300
+shot spawn
+
+stick 0 -60 5 Z
+wait 20
+# Back off so the whole herd fits in frame, then watch it pair up.
+stick 0 -70 70
+wait 20
+shot backed-off
+
+stick 40 0 8
+wait 70
+shot look-01
+stick 40 0 8
+wait 70
+shot look-02
+stick 40 0 8
+wait 70
+shot look-03
+stick 40 0 8
+wait 70
+shot look-04
+stick 40 0 8
+wait 70
+shot look-05
+stick 40 0 8
+wait 70
+shot look-06
+stick 40 0 8
+wait 70
+shot look-07
+stick 40 0 8
+wait 70
+shot look-08
+stick 40 0 8
+wait 70
+shot look-09
+stick 40 0 8
+wait 70
+shot look-10
+stick 40 0 8
+wait 70
+shot look-11
+stick 40 0 8
+wait 70
+shot look-12
+
+stop

@@ -53,6 +53,9 @@
 #define DROPPED_ITEM_RENDER_DISTANCE (BLOCK_SIZE * 36.f)
 #define PLAYER_RENDER_DISTANCE (BLOCK_SIZE * 64.f)
 #define MOB_RENDER_DISTANCE (BLOCK_SIZE * 30.f)
+/* Inside this, an animal is drawn with its face and tail; beyond it, as the
+   plain boxes the old models were.  See drawMobsForPlayer. */
+#define MOB_DETAIL_DISTANCE (BLOCK_SIZE * 13.f)
 #define MAX_VISIBLE_MOBS 4
 
 Gfx *dlp;
@@ -79,14 +82,15 @@ Gfx frame_display_lists[NUM_DISPLAY_LISTS][FRAME_DISPLAY_LIST_SIZE];
  * no compaction pass, no second arena, and no stop-the-world: a fully
  * fragmented arena heals over a few dozen frames while the game runs.
  */
-/* 1.25 MiB: the radius-10 mesh ring is ~390 shell columns plus the
+/* 1.125 MiB: the radius-10 mesh ring is ~390 shell columns plus the
    full-detail near disc, all in baked-vertex form now that the shells'
    compact matrix-pair format is gone -- its two per-quad matrix operations
-   were the measured bulk of the RSP's standing frame.  The quarter
-   megabyte of growth is paid for by retiring the per-block matrix table
-   the old format needed (128 KiB) plus link headroom, and the A row still
-   reports the margin on hardware. */
-#define MESH_ARENA_SIZE 163840
+   were the measured bulk of the RSP's standing frame.
+   Trimmed by 128 KiB from 1.25 MiB to fund the home store, which keeps the
+   whole save extent resident so that building is not rationed.  The A row
+   reports the remaining margin on hardware; if it starts reading near zero
+   with terrain missing at the ring's edge, this is the number that gave. */
+#define MESH_ARENA_SIZE 147456
 static Gfx mesh_arena[MESH_ARENA_SIZE];
 
 typedef struct {
@@ -599,18 +603,43 @@ static Mtx steve_translate[NUM_DISPLAY_LISTS][MAX_PLAYERS][STEVE_PART_COUNT];
 static Mtx steve_rotate[NUM_DISPLAY_LISTS][MAX_PLAYERS][STEVE_PART_COUNT];
 static Mtx first_person_sword_translate[NUM_DISPLAY_LISTS][MAX_PLAYERS];
 static Mtx first_person_sword_rotate[NUM_DISPLAY_LISTS][MAX_PLAYERS];
+/* The held tool shares the arm's translation -- the hand is the origin of both
+   -- but not its rotation, so the blade can sit across the fist and lead the
+   strike instead of running straight out along the forearm. */
+static Mtx first_person_tool_rotate[NUM_DISPLAY_LISTS][MAX_PLAYERS];
 
+/*
+ * Every animal is built from the same seven anchors, because seven is what
+ * the matrix budget pays for; species differ in what hangs off them.  On a
+ * bird the back limbs are wings.
+ */
 #define MOB_BODY 0
 #define MOB_HEAD 1
-#define MOB_FRONT_LEFT_LEG 2
-#define MOB_FRONT_RIGHT_LEG 3
-#define MOB_BACK_LEFT_LEG 4
-#define MOB_BACK_RIGHT_LEG 5
-#define MOB_SNOUT 6
+#define MOB_LIMB_FRONT_LEFT 2
+#define MOB_LIMB_FRONT_RIGHT 3
+#define MOB_LIMB_BACK_LEFT 4
+#define MOB_LIMB_BACK_RIGHT 5
+#define MOB_TAIL 6
 #define MOB_PART_COUNT 7
 
+/*
+ * Orientations, on the other hand, are shared: a body, a head that turns
+ * independently, one pair of diagonal limbs and the other, and a bird's two
+ * wings.  Splitting them from the anchors is what makes a real swinging gait
+ * affordable -- seven parts still cost seven translations, but four legs cost
+ * two rotations, not four, and the whole table is smaller than the one it
+ * replaced even after adding pitched heads and flapping wings.
+ */
+#define MOB_ROT_BODY 0
+#define MOB_ROT_HEAD 1
+#define MOB_ROT_LIMB_A 2 /* Front left with back right. */
+#define MOB_ROT_LIMB_B 3 /* Front right with back left. */
+#define MOB_ROT_WING_LEFT 4
+#define MOB_ROT_WING_RIGHT 5
+#define MOB_ROT_COUNT 6
+
 static Mtx mob_translate[NUM_DISPLAY_LISTS][MAX_MOBS][MOB_PART_COUNT];
-static Mtx mob_rotate[NUM_DISPLAY_LISTS][MAX_MOBS][MOB_PART_COUNT];
+static Mtx mob_rotate[NUM_DISPLAY_LISTS][MAX_MOBS][MOB_ROT_COUNT];
 
 /* Detail records may be numerous in a base, but only a small nearest set is
    submitted per viewport.  The matrices are double-buffered like every other
@@ -652,88 +681,161 @@ DETAIL_BOX(window_cross_verts, -3, 10, -3, 3, 54, 3,
   124, 179, 181, 64, 110, 121);
 DETAIL_BOX(torch_stick_verts, -4, 0, -4, 4, 39, 4,
   146, 86, 36, 88, 48, 20);
-DETAIL_BOX(torch_flame_verts, -8, 38, -8, 8, 55, 8,
-  255, 213, 72, 232, 91, 26);
+/* A taper costs no more than the old flame box and makes both placed and
+   dropped torches read as fire rather than a glowing cube. */
+static Vtx torch_flame_verts[] = {
+  STEVE_VERTEX(-4, 55, 4, 255, 229, 104), STEVE_VERTEX(4, 55, 4, 255, 229, 104),
+  STEVE_VERTEX(8, 38, 8, 255, 192, 55), STEVE_VERTEX(-8, 38, 8, 255, 192, 55),
+  STEVE_VERTEX(4, 55, -4, 238, 110, 28), STEVE_VERTEX(-4, 55, -4, 238, 110, 28),
+  STEVE_VERTEX(-8, 38, -8, 218, 64, 19), STEVE_VERTEX(8, 38, -8, 218, 64, 19)
+};
 
 /* Head, torso, arms, and legs.  Limbs start at y = 0 so their rotation has a
    convincing shoulder/hip pivot instead of spinning around their middles. */
 static Vtx steve_head_verts[] = {
-  STEVE_VERTEX(-16, 16, 16, 198, 137, 90), STEVE_VERTEX(16, 16, 16, 198, 137, 90),
-  STEVE_VERTEX(16, -16, 16, 198, 137, 90), STEVE_VERTEX(-16, -16, 16, 198, 137, 90),
-  STEVE_VERTEX(16, 16, -16, 198, 137, 90), STEVE_VERTEX(-16, 16, -16, 198, 137, 90),
-  STEVE_VERTEX(-16, -16, -16, 198, 137, 90), STEVE_VERTEX(16, -16, -16, 198, 137, 90)
+  STEVE_VERTEX(-16, 16, 16, 172, 111, 74), STEVE_VERTEX(16, 16, 16, 172, 111, 74),
+  STEVE_VERTEX(16, -16, 16, 172, 111, 74), STEVE_VERTEX(-16, -16, 16, 172, 111, 74),
+  STEVE_VERTEX(16, 16, -16, 205, 145, 98), STEVE_VERTEX(-16, 16, -16, 205, 145, 98),
+  STEVE_VERTEX(-16, -16, -16, 205, 145, 98), STEVE_VERTEX(16, -16, -16, 205, 145, 98)
 };
 
 static Vtx steve_body_verts[] = {
-  STEVE_VERTEX(-18, 22, 9, 54, 140, 190), STEVE_VERTEX(18, 22, 9, 54, 140, 190),
-  STEVE_VERTEX(18, -22, 9, 54, 140, 190), STEVE_VERTEX(-18, -22, 9, 54, 140, 190),
-  STEVE_VERTEX(18, 22, -9, 54, 140, 190), STEVE_VERTEX(-18, 22, -9, 54, 140, 190),
-  STEVE_VERTEX(-18, -22, -9, 54, 140, 190), STEVE_VERTEX(18, -22, -9, 54, 140, 190)
+  STEVE_VERTEX(-18, 22, 9, 35, 100, 150), STEVE_VERTEX(18, 22, 9, 35, 100, 150),
+  STEVE_VERTEX(18, -22, 9, 35, 100, 150), STEVE_VERTEX(-18, -22, 9, 35, 100, 150),
+  STEVE_VERTEX(18, 22, -9, 64, 150, 198), STEVE_VERTEX(-18, 22, -9, 64, 150, 198),
+  STEVE_VERTEX(-18, -22, -9, 64, 150, 198), STEVE_VERTEX(18, -22, -9, 64, 150, 198)
 };
 
 static Vtx steve_arm_verts[] = {
-  STEVE_VERTEX(-7, 0, 7, 198, 137, 90), STEVE_VERTEX(7, 0, 7, 198, 137, 90),
-  STEVE_VERTEX(7, -44, 7, 198, 137, 90), STEVE_VERTEX(-7, -44, 7, 198, 137, 90),
-  STEVE_VERTEX(7, 0, -7, 198, 137, 90), STEVE_VERTEX(-7, 0, -7, 198, 137, 90),
-  STEVE_VERTEX(-7, -44, -7, 198, 137, 90), STEVE_VERTEX(7, -44, -7, 198, 137, 90)
+  STEVE_VERTEX(-7, 0, 7, 158, 100, 67), STEVE_VERTEX(7, 0, 7, 158, 100, 67),
+  STEVE_VERTEX(7, -44, 7, 158, 100, 67), STEVE_VERTEX(-7, -44, 7, 158, 100, 67),
+  STEVE_VERTEX(7, 0, -7, 210, 151, 100), STEVE_VERTEX(-7, 0, -7, 210, 151, 100),
+  STEVE_VERTEX(-7, -44, -7, 210, 151, 100), STEVE_VERTEX(7, -44, -7, 210, 151, 100)
 };
 
 static Vtx steve_leg_verts[] = {
-  STEVE_VERTEX(-8, 0, 8, 55, 70, 150), STEVE_VERTEX(8, 0, 8, 55, 70, 150),
-  STEVE_VERTEX(8, -44, 8, 55, 70, 150), STEVE_VERTEX(-8, -44, 8, 55, 70, 150),
-  STEVE_VERTEX(8, 0, -8, 55, 70, 150), STEVE_VERTEX(-8, 0, -8, 55, 70, 150),
-  STEVE_VERTEX(-8, -44, -8, 55, 70, 150), STEVE_VERTEX(8, -44, -8, 55, 70, 150)
+  STEVE_VERTEX(-8, 0, 8, 37, 48, 112), STEVE_VERTEX(8, 0, 8, 37, 48, 112),
+  STEVE_VERTEX(8, -44, 8, 37, 48, 112), STEVE_VERTEX(-8, -44, 8, 37, 48, 112),
+  STEVE_VERTEX(8, 0, -8, 61, 82, 174), STEVE_VERTEX(-8, 0, -8, 61, 82, 174),
+  STEVE_VERTEX(-8, -44, -8, 61, 82, 174), STEVE_VERTEX(8, -44, -8, 61, 82, 174)
 };
 
-/* The sheep is all chunky shaded geometry, matching Steve's inexpensive
-   renderer.  Its fleece therefore needs no new character atlas or UV work. */
-static Vtx sheep_body_verts[] = {
-  STEVE_VERTEX(-27, 17, 18, 236, 234, 218), STEVE_VERTEX(27, 17, 18, 236, 234, 218),
-  STEVE_VERTEX(27, -17, 18, 236, 234, 218), STEVE_VERTEX(-27, -17, 18, 236, 234, 218),
-  STEVE_VERTEX(27, 17, -18, 204, 204, 194), STEVE_VERTEX(-27, 17, -18, 204, 204, 194),
-  STEVE_VERTEX(-27, -17, -18, 204, 204, 194), STEVE_VERTEX(27, -17, -18, 204, 204, 194)
+/*
+ * ANIMALS.  All chunky shaded geometry, matching Steve's inexpensive
+ * renderer: no character atlas, no UV work, nothing the RDP has to load.
+ *
+ * Two conventions run through every model below and are worth stating once.
+ * Front is -Z, matching Steve.  And a part that only ever turns with the body
+ * -- a torso, a tail -- is written in coordinates measured from the feet and
+ * anchored at the origin, so its box rotates about the animal's own vertical
+ * axis for free; a part that articulates -- a head that pitches to graze, a
+ * leg that swings from the hip, a wing that beats from the shoulder -- is
+ * written relative to that joint, and its anchor puts the joint in place.
+ *
+ * Faces are sheets rather than parts.  Muzzle, ears, eyes, beak and comb are
+ * all rigidly attached to a head that already has a matrix, so they cost
+ * vertices and triangles but not one more transform, which is the only reason
+ * a creature this cheap can look you in the eye.
+ */
+#define MOB_BOX DETAIL_BOX
+
+MOB_BOX(sheep_body_verts, -25, 30, -18, 25, 66, 24,
+  201, 198, 184, 240, 238, 226);
+/* Deliberately several shades under the fleece.  A sheep whose head matched
+   its body read as one white box with eyes painted on the corner. */
+MOB_BOX(sheep_head_verts, -13, -14, -28, 13, 12, 2,
+  158, 152, 141, 198, 192, 178);
+MOB_BOX(sheep_leg_verts, -6, -34, -6, 6, 0, 6,
+  74, 68, 60, 102, 95, 84);
+MOB_BOX(sheep_tail_verts, -5, 50, 24, 5, 62, 32,
+  196, 193, 180, 228, 225, 212);
+
+/*
+ * Muzzle, two ears, two eyes.  Both pairs of quads sit clear of the head box
+ * rather than on its surface -- the ears above its roofline, the eyes a unit
+ * proud of its face -- because vertex positions are integers and a coplanar
+ * quad has no sub-unit offset available to break the z-fight with.
+ */
+static Vtx sheep_face_verts[] = {
+  STEVE_VERTEX(-8, -3, -27, 176, 156, 140), STEVE_VERTEX(8, -3, -27, 176, 156, 140),
+  STEVE_VERTEX(8, -13, -27, 176, 156, 140), STEVE_VERTEX(-8, -13, -27, 176, 156, 140),
+  STEVE_VERTEX(8, -3, -36, 216, 196, 178), STEVE_VERTEX(-8, -3, -36, 216, 196, 178),
+  STEVE_VERTEX(-8, -13, -36, 216, 196, 178), STEVE_VERTEX(8, -13, -36, 216, 196, 178),
+  STEVE_VERTEX(-13, 12, -16, 172, 166, 154), STEVE_VERTEX(-5, 12, -16, 172, 166, 154),
+  STEVE_VERTEX(-6, 21, -16, 146, 140, 130), STEVE_VERTEX(-13, 20, -16, 146, 140, 130),
+  STEVE_VERTEX(5, 12, -16, 172, 166, 154), STEVE_VERTEX(13, 12, -16, 172, 166, 154),
+  STEVE_VERTEX(13, 20, -16, 146, 140, 130), STEVE_VERTEX(6, 21, -16, 146, 140, 130),
+  STEVE_VERTEX(-11, 4, -29, 32, 27, 24), STEVE_VERTEX(-5, 4, -29, 32, 27, 24),
+  STEVE_VERTEX(-5, -2, -29, 32, 27, 24), STEVE_VERTEX(-11, -2, -29, 32, 27, 24),
+  STEVE_VERTEX(5, 4, -29, 32, 27, 24), STEVE_VERTEX(11, 4, -29, 32, 27, 24),
+  STEVE_VERTEX(11, -2, -29, 32, 27, 24), STEVE_VERTEX(5, -2, -29, 32, 27, 24)
 };
 
-static Vtx sheep_head_verts[] = {
-  STEVE_VERTEX(-15, 14, 14, 190, 188, 176), STEVE_VERTEX(15, 14, 14, 190, 188, 176),
-  STEVE_VERTEX(15, -14, 14, 190, 188, 176), STEVE_VERTEX(-15, -14, 14, 190, 188, 176),
-  STEVE_VERTEX(15, 14, -14, 150, 148, 140), STEVE_VERTEX(-15, 14, -14, 150, 148, 140),
-  STEVE_VERTEX(-15, -14, -14, 150, 148, 140), STEVE_VERTEX(15, -14, -14, 150, 148, 140)
+MOB_BOX(pig_body_verts, -24, 26, -18, 24, 56, 24,
+  186, 110, 118, 232, 150, 155);
+MOB_BOX(pig_head_verts, -14, -13, -26, 14, 13, 2,
+  190, 116, 124, 236, 158, 162);
+MOB_BOX(pig_leg_verts, -6, -28, -6, 6, 0, 6,
+  152, 84, 94, 200, 120, 128);
+MOB_BOX(pig_tail_verts, -3, 44, 24, 3, 54, 30,
+  180, 104, 112, 224, 142, 148);
+
+/* Snout, two nostrils sunk into its face, two ears, two eyes. */
+static Vtx pig_face_verts[] = {
+  STEVE_VERTEX(-9, -1, -25, 196, 120, 124), STEVE_VERTEX(9, -1, -25, 196, 120, 124),
+  STEVE_VERTEX(9, -13, -25, 196, 120, 124), STEVE_VERTEX(-9, -13, -25, 196, 120, 124),
+  STEVE_VERTEX(9, -1, -34, 246, 180, 178), STEVE_VERTEX(-9, -1, -34, 246, 180, 178),
+  STEVE_VERTEX(-9, -13, -34, 246, 180, 178), STEVE_VERTEX(9, -13, -34, 246, 180, 178),
+  STEVE_VERTEX(-6, -4, -35, 122, 60, 66), STEVE_VERTEX(-2, -4, -35, 122, 60, 66),
+  STEVE_VERTEX(-2, -9, -35, 122, 60, 66), STEVE_VERTEX(-6, -9, -35, 122, 60, 66),
+  STEVE_VERTEX(2, -4, -35, 122, 60, 66), STEVE_VERTEX(6, -4, -35, 122, 60, 66),
+  STEVE_VERTEX(6, -9, -35, 122, 60, 66), STEVE_VERTEX(2, -9, -35, 122, 60, 66),
+  STEVE_VERTEX(-14, 13, -16, 214, 132, 138), STEVE_VERTEX(-5, 13, -16, 214, 132, 138),
+  STEVE_VERTEX(-6, 24, -16, 182, 104, 112), STEVE_VERTEX(-14, 22, -16, 182, 104, 112),
+  STEVE_VERTEX(5, 13, -16, 214, 132, 138), STEVE_VERTEX(14, 13, -16, 214, 132, 138),
+  STEVE_VERTEX(14, 22, -16, 182, 104, 112), STEVE_VERTEX(6, 24, -16, 182, 104, 112),
+  STEVE_VERTEX(-10, 6, -27, 32, 24, 26), STEVE_VERTEX(-5, 6, -27, 32, 24, 26),
+  STEVE_VERTEX(-5, 1, -27, 32, 24, 26), STEVE_VERTEX(-10, 1, -27, 32, 24, 26),
+  STEVE_VERTEX(5, 6, -27, 32, 24, 26), STEVE_VERTEX(10, 6, -27, 32, 24, 26),
+  STEVE_VERTEX(10, 1, -27, 32, 24, 26), STEVE_VERTEX(5, 1, -27, 32, 24, 26)
 };
 
-static Vtx sheep_leg_verts[] = {
-  STEVE_VERTEX(-6, 18, 6, 104, 96, 82), STEVE_VERTEX(6, 18, 6, 104, 96, 82),
-  STEVE_VERTEX(6, -18, 6, 104, 96, 82), STEVE_VERTEX(-6, -18, 6, 104, 96, 82),
-  STEVE_VERTEX(6, 18, -6, 76, 70, 62), STEVE_VERTEX(-6, 18, -6, 76, 70, 62),
-  STEVE_VERTEX(-6, -18, -6, 76, 70, 62), STEVE_VERTEX(6, -18, -6, 76, 70, 62)
+MOB_BOX(chicken_body_verts, -9, 16, -11, 9, 34, 15,
+  204, 201, 194, 246, 244, 238);
+MOB_BOX(chicken_head_verts, -6, -6, -7, 6, 8, 5,
+  208, 205, 198, 250, 248, 242);
+MOB_BOX(chicken_leg_verts, -2, -16, -2, 2, 0, 2,
+  190, 132, 42, 236, 176, 62);
+/* The wings hang from their inner top corner, which is where the roll that
+   beats them has to pivot; that makes them the one mirrored pair here. */
+MOB_BOX(chicken_wing_left_verts, -3, -13, -8, 0, 0, 8,
+  194, 190, 182, 238, 236, 229);
+MOB_BOX(chicken_wing_right_verts, 0, -13, -8, 3, 0, 8,
+  194, 190, 182, 238, 236, 229);
+
+/* Tail feathers rake up and back, so this one box is written by hand rather
+   than squared off by the macro. */
+static Vtx chicken_tail_verts[] = {
+  STEVE_VERTEX(-6, 38, 22, 78, 76, 82), STEVE_VERTEX(6, 38, 22, 78, 76, 82),
+  STEVE_VERTEX(6, 27, 18, 78, 76, 82), STEVE_VERTEX(-6, 27, 18, 78, 76, 82),
+  STEVE_VERTEX(6, 33, 13, 112, 110, 116), STEVE_VERTEX(-6, 33, 13, 112, 110, 116),
+  STEVE_VERTEX(-6, 24, 11, 112, 110, 116), STEVE_VERTEX(6, 24, 11, 112, 110, 116)
 };
 
-static Vtx pig_body_verts[] = {
-  STEVE_VERTEX(-27, 16, 18, 224, 145, 151), STEVE_VERTEX(27, 16, 18, 224, 145, 151),
-  STEVE_VERTEX(27, -16, 18, 224, 145, 151), STEVE_VERTEX(-27, -16, 18, 224, 145, 151),
-  STEVE_VERTEX(27, 16, -18, 177, 104, 113), STEVE_VERTEX(-27, 16, -18, 177, 104, 113),
-  STEVE_VERTEX(-27, -16, -18, 177, 104, 113), STEVE_VERTEX(27, -16, -18, 177, 104, 113)
-};
-
-static Vtx pig_head_verts[] = {
-  STEVE_VERTEX(-16, 15, 15, 232, 155, 160), STEVE_VERTEX(16, 15, 15, 232, 155, 160),
-  STEVE_VERTEX(16, -15, 15, 232, 155, 160), STEVE_VERTEX(-16, -15, 15, 232, 155, 160),
-  STEVE_VERTEX(16, 15, -15, 184, 111, 120), STEVE_VERTEX(-16, 15, -15, 184, 111, 120),
-  STEVE_VERTEX(-16, -15, -15, 184, 111, 120), STEVE_VERTEX(16, -15, -15, 184, 111, 120)
-};
-
-static Vtx pig_leg_verts[] = {
-  STEVE_VERTEX(-6, 17, 6, 197, 123, 132), STEVE_VERTEX(6, 17, 6, 197, 123, 132),
-  STEVE_VERTEX(6, -17, 6, 197, 123, 132), STEVE_VERTEX(-6, -17, 6, 197, 123, 132),
-  STEVE_VERTEX(6, 17, -6, 144, 80, 91), STEVE_VERTEX(-6, 17, -6, 144, 80, 91),
-  STEVE_VERTEX(-6, -17, -6, 144, 80, 91), STEVE_VERTEX(6, -17, -6, 144, 80, 91)
-};
-
-static Vtx pig_snout_verts[] = {
-  STEVE_VERTEX(-10, 7, 5, 238, 171, 170), STEVE_VERTEX(10, 7, 5, 238, 171, 170),
-  STEVE_VERTEX(10, -7, 5, 238, 171, 170), STEVE_VERTEX(-10, -7, 5, 238, 171, 170),
-  STEVE_VERTEX(10, 7, -5, 162, 91, 101), STEVE_VERTEX(-10, 7, -5, 162, 91, 101),
-  STEVE_VERTEX(-10, -7, -5, 162, 91, 101), STEVE_VERTEX(10, -7, -5, 162, 91, 101)
+/* Beak, comb, wattle, eyes. */
+static Vtx chicken_face_verts[] = {
+  STEVE_VERTEX(-3, 1, -6, 196, 142, 40), STEVE_VERTEX(3, 1, -6, 196, 142, 40),
+  STEVE_VERTEX(3, -4, -6, 196, 142, 40), STEVE_VERTEX(-3, -4, -6, 196, 142, 40),
+  STEVE_VERTEX(3, 1, -14, 242, 186, 66), STEVE_VERTEX(-3, 1, -14, 242, 186, 66),
+  STEVE_VERTEX(-3, -4, -14, 242, 186, 66), STEVE_VERTEX(3, -4, -14, 242, 186, 66),
+  STEVE_VERTEX(0, 8, -6, 226, 78, 70), STEVE_VERTEX(0, 8, 3, 226, 78, 70),
+  STEVE_VERTEX(0, 16, 1, 196, 56, 52), STEVE_VERTEX(0, 16, -5, 196, 56, 52),
+  STEVE_VERTEX(0, -4, -12, 214, 64, 58), STEVE_VERTEX(0, -4, -6, 214, 64, 58),
+  STEVE_VERTEX(0, -11, -6, 186, 46, 44), STEVE_VERTEX(0, -11, -11, 186, 46, 44),
+  STEVE_VERTEX(-6, 3, -8, 28, 24, 22), STEVE_VERTEX(-2, 3, -8, 28, 24, 22),
+  STEVE_VERTEX(-2, -1, -8, 28, 24, 22), STEVE_VERTEX(-6, -1, -8, 28, 24, 22),
+  STEVE_VERTEX(2, 3, -8, 28, 24, 22), STEVE_VERTEX(6, 3, -8, 28, 24, 22),
+  STEVE_VERTEX(6, -1, -8, 28, 24, 22), STEVE_VERTEX(2, -1, -8, 28, 24, 22)
 };
 
 static Vtx slime_body_verts[] = {
@@ -743,68 +845,87 @@ static Vtx slime_body_verts[] = {
   STEVE_VERTEX(-22, -21, -20, 47, 125, 58), STEVE_VERTEX(22, -21, -20, 47, 125, 58)
 };
 
-static Vtx slime_eye_verts[] = {
-  STEVE_VERTEX(-4, 5, 3, 16, 25, 20), STEVE_VERTEX(4, 5, 3, 16, 25, 20),
-  STEVE_VERTEX(4, -5, 3, 16, 25, 20), STEVE_VERTEX(-4, -5, 3, 16, 25, 20),
-  STEVE_VERTEX(4, 5, -3, 7, 12, 9), STEVE_VERTEX(-4, 5, -3, 7, 12, 9),
-  STEVE_VERTEX(-4, -5, -3, 7, 12, 9), STEVE_VERTEX(4, -5, -3, 7, 12, 9)
+/* The slime's eyes ride on the body matrix, which is what lets a slime draw
+   as a single transform instead of the three it used to need. */
+static Vtx slime_face_verts[] = {
+  STEVE_VERTEX(-13, 10, -21, 16, 25, 20), STEVE_VERTEX(-5, 10, -21, 16, 25, 20),
+  STEVE_VERTEX(-5, 2, -21, 16, 25, 20), STEVE_VERTEX(-13, 2, -21, 16, 25, 20),
+  STEVE_VERTEX(5, 10, -21, 16, 25, 20), STEVE_VERTEX(13, 10, -21, 16, 25, 20),
+  STEVE_VERTEX(13, 2, -21, 16, 25, 20), STEVE_VERTEX(5, 2, -21, 16, 25, 20)
 };
 
 static Vtx slime_gel_verts[] = {
-  STEVE_VERTEX(-10, 9, 9, 105, 211, 96), STEVE_VERTEX(10, 9, 9, 105, 211, 96),
-  STEVE_VERTEX(10, -9, 9, 105, 211, 96), STEVE_VERTEX(-10, -9, 9, 105, 211, 96),
-  STEVE_VERTEX(10, 9, -9, 48, 136, 60), STEVE_VERTEX(-10, 9, -9, 48, 136, 60),
-  STEVE_VERTEX(-10, -9, -9, 48, 136, 60), STEVE_VERTEX(10, -9, -9, 48, 136, 60)
+  STEVE_VERTEX(-7, 8, 8, 128, 224, 112), STEVE_VERTEX(8, 7, 8, 128, 224, 112),
+  STEVE_VERTEX(10, -6, 9, 83, 181, 78), STEVE_VERTEX(-10, -7, 9, 83, 181, 78),
+  STEVE_VERTEX(8, 7, -8, 46, 127, 59), STEVE_VERTEX(-7, 8, -9, 46, 127, 59),
+  STEVE_VERTEX(-10, -7, -9, 33, 93, 48), STEVE_VERTEX(10, -6, -8, 33, 93, 48)
 };
 
-/* Two blue eye quads on the local -Z face make it obvious where Steve is
-   looking, even without a character texture. */
-static Vtx steve_eye_verts[] = {
+/*
+ * The body remains six cheap boxes.  Steve's identity comes from this
+ * single 24-vertex face sheet: eyes, a squared-off hairline, sideburns and a
+ * mouth all share the existing head transform and one display-list call.
+ */
+static Vtx steve_face_verts[] = {
+  /* Eyes. */
   STEVE_VERTEX(-11, 8, -17, 55, 125, 210), STEVE_VERTEX(-5, 8, -17, 55, 125, 210),
   STEVE_VERTEX(-5, 2, -17, 55, 125, 210), STEVE_VERTEX(-11, 2, -17, 55, 125, 210),
   STEVE_VERTEX(5, 8, -17, 55, 125, 210), STEVE_VERTEX(11, 8, -17, 55, 125, 210),
-  STEVE_VERTEX(11, 2, -17, 55, 125, 210), STEVE_VERTEX(5, 2, -17, 55, 125, 210)
+  STEVE_VERTEX(11, 2, -17, 55, 125, 210), STEVE_VERTEX(5, 2, -17, 55, 125, 210),
+  /* Hairline and sideburns frame the otherwise intentionally simple face. */
+  STEVE_VERTEX(-15, 15, -17, 72, 48, 28), STEVE_VERTEX(15, 15, -17, 72, 48, 28),
+  STEVE_VERTEX(15, 10, -17, 72, 48, 28), STEVE_VERTEX(-15, 10, -17, 72, 48, 28),
+  STEVE_VERTEX(-15, 10, -17, 72, 48, 28), STEVE_VERTEX(-11, 10, -17, 72, 48, 28),
+  STEVE_VERTEX(-11, -7, -17, 72, 48, 28), STEVE_VERTEX(-15, -7, -17, 72, 48, 28),
+  STEVE_VERTEX(11, 10, -17, 72, 48, 28), STEVE_VERTEX(15, 10, -17, 72, 48, 28),
+  STEVE_VERTEX(15, -7, -17, 72, 48, 28), STEVE_VERTEX(11, -7, -17, 72, 48, 28),
+  /* One subdued mouth keeps the face readable without needing another part. */
+  STEVE_VERTEX(-5, -7, -17, 116, 57, 49), STEVE_VERTEX(5, -7, -17, 116, 57, 49),
+  STEVE_VERTEX(5, -9, -17, 116, 57, 49), STEVE_VERTEX(-5, -9, -17, 116, 57, 49)
 };
 
-/* The blade points down from the hand pivot.  Keeping it as two shaded boxes
-   gives every equipped sword a crisp silhouette without adding a texture or
-   a costly animated skeleton. */
-static Vtx steve_sword_blade_verts[] = {
-  STEVE_VERTEX(-4, 4, 3, 205, 205, 188), STEVE_VERTEX(4, 4, 3, 205, 205, 188),
-  STEVE_VERTEX(4, -42, 3, 205, 205, 188), STEVE_VERTEX(-4, -42, 3, 205, 205, 188),
-  STEVE_VERTEX(4, 4, -3, 165, 165, 154), STEVE_VERTEX(-4, 4, -3, 165, 165, 154),
-  STEVE_VERTEX(-4, -42, -3, 165, 165, 154), STEVE_VERTEX(4, -42, -3, 165, 165, 154)
-};
+/*
+ * Swords are the model held closest to the camera, so a rectangular blade
+ * read more like a ruler than a weapon.  This five-sided prism gives it a
+ * point and a broader base.  It remains one vertex load and one display-list
+ * call; only four very small triangles are added over the old box.
+ */
+#define SWORD_BLADE_VERTS(name, fr, fg, fb, br, bg, bb) \
+static Vtx name[] = { \
+  STEVE_VERTEX(-6, 4, 3, fr, fg, fb), STEVE_VERTEX(6, 4, 3, fr, fg, fb), \
+  STEVE_VERTEX(5, -32, 3, fr, fg, fb), STEVE_VERTEX(0, -46, 3, fr, fg, fb), \
+  STEVE_VERTEX(-5, -32, 3, fr, fg, fb), \
+  STEVE_VERTEX(-6, 4, -3, br, bg, bb), STEVE_VERTEX(6, 4, -3, br, bg, bb), \
+  STEVE_VERTEX(5, -32, -3, br, bg, bb), STEVE_VERTEX(0, -46, -3, br, bg, bb), \
+  STEVE_VERTEX(-5, -32, -3, br, bg, bb) \
+}
 
-static Vtx wood_sword_blade_verts[] = {
-  STEVE_VERTEX(-4, 4, 3, 151, 103, 53), STEVE_VERTEX(4, 4, 3, 151, 103, 53),
-  STEVE_VERTEX(4, -42, 3, 151, 103, 53), STEVE_VERTEX(-4, -42, 3, 151, 103, 53),
-  STEVE_VERTEX(4, 4, -3, 105, 66, 31), STEVE_VERTEX(-4, 4, -3, 105, 66, 31),
-  STEVE_VERTEX(-4, -42, -3, 105, 66, 31), STEVE_VERTEX(4, -42, -3, 105, 66, 31)
-};
+SWORD_BLADE_VERTS(iron_sword_blade_verts, 230, 232, 221, 145, 154, 153);
+SWORD_BLADE_VERTS(stone_sword_blade_verts, 171, 178, 175, 92, 100, 100);
+SWORD_BLADE_VERTS(wood_sword_blade_verts, 178, 121, 60, 96, 58, 27);
 
-static Vtx stone_sword_blade_verts[] = {
-  STEVE_VERTEX(-4, 4, 3, 151, 157, 154), STEVE_VERTEX(4, 4, 3, 151, 157, 154),
-  STEVE_VERTEX(4, -42, 3, 151, 157, 154), STEVE_VERTEX(-4, -42, 3, 151, 157, 154),
-  STEVE_VERTEX(4, 4, -3, 94, 100, 98), STEVE_VERTEX(-4, 4, -3, 94, 100, 98),
-  STEVE_VERTEX(-4, -42, -3, 94, 100, 98), STEVE_VERTEX(4, -42, -3, 94, 100, 98)
-};
+/* One cheap crossguard per sword tier preserves the old draw-call count while
+   making the upgrades visibly feel like different weapons. */
+#define SWORD_GUARD_VERTS(name, fr, fg, fb, br, bg, bb) \
+static Vtx name[] = { \
+  STEVE_VERTEX(-12, 7, 5, fr, fg, fb), STEVE_VERTEX(12, 7, 5, fr, fg, fb), \
+  STEVE_VERTEX(12, 1, 5, fr, fg, fb), STEVE_VERTEX(-12, 1, 5, fr, fg, fb), \
+  STEVE_VERTEX(12, 7, -5, br, bg, bb), STEVE_VERTEX(-12, 7, -5, br, bg, bb), \
+  STEVE_VERTEX(-12, 1, -5, br, bg, bb), STEVE_VERTEX(12, 1, -5, br, bg, bb) \
+}
 
-static Vtx steve_sword_hilt_verts[] = {
-  STEVE_VERTEX(-12, 7, 5, 142, 83, 38), STEVE_VERTEX(12, 7, 5, 142, 83, 38),
-  STEVE_VERTEX(12, 1, 5, 142, 83, 38), STEVE_VERTEX(-12, 1, 5, 142, 83, 38),
-  STEVE_VERTEX(12, 7, -5, 104, 58, 27), STEVE_VERTEX(-12, 7, -5, 104, 58, 27),
-  STEVE_VERTEX(-12, 1, -5, 104, 58, 27), STEVE_VERTEX(12, 1, -5, 104, 58, 27)
-};
+SWORD_GUARD_VERTS(wood_sword_guard_verts, 157, 92, 39, 94, 51, 24);
+SWORD_GUARD_VERTS(stone_sword_guard_verts, 127, 112, 78, 70, 62, 48);
+SWORD_GUARD_VERTS(iron_sword_guard_verts, 157, 166, 171, 78, 90, 99);
 
 /* Pickaxes and axes share one low-poly handle, but keep distinct heads so
    every tool reads immediately both in first person and while spinning as a
    pickup.  Wood and stone tiers use different shaded head geometry. */
 static Vtx tool_handle_verts[] = {
-  STEVE_VERTEX(-3, 8, 3, 145, 91, 43), STEVE_VERTEX(3, 8, 3, 145, 91, 43),
-  STEVE_VERTEX(3, -38, 3, 145, 91, 43), STEVE_VERTEX(-3, -38, 3, 145, 91, 43),
-  STEVE_VERTEX(3, 8, -3, 99, 57, 26), STEVE_VERTEX(-3, 8, -3, 99, 57, 26),
-  STEVE_VERTEX(-3, -38, -3, 99, 57, 26), STEVE_VERTEX(3, -38, -3, 99, 57, 26)
+  STEVE_VERTEX(-4, 8, 4, 157, 98, 44), STEVE_VERTEX(4, 8, 4, 157, 98, 44),
+  STEVE_VERTEX(3, -38, 3, 128, 73, 31), STEVE_VERTEX(-3, -38, 3, 128, 73, 31),
+  STEVE_VERTEX(4, 8, -4, 102, 58, 25), STEVE_VERTEX(-4, 8, -4, 102, 58, 25),
+  STEVE_VERTEX(-3, -38, -3, 77, 43, 20), STEVE_VERTEX(3, -38, -3, 77, 43, 20)
 };
 
 #define TOOL_HEAD_VERTS(name, left, right, top, bottom, r1, g1, b1, r2, g2, b2) \
@@ -815,38 +936,45 @@ static Vtx name[] = { \
   STEVE_VERTEX(left, bottom, -4, r2, g2, b2), STEVE_VERTEX(right, bottom, -4, r2, g2, b2) \
 }
 
-TOOL_HEAD_VERTS(wood_pick_head_verts, -21, 21, 11, 3,
-  165, 111, 59, 109, 68, 32);
-TOOL_HEAD_VERTS(stone_pick_head_verts, -21, 21, 11, 3,
-  177, 181, 176, 111, 116, 113);
-TOOL_HEAD_VERTS(iron_pick_head_verts, -21, 21, 11, 3,
-  220, 223, 216, 156, 163, 160);
-TOOL_HEAD_VERTS(wood_axe_head_verts, -17, 9, 13, -3,
-  165, 111, 59, 109, 68, 32);
-TOOL_HEAD_VERTS(stone_axe_head_verts, -17, 9, 13, -3,
-  177, 181, 176, 111, 116, 113);
-TOOL_HEAD_VERTS(iron_axe_head_verts, -17, 9, 13, -3,
-  220, 223, 216, 156, 163, 160);
+TOOL_HEAD_VERTS(wood_pick_head_verts, -23, 23, 13, 1,
+  177, 119, 61, 100, 61, 29);
+TOOL_HEAD_VERTS(stone_pick_head_verts, -23, 23, 13, 1,
+  183, 187, 181, 100, 106, 105);
+TOOL_HEAD_VERTS(iron_pick_head_verts, -23, 23, 13, 1,
+  231, 234, 224, 137, 148, 151);
+/* The tapered axe bit keeps the same eight vertices and box display list,
+   but its silhouette no longer reads as a second pickaxe head. */
+#define AXE_HEAD_VERTS(name, fr, fg, fb, br, bg, bb) \
+static Vtx name[] = { \
+  STEVE_VERTEX(-19, 15, 4, fr, fg, fb), STEVE_VERTEX(11, 15, 4, fr, fg, fb), \
+  STEVE_VERTEX(5, -5, 4, fr, fg, fb), STEVE_VERTEX(-14, -5, 4, fr, fg, fb), \
+  STEVE_VERTEX(11, 15, -4, br, bg, bb), STEVE_VERTEX(-19, 15, -4, br, bg, bb), \
+  STEVE_VERTEX(-14, -5, -4, br, bg, bb), STEVE_VERTEX(5, -5, -4, br, bg, bb) \
+}
+
+AXE_HEAD_VERTS(wood_axe_head_verts, 177, 119, 61, 100, 61, 29);
+AXE_HEAD_VERTS(stone_axe_head_verts, 183, 187, 181, 100, 106, 105);
+AXE_HEAD_VERTS(iron_axe_head_verts, 231, 234, 224, 137, 148, 151);
 
 static Vtx coal_chunk_verts[] = {
-  STEVE_VERTEX(-10, 10, 9, 47, 50, 51), STEVE_VERTEX(10, 10, 9, 47, 50, 51),
-  STEVE_VERTEX(10, -10, 9, 47, 50, 51), STEVE_VERTEX(-10, -10, 9, 47, 50, 51),
-  STEVE_VERTEX(10, 10, -9, 24, 26, 27), STEVE_VERTEX(-10, 10, -9, 24, 26, 27),
-  STEVE_VERTEX(-10, -10, -9, 24, 26, 27), STEVE_VERTEX(10, -10, -9, 24, 26, 27)
+  STEVE_VERTEX(-7, 11, 7, 61, 65, 66), STEVE_VERTEX(8, 9, 8, 61, 65, 66),
+  STEVE_VERTEX(11, -8, 9, 44, 47, 49), STEVE_VERTEX(-10, -10, 8, 44, 47, 49),
+  STEVE_VERTEX(8, 9, -7, 24, 27, 29), STEVE_VERTEX(-7, 11, -8, 24, 27, 29),
+  STEVE_VERTEX(-10, -10, -8, 13, 15, 16), STEVE_VERTEX(11, -8, -7, 13, 15, 16)
 };
 
 static Vtx iron_chunk_verts[] = {
-  STEVE_VERTEX(-11, 9, 8, 198, 145, 99), STEVE_VERTEX(11, 9, 8, 198, 145, 99),
-  STEVE_VERTEX(11, -9, 8, 198, 145, 99), STEVE_VERTEX(-11, -9, 8, 198, 145, 99),
-  STEVE_VERTEX(11, 9, -8, 129, 90, 64), STEVE_VERTEX(-11, 9, -8, 129, 90, 64),
-  STEVE_VERTEX(-11, -9, -8, 129, 90, 64), STEVE_VERTEX(11, -9, -8, 129, 90, 64)
+  STEVE_VERTEX(-8, 11, 7, 222, 167, 113), STEVE_VERTEX(9, 8, 8, 222, 167, 113),
+  STEVE_VERTEX(12, -7, 8, 180, 122, 79), STEVE_VERTEX(-11, -10, 8, 180, 122, 79),
+  STEVE_VERTEX(9, 8, -7, 137, 91, 65), STEVE_VERTEX(-8, 11, -8, 137, 91, 65),
+  STEVE_VERTEX(-11, -10, -8, 94, 61, 48), STEVE_VERTEX(12, -7, -7, 94, 61, 48)
 };
 
 static Vtx apple_body_verts[] = {
-  STEVE_VERTEX(-11, 10, 10, 218, 49, 42), STEVE_VERTEX(11, 10, 10, 218, 49, 42),
-  STEVE_VERTEX(11, -10, 10, 218, 49, 42), STEVE_VERTEX(-11, -10, 10, 218, 49, 42),
-  STEVE_VERTEX(11, 10, -10, 139, 25, 24), STEVE_VERTEX(-11, 10, -10, 139, 25, 24),
-  STEVE_VERTEX(-11, -10, -10, 139, 25, 24), STEVE_VERTEX(11, -10, -10, 139, 25, 24)
+  STEVE_VERTEX(-8, 11, 8, 228, 56, 43), STEVE_VERTEX(9, 10, 9, 228, 56, 43),
+  STEVE_VERTEX(12, -7, 9, 204, 38, 32), STEVE_VERTEX(-11, -9, 9, 204, 38, 32),
+  STEVE_VERTEX(9, 10, -8, 137, 23, 23), STEVE_VERTEX(-8, 11, -9, 137, 23, 23),
+  STEVE_VERTEX(-11, -9, -9, 106, 18, 20), STEVE_VERTEX(12, -7, -8, 106, 18, 20)
 };
 
 static Vtx apple_stem_verts[] = {
@@ -861,6 +989,13 @@ static Vtx mutton_verts[] = {
   STEVE_VERTEX(8, -9, 7, 172, 75, 67), STEVE_VERTEX(-10, -9, 7, 172, 75, 67),
   STEVE_VERTEX(12, 8, -7, 112, 48, 44), STEVE_VERTEX(-13, 8, -7, 112, 48, 44),
   STEVE_VERTEX(-10, -9, -7, 112, 48, 44), STEVE_VERTEX(8, -9, -7, 112, 48, 44)
+};
+
+static Vtx pork_verts[] = {
+  STEVE_VERTEX(-12, 8, 8, 213, 125, 117), STEVE_VERTEX(11, 8, 8, 213, 125, 117),
+  STEVE_VERTEX(9, -9, 7, 195, 100, 98), STEVE_VERTEX(-9, -9, 7, 195, 100, 98),
+  STEVE_VERTEX(11, 8, -8, 143, 72, 76), STEVE_VERTEX(-12, 8, -8, 143, 72, 76),
+  STEVE_VERTEX(-9, -9, -7, 112, 52, 59), STEVE_VERTEX(9, -9, -7, 112, 52, 59)
 };
 
 /* First person needs the forearm as well as the blade; otherwise a floating
@@ -883,9 +1018,65 @@ static Gfx steve_box_display_list[] = {
   gsSPEndDisplayList()
 };
 
-static Gfx steve_eyes_display_list[] = {
+static Gfx sword_blade_display_list[] = {
+  gsSP2Triangles(0, 1, 2, 0, 0, 2, 3, 0),
+  gsSP1Triangle(0, 3, 4, 0),
+  gsSP2Triangles(5, 7, 6, 0, 5, 8, 7, 0),
+  gsSP1Triangle(5, 9, 8, 0),
+  gsSP2Triangles(0, 5, 6, 0, 0, 6, 1, 0),
+  gsSP2Triangles(1, 6, 7, 0, 1, 7, 2, 0),
+  gsSP2Triangles(2, 7, 8, 0, 2, 8, 3, 0),
+  gsSP2Triangles(3, 8, 9, 0, 3, 9, 4, 0),
+  gsSP2Triangles(4, 9, 5, 0, 4, 5, 0, 0),
+  gsSPEndDisplayList()
+};
+
+/* A face sheet is always one box followed by flat quads, so two lists cover
+   every animal: four quads for a muzzle or a beak, six for a pig that also
+   has nostrils. */
+static Gfx mob_face_display_list[] = {
   gsSP2Triangles(0, 1, 2, 0, 0, 2, 3, 0),
   gsSP2Triangles(4, 5, 6, 0, 4, 6, 7, 0),
+  gsSP2Triangles(1, 4, 7, 0, 1, 7, 2, 0),
+  gsSP2Triangles(5, 0, 3, 0, 5, 3, 6, 0),
+  gsSP2Triangles(5, 4, 1, 0, 5, 1, 0, 0),
+  gsSP2Triangles(3, 2, 7, 0, 3, 7, 6, 0),
+  gsSP2Triangles(8, 9, 10, 0, 8, 10, 11, 0),
+  gsSP2Triangles(12, 13, 14, 0, 12, 14, 15, 0),
+  gsSP2Triangles(16, 17, 18, 0, 16, 18, 19, 0),
+  gsSP2Triangles(20, 21, 22, 0, 20, 22, 23, 0),
+  gsSPEndDisplayList()
+};
+
+static Gfx mob_wide_face_display_list[] = {
+  gsSP2Triangles(0, 1, 2, 0, 0, 2, 3, 0),
+  gsSP2Triangles(4, 5, 6, 0, 4, 6, 7, 0),
+  gsSP2Triangles(1, 4, 7, 0, 1, 7, 2, 0),
+  gsSP2Triangles(5, 0, 3, 0, 5, 3, 6, 0),
+  gsSP2Triangles(5, 4, 1, 0, 5, 1, 0, 0),
+  gsSP2Triangles(3, 2, 7, 0, 3, 7, 6, 0),
+  gsSP2Triangles(8, 9, 10, 0, 8, 10, 11, 0),
+  gsSP2Triangles(12, 13, 14, 0, 12, 14, 15, 0),
+  gsSP2Triangles(16, 17, 18, 0, 16, 18, 19, 0),
+  gsSP2Triangles(20, 21, 22, 0, 20, 22, 23, 0),
+  gsSP2Triangles(24, 25, 26, 0, 24, 26, 27, 0),
+  gsSP2Triangles(28, 29, 30, 0, 28, 30, 31, 0),
+  gsSPEndDisplayList()
+};
+
+static Gfx mob_eyes_display_list[] = {
+  gsSP2Triangles(0, 1, 2, 0, 0, 2, 3, 0),
+  gsSP2Triangles(4, 5, 6, 0, 4, 6, 7, 0),
+  gsSPEndDisplayList()
+};
+
+static Gfx steve_face_display_list[] = {
+  gsSP2Triangles(0, 1, 2, 0, 0, 2, 3, 0),
+  gsSP2Triangles(4, 5, 6, 0, 4, 6, 7, 0),
+  gsSP2Triangles(8, 9, 10, 0, 8, 10, 11, 0),
+  gsSP2Triangles(12, 13, 14, 0, 12, 14, 15, 0),
+  gsSP2Triangles(16, 17, 18, 0, 16, 18, 19, 0),
+  gsSP2Triangles(20, 21, 22, 0, 20, 22, 23, 0),
   gsSPEndDisplayList()
 };
 
@@ -2403,13 +2594,17 @@ static Vtx *toolHeadVertices(u8 item) {
 
 static void drawToolGeometry(u8 item) {
   Vtx *head;
+  Vtx *guard;
 
   if (itemIsSword(item)) {
-    gSPVertex(dlp++, item == IRON_SWORD ? steve_sword_blade_verts :
+    gSPVertex(dlp++, item == IRON_SWORD ? iron_sword_blade_verts :
       (item == STONE_SWORD ? stone_sword_blade_verts :
-      wood_sword_blade_verts), 8, 0);
-    gSPDisplayList(dlp++, steve_box_display_list);
-    gSPVertex(dlp++, steve_sword_hilt_verts, 8, 0);
+      wood_sword_blade_verts), 10, 0);
+    gSPDisplayList(dlp++, sword_blade_display_list);
+    guard = item == IRON_SWORD ? iron_sword_guard_verts :
+      (item == STONE_SWORD ? stone_sword_guard_verts :
+      wood_sword_guard_verts);
+    gSPVertex(dlp++, guard, 8, 0);
     gSPDisplayList(dlp++, steve_box_display_list);
     return;
   }
@@ -2429,6 +2624,15 @@ static void drawStevePart(u8 player_num, u8 part, Vtx *verts, Gfx *part_dl) {
     G_MTX_MODELVIEW | G_MTX_MUL | G_MTX_NOPUSH);
   gSPVertex(dlp++, verts, 8, 0);
   gSPDisplayList(dlp++, part_dl);
+}
+
+static void drawSteveFace(u8 player_num) {
+  gSPMatrix(dlp++, OS_K0_TO_PHYSICAL(&steve_translate[dl_no][player_num][STEVE_HEAD]),
+    G_MTX_MODELVIEW | G_MTX_LOAD | G_MTX_NOPUSH);
+  gSPMatrix(dlp++, OS_K0_TO_PHYSICAL(&steve_rotate[dl_no][player_num][STEVE_HEAD]),
+    G_MTX_MODELVIEW | G_MTX_MUL | G_MTX_NOPUSH);
+  gSPVertex(dlp++, steve_face_verts, 24, 0);
+  gSPDisplayList(dlp++, steve_face_display_list);
 }
 
 static void drawSteve(u8 player_num) {
@@ -2451,9 +2655,9 @@ static void drawSteve(u8 player_num) {
   drawStevePart(player_num, STEVE_RIGHT_LEG, steve_leg_verts, steve_box_display_list);
   drawStevePart(player_num, STEVE_HEAD, steve_head_verts, steve_box_display_list);
 
-  /* The eyes share the head transform, so their direction matches its pitch
-     and yaw exactly. */
-  drawStevePart(player_num, STEVE_HEAD, steve_eye_verts, steve_eyes_display_list);
+  /* The face shares the head transform, so its direction matches pitch and
+     yaw exactly without a separate skeleton node. */
+  drawSteveFace(player_num);
 }
 
 /* The first-person arm pivots at the elbow, not at the hand.  Local +Y of
@@ -2478,6 +2682,15 @@ static void drawSteve(u8 player_num) {
 #define FP_SWING_FORWARD 45.f
 #define FP_SWING_INWARD 6.f
 #define FP_SWING_RISE 4.f
+/* A blade that shares the forearm's rotation grows straight out along it, and
+   a sword that continues the arm in one line reads as a pole.  Breaking it at
+   the wrist -- lifted off the arm's axis, turned so its flat faces the player
+   -- is what makes it read as held.  The slash is a roll, in the plane of the
+   screen: sweeping the blade in depth instead would foreshorten it away to
+   nothing at the very moment the strike lands. */
+#define FP_TOOL_PITCH 40.f
+#define FP_TOOL_YAW -30.f
+#define FP_TOOL_SLASH 45.f
 
 /* 0 while the arm rests, 1 at the furthest reach of a strike. */
 static float firstPersonReach(Player *player) {
@@ -2521,6 +2734,8 @@ static void drawFirstPersonHand(u8 player_num) {
     FP_ELBOW_Z - FP_SWING_FORWARD * reach - FP_ARM_LENGTH * pitch_sin);
   guRotateRPY(&first_person_sword_rotate[dl_no][player_num], pitch, 0.f,
     FP_ARM_ROLL);
+  guRotateRPY(&first_person_tool_rotate[dl_no][player_num],
+    pitch + FP_TOOL_PITCH, FP_TOOL_YAW, FP_ARM_ROLL + FP_TOOL_SLASH * reach);
   gSPClearGeometryMode(dlp++, G_CULL_BACK);
   gSPMatrix(dlp++, OS_K0_TO_PHYSICAL(&first_person_sword_translate[dl_no][player_num]),
     G_MTX_MODELVIEW | G_MTX_LOAD | G_MTX_NOPUSH);
@@ -2529,6 +2744,12 @@ static void drawFirstPersonHand(u8 player_num) {
   gSPVertex(dlp++, first_person_arm_verts, 8, 0);
   gSPDisplayList(dlp++, steve_box_display_list);
   if (itemIsTool(item)) {
+    /* The hand is the origin of the tool as well, so only the rotation has to
+       be swapped -- the arm's translation still lands the hilt in the fist. */
+    gSPMatrix(dlp++, OS_K0_TO_PHYSICAL(&first_person_sword_translate[dl_no][player_num]),
+      G_MTX_MODELVIEW | G_MTX_LOAD | G_MTX_NOPUSH);
+    gSPMatrix(dlp++, OS_K0_TO_PHYSICAL(&first_person_tool_rotate[dl_no][player_num]),
+      G_MTX_MODELVIEW | G_MTX_MUL | G_MTX_NOPUSH);
     drawToolGeometry(item);
   }
   gSPSetGeometryMode(dlp++, G_CULL_BACK);
@@ -2679,80 +2900,252 @@ static void drawDetailsForPlayer(u8 viewer_num) {
   loaded_texture = NULL;
 }
 
-static void setMobPartTransform(u8 mob_num, u8 part,
-    Vector3 local_offset) {
+/*
+ * Anchors a part, scaled about the animal's own footing so a calf's every
+ * joint sits in proportion without a second set of offsets to maintain.
+ *
+ * The yaw here is the gameplay yaw negated because this rotates an offset
+ * vector, whereas the orientation matrix below takes it unnegated because
+ * that rotates geometry -- the same asymmetry drawSteve documents.
+ */
+static void setMobPartTransform(u8 mob_num, u8 part, Vector3 local_offset,
+    float scale) {
   Mob *mob = &mobs[mob_num];
-  Vector3 offset = rotateY(local_offset, -mob->yaw);
+  Vector3 offset = rotateY(mul(local_offset, scale), -mob->yaw);
 
   guTranslate(&mob_translate[dl_no][mob_num][part],
     mob->position.x + offset.x - render_origin_units_x,
     mob->position.y + offset.y,
     mob->position.z + offset.z - render_origin_units_z);
-  guRotateRPY(&mob_rotate[dl_no][mob_num][part], 0, -mob->yaw, 0);
 }
 
-static void drawMobPart(u8 mob_num, u8 part, Vtx *verts) {
+/*
+ * One orientation, built directly rather than through guRotateRPY, so that a
+ * baby's uniform shrink rides along in the same matrix instead of costing a
+ * third gSPMatrix on every part of every animal.  The layout is guRotateRPY's
+ * own -- X, then Y, then Z, row-vector -- so anything already reasoned about
+ * in those terms still holds.
+ */
+static void setMobRotation(u8 mob_num, u8 slot, float pitch, float yaw,
+    float roll, float scale) {
+  float matrix[4][4];
+  float sin_pitch = pitch == 0 ? 0.f : sinf(pitch * M_DTOR);
+  float cos_pitch = pitch == 0 ? 1.f : cosf(pitch * M_DTOR);
+  float sin_yaw = sinf(yaw * M_DTOR);
+  float cos_yaw = cosf(yaw * M_DTOR);
+  float sin_roll = roll == 0 ? 0.f : sinf(roll * M_DTOR);
+  float cos_roll = roll == 0 ? 1.f : cosf(roll * M_DTOR);
+
+  guMtxIdentF(matrix);
+  matrix[0][0] = cos_yaw * cos_roll * scale;
+  matrix[0][1] = cos_yaw * sin_roll * scale;
+  matrix[0][2] = -sin_yaw * scale;
+  matrix[1][0] = (sin_pitch * sin_yaw * cos_roll - cos_pitch * sin_roll) *
+    scale;
+  matrix[1][1] = (sin_pitch * sin_yaw * sin_roll + cos_pitch * cos_roll) *
+    scale;
+  matrix[1][2] = sin_pitch * cos_yaw * scale;
+  matrix[2][0] = (cos_pitch * sin_yaw * cos_roll + sin_pitch * sin_roll) *
+    scale;
+  matrix[2][1] = (cos_pitch * sin_yaw * sin_roll - sin_pitch * cos_roll) *
+    scale;
+  matrix[2][2] = cos_pitch * cos_yaw * scale;
+  guMtxF2L(matrix, &mob_rotate[dl_no][mob_num][slot]);
+}
+
+static void drawMobPart(u8 mob_num, u8 part, u8 rotation, Vtx *verts,
+    u8 vertex_count, Gfx *part_dl) {
   gSPMatrix(dlp++, OS_K0_TO_PHYSICAL(&mob_translate[dl_no][mob_num][part]),
     G_MTX_MODELVIEW | G_MTX_LOAD | G_MTX_NOPUSH);
-  gSPMatrix(dlp++, OS_K0_TO_PHYSICAL(&mob_rotate[dl_no][mob_num][part]),
+  gSPMatrix(dlp++, OS_K0_TO_PHYSICAL(&mob_rotate[dl_no][mob_num][rotation]),
     G_MTX_MODELVIEW | G_MTX_MUL | G_MTX_NOPUSH);
-  gSPVertex(dlp++, verts, 8, 0);
-  gSPDisplayList(dlp++, steve_box_display_list);
+  gSPVertex(dlp++, verts, vertex_count, 0);
+  gSPDisplayList(dlp++, part_dl);
 }
 
-static void drawMob(u8 mob_num) {
+/* A second sheet on a part whose matrices are already loaded: the face costs
+   its vertices and nothing else. */
+static void drawMobSheet(Vtx *verts, u8 vertex_count, Gfx *sheet_dl) {
+  gSPVertex(dlp++, verts, vertex_count, 0);
+  gSPDisplayList(dlp++, sheet_dl);
+}
+
+/*
+ * What separates one four-legged animal from another.  Everything here is in
+ * the model space described above the vertex data: measured from the feet for
+ * the torso and tail, from the joint for the head and legs.
+ */
+typedef struct {
+  Vtx *body;
+  Vtx *head;
+  Vtx *face;
+  Vtx *leg;
+  Vtx *tail;
+  Gfx *face_display_list;
+  u8 face_vertex_count;
+  s16 neck_y;
+  s16 neck_z;
+  s16 hip_x;
+  s16 hip_y;
+  s16 front_hip_z;
+  s16 back_hip_z;
+  s16 stride;    /* Degrees of leg swing at a full walking pace. */
+  s16 graze_pitch;
+} QuadrupedModel;
+
+static const QuadrupedModel sheep_model = {
+  sheep_body_verts, sheep_head_verts, sheep_face_verts, sheep_leg_verts,
+  sheep_tail_verts, mob_face_display_list, 24,
+  58, -14, 15, 34, -10, 16, 27, -38
+};
+
+static const QuadrupedModel pig_model = {
+  pig_body_verts, pig_head_verts, pig_face_verts, pig_leg_verts,
+  pig_tail_verts, mob_wide_face_display_list, 32,
+  46, -16, 15, 28, -11, 15, 24, -32
+};
+
+static void drawQuadrupedMob(u8 mob_num, const QuadrupedModel *model,
+    float hurt, float scale, u8 detailed) {
   Mob *mob = &mobs[mob_num];
-  Vtx *body = mob->type == MOB_PIG ? pig_body_verts : sheep_body_verts;
-  Vtx *head = mob->type == MOB_PIG ? pig_head_verts : sheep_head_verts;
-  Vtx *leg = mob->type == MOB_PIG ? pig_leg_verts : sheep_leg_verts;
-  float step = sinf(mob->walk_time) * 4.f;
+  float swing = sinf(mob->walk_time) * model->stride;
+  /* Grazing is the idle: the head dips to the grass and rocks there.  A
+     tempted or frightened animal has its head up, which is exactly the read
+     the player needs. */
+  float graze = mob->state == MOB_IDLE ?
+    model->graze_pitch + sinf(mob->walk_time * .35f) * 5.f : 0;
+
+  setMobRotation(mob_num, MOB_ROT_BODY, 0, mob->yaw, 0, scale);
+  setMobRotation(mob_num, MOB_ROT_HEAD, graze, mob->yaw + mob->head_yaw, 0,
+    scale);
+  setMobRotation(mob_num, MOB_ROT_LIMB_A, swing, mob->yaw, 0, scale);
+  setMobRotation(mob_num, MOB_ROT_LIMB_B, -swing, mob->yaw, 0, scale);
+
+  setMobPartTransform(mob_num, MOB_BODY, (Vector3) {hurt, 0, 0}, scale);
+  setMobPartTransform(mob_num, MOB_HEAD,
+    (Vector3) {hurt, model->neck_y, model->neck_z}, scale);
+  setMobPartTransform(mob_num, MOB_LIMB_FRONT_LEFT,
+    (Vector3) {-model->hip_x + hurt, model->hip_y, model->front_hip_z},
+    scale);
+  setMobPartTransform(mob_num, MOB_LIMB_FRONT_RIGHT,
+    (Vector3) {model->hip_x + hurt, model->hip_y, model->front_hip_z}, scale);
+  setMobPartTransform(mob_num, MOB_LIMB_BACK_LEFT,
+    (Vector3) {-model->hip_x + hurt, model->hip_y, model->back_hip_z}, scale);
+  setMobPartTransform(mob_num, MOB_LIMB_BACK_RIGHT,
+    (Vector3) {model->hip_x + hurt, model->hip_y, model->back_hip_z}, scale);
+
+  drawMobPart(mob_num, MOB_BODY, MOB_ROT_BODY, model->body, 8,
+    steve_box_display_list);
+  drawMobPart(mob_num, MOB_HEAD, MOB_ROT_HEAD, model->head, 8,
+    steve_box_display_list);
+  if (detailed) {
+    drawMobSheet(model->face, model->face_vertex_count,
+      model->face_display_list);
+  }
+  drawMobPart(mob_num, MOB_LIMB_FRONT_LEFT, MOB_ROT_LIMB_A, model->leg, 8,
+    steve_box_display_list);
+  drawMobPart(mob_num, MOB_LIMB_FRONT_RIGHT, MOB_ROT_LIMB_B, model->leg, 8,
+    steve_box_display_list);
+  drawMobPart(mob_num, MOB_LIMB_BACK_LEFT, MOB_ROT_LIMB_B, model->leg, 8,
+    steve_box_display_list);
+  drawMobPart(mob_num, MOB_LIMB_BACK_RIGHT, MOB_ROT_LIMB_A, model->leg, 8,
+    steve_box_display_list);
+  if (detailed) {
+    setMobPartTransform(mob_num, MOB_TAIL, (Vector3) {hurt, 0, 0}, scale);
+    drawMobPart(mob_num, MOB_TAIL, MOB_ROT_BODY, model->tail, 8,
+      steve_box_display_list);
+  }
+}
+
+static void drawChickenMob(u8 mob_num, float hurt, float scale, u8 detailed) {
+  Mob *mob = &mobs[mob_num];
+  float swing = sinf(mob->walk_time) * 32.f;
+  /* Always a little unsettled, and properly beating when the bird is on the
+     move.  MOB_IDLE is the only state whose feet are still. */
+  float beat = sinf(mob->walk_time * 2.f) *
+    (mob->state == MOB_IDLE ? 5.f : 26.f) + 12.f;
+  float peck = mob->state == MOB_IDLE ?
+    -42.f + sinf(mob->walk_time * .7f) * 34.f : -6.f;
+
+  setMobRotation(mob_num, MOB_ROT_BODY, 0, mob->yaw, 0, scale);
+  setMobRotation(mob_num, MOB_ROT_HEAD, peck, mob->yaw + mob->head_yaw, 0,
+    scale);
+  setMobRotation(mob_num, MOB_ROT_LIMB_A, swing, mob->yaw, 0, scale);
+  setMobRotation(mob_num, MOB_ROT_LIMB_B, -swing, mob->yaw, 0, scale);
+  setMobRotation(mob_num, MOB_ROT_WING_LEFT, 0, mob->yaw, -beat, scale);
+  setMobRotation(mob_num, MOB_ROT_WING_RIGHT, 0, mob->yaw, beat, scale);
+
+  setMobPartTransform(mob_num, MOB_BODY, (Vector3) {hurt, 0, 0}, scale);
+  setMobPartTransform(mob_num, MOB_HEAD, (Vector3) {hurt, 38, -7}, scale);
+  setMobPartTransform(mob_num, MOB_LIMB_FRONT_LEFT,
+    (Vector3) {-4 + hurt, 16, 1}, scale);
+  setMobPartTransform(mob_num, MOB_LIMB_FRONT_RIGHT,
+    (Vector3) {4 + hurt, 16, 1}, scale);
+  setMobPartTransform(mob_num, MOB_LIMB_BACK_LEFT,
+    (Vector3) {-9 + hurt, 31, 1}, scale);
+  setMobPartTransform(mob_num, MOB_LIMB_BACK_RIGHT,
+    (Vector3) {9 + hurt, 31, 1}, scale);
+
+  drawMobPart(mob_num, MOB_BODY, MOB_ROT_BODY, chicken_body_verts, 8,
+    steve_box_display_list);
+  drawMobPart(mob_num, MOB_HEAD, MOB_ROT_HEAD, chicken_head_verts, 8,
+    steve_box_display_list);
+  if (detailed) {
+    drawMobSheet(chicken_face_verts, 24, mob_face_display_list);
+  }
+  drawMobPart(mob_num, MOB_LIMB_FRONT_LEFT, MOB_ROT_LIMB_A,
+    chicken_leg_verts, 8, steve_box_display_list);
+  drawMobPart(mob_num, MOB_LIMB_FRONT_RIGHT, MOB_ROT_LIMB_B,
+    chicken_leg_verts, 8, steve_box_display_list);
+  drawMobPart(mob_num, MOB_LIMB_BACK_LEFT, MOB_ROT_WING_LEFT,
+    chicken_wing_left_verts, 8, steve_box_display_list);
+  drawMobPart(mob_num, MOB_LIMB_BACK_RIGHT, MOB_ROT_WING_RIGHT,
+    chicken_wing_right_verts, 8, steve_box_display_list);
+  if (detailed) {
+    setMobPartTransform(mob_num, MOB_TAIL, (Vector3) {hurt, 0, 0}, scale);
+    drawMobPart(mob_num, MOB_TAIL, MOB_ROT_BODY, chicken_tail_verts, 8,
+      steve_box_display_list);
+  }
+}
+
+static void drawMob(u8 mob_num, u8 detailed) {
+  Mob *mob = &mobs[mob_num];
+  float scale = MOB_IS_BABY(mob) ? MOB_BABY_SCALE : 1.f;
   float hurt = mob->hurt_time > 0 ?
     sinf((PLAYER_ATTACK_DURATION - mob->hurt_time) * 180.f * M_DTOR) * 4.f : 0;
-  float graze = mob->state == MOB_IDLE ?
-    sinf(mob->walk_time * .35f) * 3.f - 4.f : 0;
 
   if (mob->type == MOB_SLIME) {
     float bounce = sinf(mob->walk_time);
+
     if (bounce < 0) bounce = -bounce;
+    setMobRotation(mob_num, MOB_ROT_BODY, 0, mob->yaw, 0, scale);
     setMobPartTransform(mob_num, MOB_BODY,
-      (Vector3) {hurt, 21 + bounce * 8.f, 0});
-    setMobPartTransform(mob_num, MOB_HEAD,
-      (Vector3) {-9 + hurt, 27 + bounce * 8.f, -21});
-    setMobPartTransform(mob_num, MOB_SNOUT,
-      (Vector3) {9 + hurt, 27 + bounce * 8.f, -21});
-    drawMobPart(mob_num, MOB_BODY, slime_body_verts);
-    drawMobPart(mob_num, MOB_HEAD, slime_eye_verts);
-    drawMobPart(mob_num, MOB_SNOUT, slime_eye_verts);
+      (Vector3) {hurt, 21 + bounce * 8.f, 0}, scale);
+    drawMobPart(mob_num, MOB_BODY, MOB_ROT_BODY, slime_body_verts, 8,
+      steve_box_display_list);
+    if (detailed) {
+      drawMobSheet(slime_face_verts, 8, mob_eyes_display_list);
+    }
     return;
   }
-
-  setMobPartTransform(mob_num, MOB_BODY, (Vector3) {hurt, 43, 0});
-  setMobPartTransform(mob_num, MOB_HEAD,
-    (Vector3) {hurt, 43 + graze, -29});
-  setMobPartTransform(mob_num, MOB_FRONT_LEFT_LEG,
-    (Vector3) {-18 + hurt, 18 + step, -13});
-  setMobPartTransform(mob_num, MOB_FRONT_RIGHT_LEG,
-    (Vector3) {18 + hurt, 18 - step, -13});
-  setMobPartTransform(mob_num, MOB_BACK_LEFT_LEG,
-    (Vector3) {-18 + hurt, 18 - step, 13});
-  setMobPartTransform(mob_num, MOB_BACK_RIGHT_LEG,
-    (Vector3) {18 + hurt, 18 + step, 13});
-
-  drawMobPart(mob_num, MOB_BODY, body);
-  drawMobPart(mob_num, MOB_HEAD, head);
-  drawMobPart(mob_num, MOB_FRONT_LEFT_LEG, leg);
-  drawMobPart(mob_num, MOB_FRONT_RIGHT_LEG, leg);
-  drawMobPart(mob_num, MOB_BACK_LEFT_LEG, leg);
-  drawMobPart(mob_num, MOB_BACK_RIGHT_LEG, leg);
-  if (mob->type == MOB_PIG) {
-    setMobPartTransform(mob_num, MOB_SNOUT,
-      (Vector3) {hurt, 39 + graze, -46});
-    drawMobPart(mob_num, MOB_SNOUT, pig_snout_verts);
+  if (mob->type == MOB_CHICKEN) {
+    drawChickenMob(mob_num, hurt, scale, detailed);
+    return;
   }
+  /* Zombies and spiders have no build of their own yet and still borrow the
+     quadruped one; giving them models is a separate piece of work. */
+  drawQuadrupedMob(mob_num, mob->type == MOB_PIG ? &pig_model : &sheep_model,
+    hurt, scale, detailed);
 }
 
 static void drawMobsForPlayer(u8 viewer_num) {
   u8 drawn[MAX_MOBS] = {FALSE};
+  /* Richer animals cost more triangles each, so the number of them a viewport
+     will submit now follows the layout, the way the detail pass already does.
+     A four-player frame draws fewer, better creatures rather than the same
+     count of worse ones. */
+  u8 limit = usesFourPlayerLayout() ? 2 :
+    (active_player_count > 1 ? 3 : MAX_VISIBLE_MOBS);
   u8 visible;
 
   gSPTexture(dlp++, 0, 0, 0, G_TX_RENDERTILE, G_OFF);
@@ -2763,7 +3156,7 @@ static void drawMobsForPlayer(u8 viewer_num) {
      later slots for slimes. Choosing by threat and distance prevents an
      off-screen herd from consuming the small per-view render budget while a
      nearby hostile mob disappears. */
-  for (visible = 0; visible < MAX_VISIBLE_MOBS; visible++) {
+  for (visible = 0; visible < limit; visible++) {
     u8 mob_num;
     u8 best = MAX_MOBS;
     u8 best_priority = 2;
@@ -2793,7 +3186,11 @@ static void drawMobsForPlayer(u8 viewer_num) {
     }
     if (best == MAX_MOBS) break;
     drawn[best] = TRUE;
-    drawMob(best);
+    /* Eyes, ears and a tail are what make an animal read as an animal at
+       conversational range and are indistinguishable from noise past it, so
+       they are the first thing distance takes away. */
+    drawMob(best, best_distance <
+      MOB_DETAIL_DISTANCE * MOB_DETAIL_DISTANCE);
   }
   gSPSetGeometryMode(dlp++, G_CULL_BACK);
 }
@@ -2837,7 +3234,7 @@ static void drawLooseItemGeometry(u8 item) {
     gSPDisplayList(dlp++, steve_box_display_list);
     body = apple_stem_verts;
   } else if (item == RAW_MUTTON || item == RAW_PORK) {
-    body = mutton_verts;
+    body = item == RAW_PORK ? pork_verts : mutton_verts;
   } else if (item == SLIME_GEL) {
     body = slime_gel_verts;
   } else if (item == TORCH) {
@@ -3232,11 +3629,15 @@ static void buildGroundShadows(void) {
   }
 
   for (i = 0; i < MAX_MOBS && shadow_count < SHADOW_SLOTS; i++) {
+    /* A calf's shadow shrinks with it; an adult-sized blob under a small
+       animal is the tell that gives a scaled model away. */
+    float size = MOB_IS_BABY(&mobs[i]) ? MOB_BABY_SCALE : 1.f;
+
     if (!mobs[i].active) {
       continue;
     }
-    addGroundShadow(mobs[i].position, BLOCK_SIZE * .5f, BLOCK_SIZE * .40f,
-      strength);
+    addGroundShadow(mobs[i].position, BLOCK_SIZE * .5f * size,
+      BLOCK_SIZE * .40f * size, strength);
   }
 
   for (i = 0; i < MAX_DROPPED_ITEMS && shadow_count < SHADOW_SLOTS; i++) {
@@ -3808,7 +4209,10 @@ static void drawItemIcon(u8 item, u32 x, u32 y, u32 size) {
     } else {
       setHudFillColor(174, 117, 61);
     }
-    gDPFillRectangle(dlp++, x + size / 2 - 1, y + 1, x + size / 2 + 1, y + size - 6);
+    /* A two-step blade keeps the pointed 3D sword recognisable at 10-16 px. */
+    gDPFillRectangle(dlp++, x + size / 2, y + 1, x + size / 2 + 1, y + 3);
+    gDPFillRectangle(dlp++, x + size / 2 - 1, y + 3,
+      x + size / 2 + 1, y + size - 6);
     setHudFillColor(142, 83, 38);
     gDPFillRectangle(dlp++, x + size / 2 - 3, y + size - 6, x + size / 2 + 3, y + size - 4);
     gDPFillRectangle(dlp++, x + size / 2 - 1, y + size - 3, x + size / 2 + 1, y + size - 1);
@@ -3820,7 +4224,8 @@ static void drawItemIcon(u8 item, u32 x, u32 y, u32 size) {
     } else {
       setHudFillColor(174, 117, 61);
     }
-    gDPFillRectangle(dlp++, x + 1, y + 2, x + size - 2, y + 4);
+    gDPFillRectangle(dlp++, x + 2, y + 2, x + size - 3, y + 3);
+    gDPFillRectangle(dlp++, x + 1, y + 4, x + size - 2, y + 5);
     setHudFillColor(142, 83, 38);
     gDPFillRectangle(dlp++, x + size / 2 - 1, y + 4, x + size / 2 + 1, y + size - 1);
   } else if (itemIsAxe(item)) {
@@ -3832,7 +4237,9 @@ static void drawItemIcon(u8 item, u32 x, u32 y, u32 size) {
       setHudFillColor(174, 117, 61);
     }
     gDPFillRectangle(dlp++, x + 2, y + 2, x + size / 2 + 2,
-      y + size / 2);
+      y + size / 2 - 2);
+    gDPFillRectangle(dlp++, x + 4, y + size / 2 - 1, x + size / 2 + 1,
+      y + size / 2 + 1);
     setHudFillColor(142, 83, 38);
     gDPFillRectangle(dlp++, x + size / 2, y + 4, x + size / 2 + 2,
       y + size - 1);
