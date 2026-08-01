@@ -92,7 +92,8 @@ u8 menuActPending();
  * is what calls menuCommitWorld on the far side of it.
  */
 u8 menuCommitReady();
-void menuCommitWorld();
+/* Called by the job driver when a sliced save ends, either way. */
+void menuSaveFinished(u8 ok);
 
 void beginWorldNaming();
 void worldNameKeyboardLeft();

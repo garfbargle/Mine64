@@ -1,4 +1,4 @@
-# Cobblemon
+# 64MON
 
 A creature-collecting mod for Mine64, switched on when a world is created and
 locked in with the rest of the world's mods. Eighteen species wander the
@@ -7,12 +7,12 @@ another player with them.
 
 It is designed to cost the console nothing it was not already spending. The
 three rules that shape every part of it are in the header comment of
-[`include/cobblemon.h`](../include/cobblemon.h) and repeated below, because
+[`include/mon64.h`](../include/mon64.h) and repeated below, because
 anything added later has to keep them true.
 
 ## Turning it on
 
-`COBBLEMON` is the last row of the **EXTRAS** section on the create-world
+`64MON` is the last row of the **EXTRAS** section on the create-world
 card. It is a behaviour switch, not a terrain one: the same seed with it on
 and off produces block-for-block the same world, so toggling it never rebuilds
 the preview. The mask is written into the save header like every other mod,
@@ -99,17 +99,30 @@ the chart itself stays a readable six by six.
 
 ## The roster
 
-Six families of three, one per type, each family sharing a body rig and
-growing in size and colour as it evolves.
+Six families, one animal each, and one naming rule that is not really a rule:
+a name is a blend where the element word and the animal word already share
+their sounds. EMBEAR because "ember" and "bear" are most of the same word;
+TOADSTOOL because it already is one. A name that has to be explained is a
+name that failed.
 
-| Type | Stage 1 | Stage 2 | Stage 3 |
-| --- | --- | --- | --- |
-| Grass | SPRIGLET | BRAMBOK (14) | THORNVALE (30) |
-| Fire | EMBERKIT | CINDERPAW (16) | BLAZEMANE (32) |
-| Water | DRIPLET | BROOKFIN (15) | TIDEMAW (31) |
-| Earth | MUDLING | LOAMBACK (15) | TERRALITH (32) |
-| Spark | ZAPLING | VOLTHOP (16) | STORMHOOF (33) |
-| Stone | PEBBLIN | COBBLOX (15) | GRANITON (32) |
+| Type | Animal | Young | Grown | Elder |
+| --- | --- | --- | --- | --- |
+| Grass | frog | TADPOLLEN | LEAFROG | TOADSTOOL |
+| Fire | bear | EMBEAR | GRIZZLE | PYREBRUIN |
+| Water | eel | DRIZZEEL | TIDEEL | WHIRLEEL |
+| Earth | iguana | MUDLET | MUDGUANA | IGUANEOUS |
+| Spark | owl | SPAROWLET | SPAROWL | THUNDOWL |
+| Stone | ape | PEBBOON | GRANILLA | BABOULDER |
+
+A family keeps its animal — and its rig — through all three stages, because a
+bear that evolves into something which is no longer a bear makes the name a
+lie. Growing up is therefore three things at once: **scale**, **bulk** (width
+and depth only, so an elder reads as heavier rather than merely taller), and
+**boxes it has grown into**. Each rig carries two or three parts gated behind
+a maturity threshold: the bear grows a shoulder hump and then a heavy brow,
+the owl grows ear tufts and then a chest ruff, the eel grows side fins and
+then a tail fan. A cub is a simple round shape; an elder is the same shape
+with age on it.
 
 Habitats come from the block a creature is standing on — grass, sand, stone,
 or a shore with water within two cells — plus time of day. There is no biome
@@ -121,7 +134,7 @@ pad they spawned on answers a different question.
 **The entity count does not grow.** Roamers do not add a pool beside the mob
 pool — they take four slots out of it. Turning the mod on trades farm animals
 for creatures; it never asks the RSP to transform more boxes than a vanilla
-world already does. See `cobblemonRoamerReserve` and its two call sites in
+world already does. See `mon64RoamerReserve` and its two call sites in
 `mobs.c`.
 
 **A battle is a pause, not a scene.** It is a mode inside `GAME` rather than a
@@ -139,33 +152,33 @@ third.
 
 **Models are built, not baked.** A creature's boxes are written into a
 double-buffered scratch each frame from the rig table and the species palette.
-Eighteen species times eight boxes of static `Vtx` would be roughly ten
-kilobytes of RDRAM; rebuilding costs fifty-six vertex writes per creature per
-frame, there are never more than two on screen, and it buys per-species size
-and colour for nothing. The draw path itself is exactly the mob path — two
+Eighteen species times eleven boxes of static `Vtx` would be a substantial
+slice of RDRAM in a build with this little to spare; rebuilding costs at most
+eighty-eight vertex writes per creature per frame, there are never more than
+two on screen, and it buys per-species size, bulk and colour for nothing. The draw path itself is exactly the mob path — two
 matrices, one `gSPVertex`, one shared display list per box.
 
-Measured cost of the whole feature: about 49 KiB of the link, leaving
-~101 KiB free below NuSystem's framebuffer reservation. Roughly 30 KiB of
-that is code, 8 KiB is the render slots' matrices and vertex scratch, and
-under 2 KiB is tables and live state. This does eat into the headroom the
+Measured cost of the whole feature: about 55 KiB of the link, leaving
+~96 KiB free below NuSystem's framebuffer reservation. Roughly 30 KiB of that
+is code, 11 KiB is the render slots' matrices and vertex scratch, and under
+2 KiB is tables and live state. This does eat into the headroom the
 audio variant is waiting on; see *Known gaps* in the README.
 
 ## Where the code is
 
 | File | Contents |
 | --- | --- |
-| `include/cobblemon.h` | Every type, the budget rules, the whole public surface |
-| `src/cobblemon_data.c` | Rigs, species, moves, type chart — all `const` |
-| `src/cobblemon.c` | Statistics, party, roamers, encounters, the battle |
-| `src/cobblemon_draw.c` | Models, the battle interface, the encounter badge |
+| `include/mon64.h` | Every type, the budget rules, the whole public surface |
+| `src/mon64_data.c` | Rigs, species, moves, type chart — all `const` |
+| `src/mon64.c` | Statistics, party, roamers, encounters, the battle |
+| `src/mon64_draw.c` | Models, the battle interface, the encounter badge |
 
 Integration is six small hooks, each one commented where it lands:
 
-- `mods.h` / `mods.c` — the `MOD_COBBLEMON` bit and its setup-card row.
+- `mods.h` / `mods.c` — the `MOD_64MON` bit and its setup-card row.
 - `mobs.c` — passive budget and initial seeding minus the roamer reserve.
-- `player.c` — battle input routing, the **A** button hook, `cobblemonUpdate`.
-- `main.c` — `initCobblemon` beside `initMobs`, and holding the world clock.
+- `player.c` — battle input routing, the **A** button hook, `mon64Update`.
+- `main.c` — `init64MON` beside `initMobs`, and holding the world clock.
 - `graphics.c` — the entity pass, the interface, and suppressing the HUD.
 - `menu.c` — the setup card now derives its row pitch instead of fixing it.
 
@@ -175,7 +188,7 @@ punctuation came out with a seven-pixel hole where the mark should be.
 
 ## Not wired yet: the party in a save
 
-`cobblemonSaveSize`, `cobblemonSaveBlob` and `cobblemonLoadBlob` produce and
+`mon64SaveSize`, `mon64SaveBlob` and `mon64LoadBlob` produce and
 consume the party as a flat 144-byte blob, and nothing calls them.
 
 That is deliberate. Saves still write the original fixed footprint and are
@@ -186,19 +199,19 @@ the party belongs in the same one:
 
 ```c
 /* in the header/writer, beside the other per-world sections */
-cobblemonSaveBlob(section_pointer);
+mon64SaveBlob(section_pointer);
 /* in the loader, guarded by the version that introduced it */
-cobblemonLoadBlob(section_pointer, section_length);
+mon64LoadBlob(section_pointer, section_length);
 ```
 
-`cobblemonLoadBlob` already drops any slot whose species or level is outside
+`mon64LoadBlob` already drops any slot whose species or level is outside
 the tables, so a save written by a build with a different roster loads
 without indexing off the end of anything.
 
 ## Looking at it
 
-`tools/emu/scripts/cobblemon.txt` walks the setup card down to the COBBLEMON
-row, turns it on, and enters the world. `tools/emu/scripts/cobblemon-ui.txt`
+`tools/emu/scripts/64mon.txt` walks the setup card down to the 64MON
+row, turns it on, and enters the world. `tools/emu/scripts/64mon-ui.txt`
 captures the battle interface — it expects a build whose
 `ROAM_INTERACT_RANGE` has been temporarily widened, because encounters are
 opt-in and spawn positions are random, so an unmodified build cannot be driven

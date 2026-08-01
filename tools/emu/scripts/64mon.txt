@@ -1,4 +1,4 @@
-# The COBBLEMON mod: its row on the setup card, and the creatures it puts in
+# The 64MON mod: its row on the setup card, and the creatures it puts in
 # the world.  Durations are rendered frames.
 #
 # The card is the riskiest part of this feature visually -- it is a
@@ -6,12 +6,12 @@
 # so the first half of this script exists to look at exactly that.
 
 wait 400
-shot cobble-picker
+shot mon64-picker
 
 wait 560
 press A 8
 wait 40
-shot cobble-setup-top       # the card with eleven rows: nothing clipped
+shot mon64-setup-top       # the card with eleven rows: nothing clipped
 
 # Walk the cursor down to the last row.
 press DDOWN 8
@@ -34,32 +34,32 @@ press DDOWN 8
 wait 4
 press DDOWN 8
 wait 20
-shot cobble-setup-row       # COBBLEMON highlighted, its blurb under the card
+shot mon64-setup-row       # 64MON highlighted, its blurb under the card
 
 press A 8
 wait 20
-shot cobble-setup-on        # ticked, and no rebuild bar: it is behaviour only
+shot mon64-setup-on        # ticked, and no rebuild bar: it is behaviour only
 
 press START 8
 wait 60
 press START 8
 wait 400
-shot cobble-game            # in the world
+shot mon64-game            # in the world
 
 # Sweep the horizon for a creature.  Spawns are ten to twenty-five blocks out
 # in a random direction, so this turns rather than betting on one heading.
 wait 240
-shot cobble-look-0
+shot mon64-look-0
 stick 90 0 45
 wait 150
-shot cobble-look-1
+shot mon64-look-1
 stick 90 0 45
 wait 150
-shot cobble-look-2
+shot mon64-look-2
 stick 90 0 45
 wait 150
-shot cobble-look-3
+shot mon64-look-3
 stick 0 70 240
-shot cobble-walk
+shot mon64-walk
 
 stop

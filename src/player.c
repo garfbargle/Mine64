@@ -5,7 +5,7 @@
 #include "blocks.h"
 #include "graphics.h"
 #include "camera.h"
-#include "cobblemon.h"
+#include "mon64.h"
 #include "geometry.h"
 #include "items.h"
 #include "mobs.h"
@@ -14,6 +14,7 @@
 #include "audio.h"
 #include "world.h"
 #include "mods.h"
+#include "main.h"
 #include "details.h"
 #include "edits.h"
 
@@ -1772,7 +1773,7 @@ static u8 updatePlayer(u8 player_num, float delta) {
     /* A creature in front of the player owns A before any block does.  The
        prompt on screen already said so, and a press that placed dirt into a
        creature's face instead would be the game contradicting its own HUD. */
-    if (cobblemonTryInteract(player_num,
+    if (mon64TryInteract(player_num,
         (cont->button & Z_TRIG) != 0)) {
       return TRUE;
     }
@@ -1845,9 +1846,9 @@ void updatePlayers() {
    * test in the project for something that is, in every way that matters,
    * still the game.
    */
-  if (cobblemonBattleActive()) {
-    cobblemonBattleInput(cont_data);
-    cobblemonUpdate(delta);
+  if (mon64BattleActive()) {
+    mon64BattleInput(cont_data);
+    mon64Update(delta);
     return;
   }
 
@@ -2050,7 +2051,7 @@ void updatePlayers() {
   updateMobs(delta);
   /* Shares the mob phase colour: the freeze square only has to say which
      subsystem died, and these two are one ecology on one budget. */
-  cobblemonUpdate(delta);
+  mon64Update(delta);
 
   /* Z + D-pad is the developer chord; the plain D-pad save below ignores the
      D-pad while Z is held, so these cannot collide with it.  Up toggles the
@@ -2116,11 +2117,12 @@ void updatePlayers() {
              -- walking back reloads the extent -- so unlike a write failure
              it must not permanently disable saving. */
           save_far_message = 120;
-        } else if (saveGame()) {
-          save_message_cooldown = 60;
-        } else {
-          saving_available = FALSE;
-          save_failed_message = 120;
+        } else if (!worldJobActive()) {
+          /* Sliced across callbacks now, so the game keeps drawing and the
+             player keeps moving while it writes; menuSaveFinished posts the
+             confirmation.  Asking again mid-write would open a second file
+             over the first, so a save in flight simply absorbs the press. */
+          requestWorldSave();
         }
         break;
       }

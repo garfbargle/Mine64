@@ -8,5 +8,9 @@
    explain why the highlighted slot has not changed yet. */
 u8 worldJobActive();
 u8 worldJobProgress();
+/* Ask for the world to be written to the cart.  The write is sliced across
+   callbacks like every other long job, so the caller carries on and hears
+   back through menuSaveFinished. */
+void requestWorldSave(void);
 
 #endif /* MAIN_H */

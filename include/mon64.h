@@ -1,14 +1,14 @@
-#ifndef COBBLEMON_H
-#define COBBLEMON_H
+#ifndef MON64_H
+#define MON64_H
 
 #include <nusys.h>
 #include "math.h"
 #include "player.h"
 
 /*
- * COBBLEMON -- creature collecting inside the block world.
+ * 64MON -- creature collecting inside the block world.
  *
- * The mod is switched on when a world is created (MOD_COBBLEMON) and read
+ * The mod is switched on when a world is created (MOD_64MON) and read
  * while the world is played, so it changes nothing the generator produces: a
  * creature is an entity, never a block, and where one stands is never stored.
  * That is what lets it ride on top of the streaming world without a single
@@ -18,7 +18,7 @@
  * unmodified console, and every later addition has to respect them:
  *
  * 1. THE ENTITY COUNT DOES NOT GROW.  Roamers do not add a pool beside the
- *    mob pool -- they take slots out of it (see cobblemonRoamerReserve).
+ *    mob pool -- they take slots out of it (see mon64RoamerReserve).
  *    Turning the mod on trades farm animals for creatures; it never asks the
  *    RSP to transform more boxes than a vanilla world already does.
  *
@@ -38,16 +38,25 @@
  * by proportion and palette, so the roster costs a table rather than art.
  */
 
-/* Species are addressed by index into cobble_species. */
-#define COBBLE_SPECIES_COUNT 18
-#define COBBLE_MOVE_COUNT 22
-#define COBBLE_RIG_COUNT 6
-#define COBBLE_NONE 0xFF
+/* Species are addressed by index into mon_species. */
+#define MON_SPECIES_COUNT 18
+#define MON_MOVE_COUNT 22
+#define MON_RIG_COUNT 6
+#define MON_NONE 0xFF
 
-#define COBBLE_MAX_PARTS 8
-#define COBBLE_PARTY_SIZE 6
-#define COBBLE_MOVES 4
-#define COBBLE_MAX_LEVEL 50
+/*
+ * Boxes in a rig, including the ones only its older stages wear.
+ *
+ * A family keeps one animal and one body for all three stages, so growing up
+ * has to be visible in something other than size: a rig's later boxes -- ear
+ * tufts, a shoulder hump, a back ridge -- switch on at a maturity threshold.
+ * A cub is a simple round shape and an elder is the same shape with features
+ * on it, which is what age actually looks like.
+ */
+#define MON_MAX_PARTS 11
+#define MON_PARTY_SIZE 6
+#define MON_MOVES 4
+#define MON_MAX_LEVEL 50
 
 /*
  * Simulated roamers, and how many of them may be drawn in one viewport.
@@ -55,19 +64,19 @@
  * matches the pair a battle puts on screen, so the model path has exactly one
  * worst case to be fast for.
  */
-#define COBBLE_MAX_ROAMERS 4
-#define COBBLE_RENDER_SLOTS 2
+#define MON_MAX_ROAMERS 4
+#define MON_RENDER_SLOTS 2
 
 /* Elemental types.  Six is what a player can hold in their head and what a
    readable colour swatch can distinguish at 320x240. */
-enum CobbleType {
-  COBBLE_GRASS,
-  COBBLE_FIRE,
-  COBBLE_WATER,
-  COBBLE_EARTH,
-  COBBLE_SPARK,
-  COBBLE_STONE,
-  COBBLE_TYPE_COUNT
+enum MonType {
+  MON_GRASS,
+  MON_FIRE,
+  MON_WATER,
+  MON_EARTH,
+  MON_SPARK,
+  MON_STONE,
+  MON_TYPE_COUNT
 };
 
 /*
@@ -77,51 +86,51 @@ enum CobbleType {
  * creature is ever of this type, which is why it lives past the enum rather
  * than inside it.
  */
-#define COBBLE_TYPE_PLAIN COBBLE_TYPE_COUNT
+#define MON_TYPE_PLAIN MON_TYPE_COUNT
 
 /* Move side effects.  Each is a single rule the battle log can state in one
    short line, because a move whose effect cannot be explained on a CRT in
    thirty characters may as well not have one. */
-enum CobbleMoveEffect {
-  COBBLE_EFFECT_NONE,
-  COBBLE_EFFECT_HEAL,      /* restores half of the user's missing health */
-  COBBLE_EFFECT_BUFF_ATK,
-  COBBLE_EFFECT_BUFF_DEF,
-  COBBLE_EFFECT_DRAIN,     /* user recovers half the damage dealt */
-  COBBLE_EFFECT_HIGH_CRIT,
-  COBBLE_EFFECT_MULTI,     /* strikes twice */
-  COBBLE_EFFECT_RECOIL     /* user takes a quarter of the damage dealt */
+enum MonMoveEffect {
+  MON_EFFECT_NONE,
+  MON_EFFECT_HEAL,      /* restores half of the user's missing health */
+  MON_EFFECT_BUFF_ATK,
+  MON_EFFECT_BUFF_DEF,
+  MON_EFFECT_DRAIN,     /* user recovers half the damage dealt */
+  MON_EFFECT_HIGH_CRIT,
+  MON_EFFECT_MULTI,     /* strikes twice */
+  MON_EFFECT_RECOIL     /* user takes a quarter of the damage dealt */
 };
 
 /* Where a species is found.  A bitmask over the block the creature is
    standing on plus one time-of-day flag, tested against the spawn pad the
    roamer pool has already proved walkable. */
-#define COBBLE_HAB_GRASS 0x01
-#define COBBLE_HAB_SAND  0x02
-#define COBBLE_HAB_STONE 0x04
-#define COBBLE_HAB_SHORE 0x08  /* grass or sand with water within two blocks */
-#define COBBLE_HAB_NIGHT 0x10  /* only after dusk */
-#define COBBLE_HAB_DAY   0x20  /* only before dusk */
+#define MON_HAB_GRASS 0x01
+#define MON_HAB_SAND  0x02
+#define MON_HAB_STONE 0x04
+#define MON_HAB_SHORE 0x08  /* grass or sand with water within two blocks */
+#define MON_HAB_NIGHT 0x10  /* only after dusk */
+#define MON_HAB_DAY   0x20  /* only before dusk */
 
 /* Which of a species' three colours a box takes. */
-#define COBBLE_TONE_PRIMARY 0
-#define COBBLE_TONE_SECONDARY 1
-#define COBBLE_TONE_ACCENT 2
+#define MON_TONE_PRIMARY 0
+#define MON_TONE_SECONDARY 1
+#define MON_TONE_ACCENT 2
 
 /*
  * Animation roles.  Parts animate by moving, never by rotating: the rig has
  * no joints, exactly like the sheep and the pig, so a pose costs an addition
  * per box instead of a matrix concatenation.
  */
-#define COBBLE_ROLE_STATIC 0
-#define COBBLE_ROLE_BODY 1     /* breathes, and carries the hurt shake */
-#define COBBLE_ROLE_HEAD 2     /* bobs while idle, dips while grazing */
-#define COBBLE_ROLE_LEG_A 3    /* front-left and back-right */
-#define COBBLE_ROLE_LEG_B 4    /* the opposite diagonal */
-#define COBBLE_ROLE_TAIL 5
-#define COBBLE_ROLE_WING 6
-#define COBBLE_ROLE_ARM_A 7
-#define COBBLE_ROLE_ARM_B 8
+#define MON_ROLE_STATIC 0
+#define MON_ROLE_BODY 1     /* breathes, and carries the hurt shake */
+#define MON_ROLE_HEAD 2     /* bobs while idle, dips while grazing */
+#define MON_ROLE_LEG_A 3    /* front-left and back-right */
+#define MON_ROLE_LEG_B 4    /* the opposite diagonal */
+#define MON_ROLE_TAIL 5
+#define MON_ROLE_WING 6
+#define MON_ROLE_ARM_A 7
+#define MON_ROLE_ARM_B 8
 
 /*
  * One box of a rig, in model units where a block is BLOCK_SIZE (64) across.
@@ -137,7 +146,10 @@ typedef struct {
   u8 sz;
   u8 tone;
   u8 role;
-} CobblePart;
+  /* Lowest species maturity that wears this box: 1 is always, 3 is the fully
+     grown stage only. */
+  u8 stage;
+} MonPart;
 
 typedef struct {
   u8 part_count;
@@ -146,17 +158,29 @@ typedef struct {
      serpent is longer than it is tall and should not be framed as if it
      towered). */
   u8 height;
-  CobblePart parts[COBBLE_MAX_PARTS];
-} CobbleRig;
+  MonPart parts[MON_MAX_PARTS];
+} MonRig;
 
 typedef struct {
   /* Nine characters is what the battle panel can show beside a level. */
   const char *name;
   u8 rig;
   u8 type;
-  /* Percent of the rig's authored size.  Evolution mostly means "the same
-     creature, larger and more saturated", which reads instantly on a CRT. */
+  /*
+   * Percent of the rig's authored size, and percent added to width and depth
+   * on top of it.
+   *
+   * A family keeps one rig for all three stages -- a bear does not evolve
+   * into something that is no longer a bear -- so evolution has to read as
+   * growth rather than as a different silhouette.  Scale alone only makes the
+   * same creature bigger; bulk makes it heavier as well, which is what the
+   * eye actually uses to tell a cub from a full-grown animal.
+   */
   u8 scale;
+  u8 bulk;
+  /* 1, 2 or 3.  Selects which of the rig's boxes this stage has grown into;
+     see MON_MAX_PARTS. */
+  u8 maturity;
   u8 base_hp;
   u8 base_attack;
   u8 base_defense;
@@ -174,9 +198,9 @@ typedef struct {
   u8 primary[3];
   u8 secondary[3];
   u8 accent[3];
-  u8 moves[COBBLE_MOVES];
-  u8 move_levels[COBBLE_MOVES];
-} CobbleSpecies;
+  u8 moves[MON_MOVES];
+  u8 move_levels[MON_MOVES];
+} MonSpecies;
 
 typedef struct {
   /* Eight characters, so four fit the move grid two across. */
@@ -186,11 +210,11 @@ typedef struct {
   u8 accuracy;   /* percent */
   u8 pp;
   u8 effect;
-} CobbleMove;
+} MonMove;
 
 /*
  * A creature the player owns.  Six bytes, because a party is per player and
- * this is the only cobblemon state a save would ever have to carry.
+ * this is the only mon64 state a save would ever have to carry.
  * Everything else -- stats, moves, remaining PP -- is derived from these two
  * numbers and the species table, which is also what makes a rebalance safe:
  * retuning a base stat retunes every existing save.
@@ -200,11 +224,11 @@ typedef struct {
   u8 level;
   u16 xp;   /* progress toward the next level, not a lifetime total */
   u16 hp;   /* current; zero is fainted */
-} CobbleMon;
+} PartyMon;
 
 /* Overworld creature kinds. */
-#define COBBLE_ROAMER_WILD 0
-#define COBBLE_ROAMER_TRAINER 1
+#define MON_ROAMER_WILD 0
+#define MON_ROAMER_TRAINER 1
 
 typedef struct {
   Vector3 position;
@@ -223,9 +247,9 @@ typedef struct {
   /* A trainer's team is a pure function of this, so it needs no storage and
      is the same team every time that trainer is met. */
   u32 seed;
-} CobbleRoamer;
+} MonRoamer;
 
-/* One side of a battle, expanded from a CobbleMon once when it is sent out.
+/* One side of a battle, expanded from a PartyMon once when it is sent out.
    Nothing here is written back except hp and xp. */
 typedef struct {
   u8 species;
@@ -235,43 +259,43 @@ typedef struct {
   u16 attack;
   u16 defense;
   u16 speed;
-  u8 move[COBBLE_MOVES];
-  u8 pp[COBBLE_MOVES];
+  u8 move[MON_MOVES];
+  u8 pp[MON_MOVES];
   u8 move_count;
   /* Restored when the fighter leaves the field, so switching out is a real
      decision rather than a free reset. */
   s8 attack_stage;
   s8 defense_stage;
-  /* Which party slot this came from; COBBLE_NONE for a wild creature. */
+  /* Which party slot this came from; MON_NONE for a wild creature. */
   u8 party_slot;
-} CobbleFighter;
+} MonFighter;
 
 /* Battle kinds. */
-#define COBBLE_BATTLE_WILD 0
-#define COBBLE_BATTLE_TRAINER 1
-#define COBBLE_BATTLE_PVP 2
+#define MON_BATTLE_WILD 0
+#define MON_BATTLE_TRAINER 1
+#define MON_BATTLE_PVP 2
 
 /* Battle phases.  The whole encounter is one step function driven from
-   cobblemonUpdate; nothing here ever blocks or waits. */
-#define COBBLE_PHASE_NONE 0
-#define COBBLE_PHASE_MESSAGE 1   /* typing a line, then waiting for A */
-#define COBBLE_PHASE_COMMAND 2   /* FIGHT / TEAM / BAG / RUN */
-#define COBBLE_PHASE_MOVE 3
-#define COBBLE_PHASE_TEAM 4
-#define COBBLE_PHASE_BAG 5
-#define COBBLE_PHASE_RESOLVE 6   /* running the queued turn */
-#define COBBLE_PHASE_CATCH 7
-#define COBBLE_PHASE_END 8
+   mon64Update; nothing here ever blocks or waits. */
+#define MON_PHASE_NONE 0
+#define MON_PHASE_MESSAGE 1   /* typing a line, then waiting for A */
+#define MON_PHASE_COMMAND 2   /* FIGHT / TEAM / BAG / RUN */
+#define MON_PHASE_MOVE 3
+#define MON_PHASE_TEAM 4
+#define MON_PHASE_BAG 5
+#define MON_PHASE_RESOLVE 6   /* running the queued turn */
+#define MON_PHASE_CATCH 7
+#define MON_PHASE_END 8
 
 /* Chosen actions, held until both sides have committed. */
-#define COBBLE_ACTION_NONE 0
-#define COBBLE_ACTION_MOVE 1
-#define COBBLE_ACTION_SWAP 2
-#define COBBLE_ACTION_ITEM 3
-#define COBBLE_ACTION_RUN 4
+#define MON_ACTION_NONE 0
+#define MON_ACTION_MOVE 1
+#define MON_ACTION_SWAP 2
+#define MON_ACTION_ITEM 3
+#define MON_ACTION_RUN 4
 
-#define COBBLE_MESSAGE_LENGTH 40
-#define COBBLE_MESSAGE_QUEUE 6
+#define MON_MESSAGE_LENGTH 40
+#define MON_MESSAGE_QUEUE 6
 
 typedef struct {
   u8 active;
@@ -282,7 +306,7 @@ typedef struct {
   /* 0 is the challenger's side, 1 the opponent's. */
   u8 side_is_player[2];
   u8 side_player[2];
-  CobbleFighter fighter[2];
+  MonFighter fighter[2];
   /* Whose command the interface is currently taking. */
   u8 acting_side;
   /* Both sides' chosen actions for the turn being resolved. */
@@ -298,7 +322,7 @@ typedef struct {
   u8 first_side;
   u8 escape_attempts;
   /* An NPC trainer's team.  A wild battle uses slot zero only. */
-  CobbleMon npc_party[3];
+  PartyMon npc_party[3];
   u8 npc_party_size;
   u8 npc_active;
 
@@ -309,7 +333,7 @@ typedef struct {
   u8 bag_cursor;
 
   /* Message queue: one line at a time, typed out, advanced with A. */
-  char message[COBBLE_MESSAGE_QUEUE][COBBLE_MESSAGE_LENGTH + 1];
+  char message[MON_MESSAGE_QUEUE][MON_MESSAGE_LENGTH + 1];
   u8 message_head;
   u8 message_count;
   u16 message_reveal;   /* characters revealed so far, times 4 */
@@ -342,39 +366,39 @@ typedef struct {
   /* Set when the battle is over and the world should resume next frame. */
   u8 finished;
   u16 pending_xp;
-} CobbleBattle;
+} MonBattle;
 
-extern const CobbleSpecies cobble_species[COBBLE_SPECIES_COUNT];
-extern const CobbleMove cobble_moves[COBBLE_MOVE_COUNT];
-extern const CobbleRig cobble_rigs[COBBLE_RIG_COUNT];
+extern const MonSpecies mon_species[MON_SPECIES_COUNT];
+extern const MonMove mon_moves[MON_MOVE_COUNT];
+extern const MonRig mon_rigs[MON_RIG_COUNT];
 /* Effectiveness as quarters: 8 is double, 4 is neutral, 2 is halved. */
-extern const u8 cobble_type_chart[COBBLE_TYPE_COUNT][COBBLE_TYPE_COUNT];
+extern const u8 mon_type_chart[MON_TYPE_COUNT][MON_TYPE_COUNT];
 /* Panel and swatch colour for each type, plus the plain column. */
-extern const u8 cobble_type_color[COBBLE_TYPE_COUNT + 1][3];
-extern const char *cobble_type_name[COBBLE_TYPE_COUNT + 1];
+extern const u8 mon_type_color[MON_TYPE_COUNT + 1][3];
+extern const char *mon_type_name[MON_TYPE_COUNT + 1];
 
-extern CobbleMon cobble_party[MAX_PLAYERS][COBBLE_PARTY_SIZE];
-extern CobbleRoamer cobble_roamers[COBBLE_MAX_ROAMERS];
-extern CobbleBattle cobble_battle;
+extern PartyMon mon_party[MAX_PLAYERS][MON_PARTY_SIZE];
+extern MonRoamer mon_roamers[MON_MAX_ROAMERS];
+extern MonBattle mon_battle;
 
 /* Reset every creature, party and roamer.  Called when a world is entered,
    beside initMobs. */
-void initCobblemon(void);
+void initMon64(void);
 
 /*
  * How many mob slots the creature pool is borrowing.  Zero unless the mod is
  * on.  mobs.c subtracts this from its passive budget, which is what keeps the
  * simulated entity count identical to a vanilla world.
  */
-u8 cobblemonRoamerReserve(void);
+u8 mon64RoamerReserve(void);
 
 /* TRUE when the mod is on for this world. */
-u8 cobblemonEnabled(void);
+u8 mon64Enabled(void);
 
 /* One simulation slice: roamer AI and spawning, party regeneration, and the
    battle step when one is running.  Called from updatePlayers beside
    updateMobs, and safe to call when the mod is off (it returns at once). */
-void cobblemonUpdate(float delta);
+void mon64Update(float delta);
 
 /*
  * The A button, before block placement.  Returns TRUE when a creature or a
@@ -386,7 +410,7 @@ void cobblemonUpdate(float delta);
  * because standing next to a friend and placing a block has to keep working
  * in a game that is mostly about placing blocks.
  */
-u8 cobblemonTryInteract(u8 player_num, u8 challenge_held);
+u8 mon64TryInteract(u8 player_num, u8 challenge_held);
 
 /*
  * TRUE while a battle owns every pad, which is when updatePlayers must not
@@ -396,52 +420,52 @@ u8 cobblemonTryInteract(u8 player_num, u8 challenge_held);
  * owns the one nuContDataGetExAll of the frame and a second sample would give
  * a different trigger edge to whoever asked second.
  */
-u8 cobblemonBattleActive(void);
-void cobblemonBattleInput(NUContData *pads);
+u8 mon64BattleActive(void);
+void mon64BattleInput(NUContData *pads);
 
 /*
  * Derived numbers.  All integer, all pure, all safe to call from the
  * renderer: the battle panel and the party card read stats through these
  * rather than caching them.
  */
-u16 cobbleMaxHealth(u8 species, u8 level);
-u16 cobbleAttack(u8 species, u8 level);
-u16 cobbleDefense(u8 species, u8 level);
-u16 cobbleSpeed(u8 species, u8 level);
-u16 cobbleXpForLevel(u8 level);
-u8 cobbleKnownMoves(u8 species, u8 level, u8 *out);
+u16 monMaxHealth(u8 species, u8 level);
+u16 monAttack(u8 species, u8 level);
+u16 monDefense(u8 species, u8 level);
+u16 monSpeed(u8 species, u8 level);
+u16 monXpForLevel(u8 level);
+u8 monKnownMoves(u8 species, u8 level, u8 *out);
 
-/* The party slot a player would lead with, or COBBLE_NONE when every
+/* The party slot a player would lead with, or MON_NONE when every
    creature has fainted. */
-u8 cobblePartyLead(u8 player_num);
-u8 cobblePartyCount(u8 player_num);
+u8 monPartyLead(u8 player_num);
+u8 monPartyCount(u8 player_num);
 
 /*
- * The creature a player is close enough to act on, or COBBLE_NONE.  The HUD
+ * The creature a player is close enough to act on, or MON_NONE.  The HUD
  * prompt and the interact hook ask the same question so they can never
  * disagree about what pressing A would do.
  */
-u8 cobblemonTargetRoamer(u8 player_num);
+u8 mon64TargetRoamer(u8 player_num);
 
 /* Rendering, from graphics.c.  Draws the battle pair when a battle is
    running and the nearby roamers otherwise; both are capped at
-   COBBLE_RENDER_SLOTS boxsets per viewport. */
-void cobblemonDrawForPlayer(u8 viewer_num);
+   MON_RENDER_SLOTS boxsets per viewport. */
+void mon64DrawForPlayer(u8 viewer_num);
 /* The full-screen battle interface, and the small overworld prompt.  Both
    leave the RDP configured for text, like every other panel in the game. */
-void cobblemonDrawBattleInterface(void);
+void mon64DrawBattleInterface(void);
 /* `center_x` and `bottom_y` are the player's viewport, so the prompt lands
    above their own hotbar in split-screen instead of somebody else's. */
-void cobblemonDrawPrompt(u8 player_num, u32 center_x, u32 bottom_y);
+void mon64DrawPrompt(u8 player_num, u32 center_x, u32 bottom_y);
 
 /*
  * The party as a flat blob, for whenever the save format grows the per-world
- * section it belongs in (see docs/cobblemon.md).  Deliberately not wired into
+ * section it belongs in (see docs/mon64.md).  Deliberately not wired into
  * storage.c: that file is the one place a mistake destroys worlds, and the
  * per-chunk diff save it is waiting on will rewrite its layout anyway.
  */
-u32 cobblemonSaveSize(void);
-void cobblemonSaveBlob(u8 *out);
-void cobblemonLoadBlob(const u8 *in, u32 length);
+u32 mon64SaveSize(void);
+void mon64SaveBlob(u8 *out);
+void mon64LoadBlob(const u8 *in, u32 length);
 
-#endif /* COBBLEMON_H */
+#endif /* MON64_H */

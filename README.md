@@ -110,7 +110,7 @@ unmodified 4 MiB console.
 * Original, generated 16-colour block tiles and UI font replace the former
   external Minecraft-art build dependency.
 
-## Cobblemon
+## 64MON
 
 A creature-collecting mod, chosen on the create-world card and locked in with
 the rest of a world's mods. Eighteen species across six type families wander
@@ -124,7 +124,7 @@ It is built to cost the console nothing it was not already spending: the four
 roamers come out of the passive mob budget rather than adding a pool beside
 it, a battle is a pause inside the game rather than a screen of its own, and
 every rule in it is integer arithmetic. Full design notes, the type chart and
-the roster are in [Cobblemon](docs/cobblemon.md).
+the roster are in [64MON](docs/64mon.md).
 
 ## Controls
 
@@ -144,7 +144,7 @@ the roster are in [Cobblemon](docs/cobblemon.md).
 | D-pad (either player) | Save, when cartridge storage is available |
 | Z + D-pad Up | Toggle the developer diagnostics overlay |
 | Controller 2-4 START | Join co-op during a running world |
-| A facing a creature | Battle it (COBBLEMON worlds) |
+| A facing a creature | Battle it (64MON worlds) |
 | Z + A facing a player | Challenge them to a creature battle |
 
 Sprinting costs food, so **L** only sprints while the food bar has something
@@ -590,15 +590,15 @@ submits a task — never wait.
   likewise in-memory only.
 * **Audio does not fit.** The audio variant overruns NuSystem's audio heap;
   it needs roughly another 384 KiB, which arrives with a pooled block window
-  or with post-diff-save trimming. Cobblemon spent about 49 KiB of the
-  remaining headroom, leaving ~101 KiB free — it does not change the size of
+  or with post-diff-save trimming. 64MON spent about 55 KiB of the
+  remaining headroom, leaving ~96 KiB free — it does not change the size of
   the problem, but it is no longer part of the answer.
-* **Cobblemon teams are not saved.** `cobblemonSaveBlob` and
-  `cobblemonLoadBlob` produce and consume the party as a flat 144-byte blob
+* **64MON teams are not saved.** `mon64SaveBlob` and
+  `mon64LoadBlob` produce and consume the party as a flat 144-byte blob
   and nothing calls them, deliberately: the per-chunk diff format will move
   every offset in the file, and the party belongs in that version bump rather
   than in one of its own. See *Not wired yet* in
-  [Cobblemon](docs/cobblemon.md).
+  [64MON](docs/64mon.md).
 * **Sword tier specials are implemented but unreachable.** `useMobWeaponSpecial`
   and its effect rendering exist and are simulated, but nothing is bound to
   trigger them yet.

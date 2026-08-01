@@ -1,4 +1,4 @@
-#include "cobblemon.h"
+#include "mon64.h"
 
 #include <stddef.h>
 
@@ -37,9 +37,9 @@
    frame budget. */
 #define CREATURE_RENDER_DISTANCE (BLOCK_SIZE * 26.f)
 
-static Mtx creature_translate[NUM_DISPLAY_LISTS][COBBLE_RENDER_SLOTS][COBBLE_MAX_PARTS];
-static Mtx creature_rotate[NUM_DISPLAY_LISTS][COBBLE_RENDER_SLOTS][COBBLE_MAX_PARTS];
-static Vtx creature_verts[NUM_DISPLAY_LISTS][COBBLE_RENDER_SLOTS][COBBLE_MAX_PARTS][8];
+static Mtx creature_translate[NUM_DISPLAY_LISTS][MON_RENDER_SLOTS][MON_MAX_PARTS];
+static Mtx creature_rotate[NUM_DISPLAY_LISTS][MON_RENDER_SLOTS][MON_MAX_PARTS];
+static Vtx creature_verts[NUM_DISPLAY_LISTS][MON_RENDER_SLOTS][MON_MAX_PARTS][8];
 
 /* The same triangle order every box model in the game uses, so the vertex
    layout below is the layout drawSteve and drawMob already produce. */
@@ -98,11 +98,11 @@ static void buildBox(Vtx *verts, s16 x0, s16 y0, s16 z0, s16 x1, s16 y1,
   setBoxVertex(&verts[7], x1, y0, z0, dark);
 }
 
-static const u8 *toneColor(const CobbleSpecies *species, u8 tone) {
-  if (tone == COBBLE_TONE_SECONDARY) {
+static const u8 *toneColor(const MonSpecies *species, u8 tone) {
+  if (tone == MON_TONE_SECONDARY) {
     return species->secondary;
   }
-  if (tone == COBBLE_TONE_ACCENT) {
+  if (tone == MON_TONE_ACCENT) {
     return species->accent;
   }
   return species->primary;
@@ -116,7 +116,7 @@ static const u8 *toneColor(const CobbleSpecies *species, u8 tone) {
  * three: the yaw matrix is shared by every box and the pose is folded into
  * the translation the box was going to need anyway.
  */
-static void poseOffset(const CobblePart *part, const CreaturePose *pose,
+static void poseOffset(const MonPart *part, const CreaturePose *pose,
     u8 scale, float *out_x, float *out_y, float *out_z) {
   float step = sinf(pose->walk_time) * 3.f;
   float breathe = sinf(pose->walk_time * .3f) * 1.2f;
@@ -127,29 +127,29 @@ static void poseOffset(const CobblePart *part, const CreaturePose *pose,
   float z = (float) part->z * scale / 100.f;
 
   switch (part->role) {
-    case COBBLE_ROLE_BODY:
+    case MON_ROLE_BODY:
       y += breathe;
       x += shake;
       break;
-    case COBBLE_ROLE_HEAD:
+    case MON_ROLE_HEAD:
       y += breathe * 1.4f;
       x += shake;
       break;
-    case COBBLE_ROLE_LEG_A:
-    case COBBLE_ROLE_ARM_A:
+    case MON_ROLE_LEG_A:
+    case MON_ROLE_ARM_A:
       y += step;
       z -= step * .4f;
       break;
-    case COBBLE_ROLE_LEG_B:
-    case COBBLE_ROLE_ARM_B:
+    case MON_ROLE_LEG_B:
+    case MON_ROLE_ARM_B:
       y -= step;
       z += step * .4f;
       break;
-    case COBBLE_ROLE_TAIL:
+    case MON_ROLE_TAIL:
       x += sinf(pose->walk_time * .8f) * 4.f;
       y += breathe;
       break;
-    case COBBLE_ROLE_WING:
+    case MON_ROLE_WING:
       y += sinf(pose->walk_time * 1.7f) * 5.f;
       break;
     default:
@@ -180,28 +180,34 @@ static void poseOffset(const CobblePart *part, const CreaturePose *pose,
  */
 static void drawCreature(u8 slot, u8 species_id, Vector3 position, float yaw,
     const CreaturePose *pose) {
-  const CobbleSpecies *species;
-  const CobbleRig *rig;
+  const MonSpecies *species;
+  const MonRig *rig;
   u8 part_index;
 
-  if (species_id >= COBBLE_SPECIES_COUNT || slot >= COBBLE_RENDER_SLOTS) {
+  if (species_id >= MON_SPECIES_COUNT || slot >= MON_RENDER_SLOTS) {
     return;
   }
-  species = &cobble_species[species_id];
-  rig = &cobble_rigs[species->rig];
+  species = &mon_species[species_id];
+  rig = &mon_rigs[species->rig];
 
   for (part_index = 0; part_index < rig->part_count; part_index++) {
-    const CobblePart *part = &rig->parts[part_index];
+    const MonPart *part = &rig->parts[part_index];
     Vtx *verts = creature_verts[dl_no][slot][part_index];
     const u8 *color = toneColor(species, part->tone);
     float ox;
     float oy;
     float oz;
     Vector3 offset;
-    s16 sx = (s16) ((part->sx * species->scale) / 100);
+    /* Bulk widens and deepens without heightening, so an elder reads as a
+       heavier animal rather than a taller one. */
+    s16 sx = (s16) ((part->sx * species->scale * species->bulk) / 10000);
     s16 sy = (s16) ((part->sy * species->scale) / 100);
-    s16 sz = (s16) ((part->sz * species->scale) / 100);
+    s16 sz = (s16) ((part->sz * species->scale * species->bulk) / 10000);
 
+    /* Boxes the creature has not grown into yet. */
+    if (part->stage > species->maturity) {
+      continue;
+    }
     if (sx < 1) sx = 1;
     if (sy < 1) sy = 1;
     if (sz < 1) sz = 1;
@@ -257,7 +263,7 @@ static u8 creatureVisible(u8 viewer_num, Vector3 point) {
  * wandering creatures use, and correct however the player was standing.
  */
 static float battleFacing(u8 side) {
-  return side == 0 ? cobble_battle.facing : cobble_battle.facing + 180.f;
+  return side == 0 ? mon_battle.facing : mon_battle.facing + 180.f;
 }
 
 static void drawBattleCreatures(u8 viewer_num) {
@@ -265,31 +271,31 @@ static void drawBattleCreatures(u8 viewer_num) {
 
   for (side = 0; side < 2; side++) {
     CreaturePose pose;
-    CobbleFighter *fighter = &cobble_battle.fighter[side];
+    MonFighter *fighter = &mon_battle.fighter[side];
 
-    if (fighter->species >= COBBLE_SPECIES_COUNT) {
+    if (fighter->species >= MON_SPECIES_COUNT) {
       continue;
     }
-    if (!creatureVisible(viewer_num, cobble_battle.stand[side])) {
+    if (!creatureVisible(viewer_num, mon_battle.stand[side])) {
       continue;
     }
-    pose.walk_time = cobble_battle.scene_time * .06f;
-    pose.lunge = cobble_battle.lunge[side];
-    pose.hurt = cobble_battle.hurt[side];
-    pose.faint = cobble_battle.faint[side] > 0 ?
-      cobble_battle.faint[side] : 0;
+    pose.walk_time = mon_battle.scene_time * .06f;
+    pose.lunge = mon_battle.lunge[side];
+    pose.hurt = mon_battle.hurt[side];
+    pose.faint = mon_battle.faint[side] > 0 ?
+      mon_battle.faint[side] : 0;
     pose.reach = BLOCK_SIZE * .7f;
-    drawCreature(side, fighter->species, cobble_battle.stand[side],
+    drawCreature(side, fighter->species, mon_battle.stand[side],
       battleFacing(side), &pose);
   }
 }
 
 static void drawRoamers(u8 viewer_num) {
-  u8 drawn[COBBLE_MAX_ROAMERS];
+  u8 drawn[MON_MAX_ROAMERS];
   u8 index;
   u8 slot;
 
-  for (index = 0; index < COBBLE_MAX_ROAMERS; index++) {
+  for (index = 0; index < MON_MAX_ROAMERS; index++) {
     drawn[index] = FALSE;
   }
 
@@ -299,13 +305,13 @@ static void drawRoamers(u8 viewer_num) {
    * one they are walking toward, and the pool is small enough that picking
    * the nearest twice is cheaper than sorting it.
    */
-  for (slot = 0; slot < COBBLE_RENDER_SLOTS; slot++) {
-    u8 best = COBBLE_MAX_ROAMERS;
+  for (slot = 0; slot < MON_RENDER_SLOTS; slot++) {
+    u8 best = MON_MAX_ROAMERS;
     float best_distance = 0;
     CreaturePose pose;
 
-    for (index = 0; index < COBBLE_MAX_ROAMERS; index++) {
-      CobbleRoamer *roamer = &cobble_roamers[index];
+    for (index = 0; index < MON_MAX_ROAMERS; index++) {
+      MonRoamer *roamer = &mon_roamers[index];
       Vector3 offset;
       float distance;
 
@@ -315,27 +321,27 @@ static void drawRoamers(u8 viewer_num) {
       }
       offset = add(roamer->position, mul(players[viewer_num].position, -1.f));
       distance = dot(offset, offset);
-      if (best == COBBLE_MAX_ROAMERS || distance < best_distance) {
+      if (best == MON_MAX_ROAMERS || distance < best_distance) {
         best = index;
         best_distance = distance;
       }
     }
-    if (best == COBBLE_MAX_ROAMERS) {
+    if (best == MON_MAX_ROAMERS) {
       break;
     }
     drawn[best] = TRUE;
-    pose.walk_time = cobble_roamers[best].walk_time;
+    pose.walk_time = mon_roamers[best].walk_time;
     pose.lunge = 0;
     pose.hurt = 0;
     pose.faint = 0;
     pose.reach = 0;
-    drawCreature(slot, cobble_roamers[best].species,
-      cobble_roamers[best].position, cobble_roamers[best].yaw, &pose);
+    drawCreature(slot, mon_roamers[best].species,
+      mon_roamers[best].position, mon_roamers[best].yaw, &pose);
   }
 }
 
-void cobblemonDrawForPlayer(u8 viewer_num) {
-  if (!cobblemonEnabled()) {
+void mon64DrawForPlayer(u8 viewer_num) {
+  if (!mon64Enabled()) {
     return;
   }
   gSPTexture(dlp++, 0, 0, 0, G_TX_RENDERTILE, G_OFF);
@@ -343,7 +349,7 @@ void cobblemonDrawForPlayer(u8 viewer_num) {
   /* The box models have deliberately minimal geometry; culling off keeps
      every face reliable from any angle, exactly as the mob pass does. */
   gSPClearGeometryMode(dlp++, G_CULL_BACK);
-  if (cobble_battle.active) {
+  if (mon_battle.active) {
     drawBattleCreatures(viewer_num);
   } else {
     drawRoamers(viewer_num);
@@ -423,8 +429,8 @@ static void drawHealthBar(u32 x0, u32 y0, u32 width, u16 hp, u16 max_hp) {
 }
 
 static void drawTypeSwatch(u32 x, u32 y, u8 type) {
-  const u8 *color = cobble_type_color[type > COBBLE_TYPE_COUNT ?
-    COBBLE_TYPE_COUNT : type];
+  const u8 *color = mon_type_color[type > MON_TYPE_COUNT ?
+    MON_TYPE_COUNT : type];
 
   fillColor(24, 27, 23);
   gDPFillRectangle(dlp++, x, y, x + 8, y + 8);
@@ -510,10 +516,10 @@ static u8 bagItemCount(u8 player_num, u8 item) {
 }
 
 static void drawBattleFills(void) {
-  u8 phase = cobble_battle.phase;
-  u8 side = cobble_battle.acting_side;
-  CobbleFighter *mine = &cobble_battle.fighter[side];
-  CobbleFighter *theirs = &cobble_battle.fighter[side ^ 1];
+  u8 phase = mon_battle.phase;
+  u8 side = mon_battle.acting_side;
+  MonFighter *mine = &mon_battle.fighter[side];
+  MonFighter *theirs = &mon_battle.fighter[side ^ 1];
 
   gDPPipeSync(dlp++);
   gDPSetCycleType(dlp++, G_CYC_FILL);
@@ -537,7 +543,7 @@ static void drawBattleFills(void) {
     BATTLE_BOX_BOTTOM);
 
   switch (phase) {
-    case COBBLE_PHASE_COMMAND: {
+    case MON_PHASE_COMMAND: {
       u8 index;
       /* A divider, so the message half and the command half do not read as
          one long row of words. */
@@ -546,52 +552,52 @@ static void drawBattleFills(void) {
         BATTLE_BOX_BOTTOM - 6);
       for (index = 0; index < 4; index++) {
         drawGridCell(gridX(index), gridY(index), 76,
-          index == cobble_battle.command_cursor);
+          index == mon_battle.command_cursor);
       }
       break;
     }
 
-    case COBBLE_PHASE_MOVE: {
+    case MON_PHASE_MOVE: {
       u8 index;
 
       for (index = 0; index < mine->move_count; index++) {
         drawGridCell(moveGridX(index), moveGridY(index), MOVE_CELL_WIDTH,
-          index == cobble_battle.move_cursor);
+          index == mon_battle.move_cursor);
       }
       if (mine->move_count > 0) {
         drawTypeSwatch(MOVE_INFO_X + 44, 178,
-          cobble_moves[mine->move[cobble_battle.move_cursor]].type);
+          mon_moves[mine->move[mon_battle.move_cursor]].type);
       }
       break;
     }
 
-    case COBBLE_PHASE_TEAM: {
+    case MON_PHASE_TEAM: {
       u8 index;
-      u8 player_num = cobble_battle.side_player[side];
+      u8 player_num = mon_battle.side_player[side];
 
-      for (index = 0; index < COBBLE_PARTY_SIZE; index++) {
-        CobbleMon *mon = &cobble_party[player_num][index];
+      for (index = 0; index < MON_PARTY_SIZE; index++) {
+        PartyMon *mon = &mon_party[player_num][index];
         u32 row_y = BATTLE_BOX_TOP + 8 + index * 10;
 
-        if (index == cobble_battle.team_cursor) {
+        if (index == mon_battle.team_cursor) {
           fillColor(216, 191, 77);
           gDPFillRectangle(dlp++, 14, row_y - 2, 306, row_y + 8);
         }
-        if (mon->species == COBBLE_NONE) {
+        if (mon->species == MON_NONE) {
           continue;
         }
         drawHealthBar(200, row_y, 60, mon->hp,
-          cobbleMaxHealth(mon->species, mon->level));
+          monMaxHealth(mon->species, mon->level));
       }
       break;
     }
 
-    case COBBLE_PHASE_BAG: {
+    case MON_PHASE_BAG: {
       u8 index;
 
       for (index = 0; index < 2; index++) {
         u32 row_y = BATTLE_BOX_TOP + 12 + index * 20;
-        if (index == cobble_battle.bag_cursor) {
+        if (index == mon_battle.bag_cursor) {
           fillColor(216, 191, 77);
           gDPFillRectangle(dlp++, 14, row_y - 3, 306, row_y + 9);
         }
@@ -599,17 +605,17 @@ static void drawBattleFills(void) {
       break;
     }
 
-    case COBBLE_PHASE_CATCH: {
+    case MON_PHASE_CATCH: {
       /* Three lamps: one lights per successful shake, so the wobble the
          player is waiting through is visible rather than implied. */
       u8 index;
-      u8 lit = (u8) (cobble_battle.catch_time / 20.f);
+      u8 lit = (u8) (mon_battle.catch_time / 20.f);
 
       for (index = 0; index < 3; index++) {
         u32 x = 140 + index * 16;
         fillColor(24, 27, 23);
         gDPFillRectangle(dlp++, x, 196, x + 12, 208);
-        if (index < lit && index < cobble_battle.catch_shakes) {
+        if (index < lit && index < mon_battle.catch_shakes) {
           fillColor(232, 196, 79);
         } else {
           fillColor(70, 74, 66);
@@ -626,20 +632,20 @@ static void drawBattleFills(void) {
 }
 
 static void drawBattleText(void) {
-  u8 phase = cobble_battle.phase;
-  u8 side = cobble_battle.acting_side;
-  CobbleFighter *mine = &cobble_battle.fighter[side];
-  CobbleFighter *theirs = &cobble_battle.fighter[side ^ 1];
+  u8 phase = mon_battle.phase;
+  u8 side = mon_battle.acting_side;
+  MonFighter *mine = &mon_battle.fighter[side];
+  MonFighter *theirs = &mon_battle.fighter[side ^ 1];
 
   beginText();
 
   textColor(240, 226, 198);
-  if (theirs->species < COBBLE_SPECIES_COUNT) {
-    drawString(cobble_species[theirs->species].name, 18, 20);
+  if (theirs->species < MON_SPECIES_COUNT) {
+    drawString(mon_species[theirs->species].name, 18, 20);
     drawLevel(theirs->level, 112, 20);
   }
-  if (mine->species < COBBLE_SPECIES_COUNT) {
-    drawString(cobble_species[mine->species].name, 176, 20);
+  if (mine->species < MON_SPECIES_COUNT) {
+    drawString(mon_species[mine->species].name, 176, 20);
     drawLevel(mine->level, 270, 20);
     /* The player's own numbers are shown exactly; the opponent's are not,
        which is the difference between judging your own risk and being told
@@ -653,10 +659,10 @@ static void drawBattleText(void) {
   }
 
   switch (phase) {
-    case COBBLE_PHASE_MESSAGE:
-    case COBBLE_PHASE_CATCH: {
-      const char *line = cobble_battle.message[cobble_battle.message_head];
-      u32 revealed = cobble_battle.message_reveal / 4u;
+    case MON_PHASE_MESSAGE:
+    case MON_PHASE_CATCH: {
+      const char *line = mon_battle.message[mon_battle.message_head];
+      u32 revealed = mon_battle.message_reveal / 4u;
       u32 x = BATTLE_TEXT_X;
       u32 index = 0;
 
@@ -668,56 +674,56 @@ static void drawBattleText(void) {
         x += charWidth(line[index]);
         index++;
       }
-      if (cobble_battle.message_count > 0 && line[index] == 0) {
+      if (mon_battle.message_count > 0 && line[index] == 0) {
         textColor(150, 155, 142);
         drawString("A CONTINUE", BATTLE_TEXT_X, 210);
       }
       break;
     }
 
-    case COBBLE_PHASE_COMMAND: {
+    case MON_PHASE_COMMAND: {
       u8 index;
 
       textColor(240, 226, 198);
       drawString("WHAT WILL", 18, 178);
-      if (mine->species < COBBLE_SPECIES_COUNT) {
-        drawString(cobble_species[mine->species].name, 18, 192);
+      if (mine->species < MON_SPECIES_COUNT) {
+        drawString(mon_species[mine->species].name, 18, 192);
       }
       drawString("DO?", 18, 206);
       for (index = 0; index < 4; index++) {
         /* Brighter, not darker.  The font draws each glyph cell with an
            opaque background, so dark text on the yellow bar comes out as a
            black block with a black letter inside it. */
-        textColor(index == cobble_battle.command_cursor ? 255 : 176,
-          index == cobble_battle.command_cursor ? 244 : 180,
-          index == cobble_battle.command_cursor ? 214 : 168);
+        textColor(index == mon_battle.command_cursor ? 255 : 176,
+          index == mon_battle.command_cursor ? 244 : 180,
+          index == mon_battle.command_cursor ? 214 : 168);
         drawString(command_labels[index], gridX(index), gridY(index));
       }
       break;
     }
 
-    case COBBLE_PHASE_MOVE: {
+    case MON_PHASE_MOVE: {
       u8 index;
 
       for (index = 0; index < mine->move_count; index++) {
-        u8 selected = index == cobble_battle.move_cursor;
+        u8 selected = index == mon_battle.move_cursor;
         textColor(selected ? 255 : 176, selected ? 244 : 180,
           selected ? 214 : 168);
-        drawString(cobble_moves[mine->move[index]].name, moveGridX(index),
+        drawString(mon_moves[mine->move[index]].name, moveGridX(index),
           moveGridY(index));
       }
       if (mine->move_count > 0) {
-        const CobbleMove *move =
-          &cobble_moves[mine->move[cobble_battle.move_cursor]];
+        const MonMove *move =
+          &mon_moves[mine->move[mon_battle.move_cursor]];
 
         /* Type and remaining uses of whatever is highlighted: the two
            numbers the choice actually turns on. */
         textColor(200, 204, 190);
-        drawString(cobble_type_name[move->type > COBBLE_TYPE_COUNT ?
-          COBBLE_TYPE_COUNT : move->type], MOVE_INFO_X, 178);
+        drawString(mon_type_name[move->type > MON_TYPE_COUNT ?
+          MON_TYPE_COUNT : move->type], MOVE_INFO_X, 178);
         drawString("PP", MOVE_INFO_X, 194);
         {
-          u32 x = drawNumber(mine->pp[cobble_battle.move_cursor],
+          u32 x = drawNumber(mine->pp[mon_battle.move_cursor],
             MOVE_INFO_X + 18, 194);
           drawChar('/', x, 194);
           drawNumber(move->pp, x + charWidth('/'), 194);
@@ -728,22 +734,22 @@ static void drawBattleText(void) {
       break;
     }
 
-    case COBBLE_PHASE_TEAM: {
+    case MON_PHASE_TEAM: {
       u8 index;
-      u8 player_num = cobble_battle.side_player[side];
+      u8 player_num = mon_battle.side_player[side];
 
-      for (index = 0; index < COBBLE_PARTY_SIZE; index++) {
-        CobbleMon *mon = &cobble_party[player_num][index];
+      for (index = 0; index < MON_PARTY_SIZE; index++) {
+        PartyMon *mon = &mon_party[player_num][index];
         u32 row_y = BATTLE_BOX_TOP + 8 + index * 10;
-        u8 selected = index == cobble_battle.team_cursor;
+        u8 selected = index == mon_battle.team_cursor;
 
         textColor(selected ? 255 : 176, selected ? 244 : 180,
           selected ? 214 : 168);
-        if (mon->species == COBBLE_NONE) {
+        if (mon->species == MON_NONE) {
           drawString("-", 20, row_y);
           continue;
         }
-        drawString(cobble_species[mon->species].name, 20, row_y);
+        drawString(mon_species[mon->species].name, 20, row_y);
         drawLevel(mon->level, 116, row_y);
         if (mon->hp == 0) {
           drawString("DOWN", 160, row_y);
@@ -752,14 +758,14 @@ static void drawBattleText(void) {
       break;
     }
 
-    case COBBLE_PHASE_BAG: {
+    case MON_PHASE_BAG: {
       u8 index;
-      u8 player_num = cobble_battle.side_player[side];
+      u8 player_num = mon_battle.side_player[side];
 
       for (index = 0; index < 2; index++) {
         u8 item = battleBagItem(index);
         u32 row_y = BATTLE_BOX_TOP + 12 + index * 20;
-        u8 selected = index == cobble_battle.bag_cursor;
+        u8 selected = index == mon_battle.bag_cursor;
 
         textColor(selected ? 255 : 176, selected ? 244 : 180,
           selected ? 214 : 168);
@@ -779,8 +785,8 @@ static void drawBattleText(void) {
   textColor(255, 255, 255);
 }
 
-void cobblemonDrawBattleInterface(void) {
-  if (!cobble_battle.active) {
+void mon64DrawBattleInterface(void) {
+  if (!mon_battle.active) {
     return;
   }
   drawBattleFills();
@@ -796,28 +802,28 @@ void cobblemonDrawBattleInterface(void) {
  * both the invitation and the species, or walking past a creature you wanted
  * becomes a thing that happens.
  */
-void cobblemonDrawPrompt(u8 player_num, u32 center_x, u32 bottom_y) {
+void mon64DrawPrompt(u8 player_num, u32 center_x, u32 bottom_y) {
   u8 target;
-  CobbleRoamer *roamer;
+  MonRoamer *roamer;
   const char *label;
   u32 width;
   u32 left;
   u32 top;
   u32 x;
 
-  if (!cobblemonEnabled() || cobble_battle.active) {
+  if (!mon64Enabled() || mon_battle.active) {
     return;
   }
-  target = cobblemonTargetRoamer(player_num);
-  if (target == COBBLE_NONE) {
+  target = mon64TargetRoamer(player_num);
+  if (target == MON_NONE) {
     return;
   }
-  roamer = &cobble_roamers[target];
-  if (roamer->species >= COBBLE_SPECIES_COUNT) {
+  roamer = &mon_roamers[target];
+  if (roamer->species >= MON_SPECIES_COUNT) {
     return;
   }
-  label = roamer->kind == COBBLE_ROAMER_TRAINER ? "TRAINER" :
-    cobble_species[roamer->species].name;
+  label = roamer->kind == MON_ROAMER_TRAINER ? "TRAINER" :
+    mon_species[roamer->species].name;
 
   /* Sized to its contents rather than fixed, so a four-player viewport gets
      a badge that fits inside it and a nine-letter species still does. */
@@ -825,7 +831,7 @@ void cobblemonDrawPrompt(u8 player_num, u32 center_x, u32 bottom_y) {
   for (x = 0; label[x]; x++) {
     width += charWidth(label[x]);
   }
-  if (roamer->kind != COBBLE_ROAMER_TRAINER) {
+  if (roamer->kind != MON_ROAMER_TRAINER) {
     width += 32;
   }
   left = center_x > width / 2 ? center_x - width / 2 : 0;
@@ -838,7 +844,7 @@ void cobblemonDrawPrompt(u8 player_num, u32 center_x, u32 bottom_y) {
   gDPFillRectangle(dlp++, left, top, left + width, top + 16);
   fillColor(50, 54, 47);
   gDPFillRectangle(dlp++, left + 1, top + 1, left + width - 1, top + 15);
-  drawTypeSwatch(left + 4, top + 4, cobble_species[roamer->species].type);
+  drawTypeSwatch(left + 4, top + 4, mon_species[roamer->species].type);
   gDPPipeSync(dlp++);
 
   beginText();
@@ -847,7 +853,7 @@ void cobblemonDrawPrompt(u8 player_num, u32 center_x, u32 bottom_y) {
   drawChar('A', x, top + 4);
   x += charWidth('A') + 3;
   drawString(label, x, top + 4);
-  if (roamer->kind != COBBLE_ROAMER_TRAINER) {
+  if (roamer->kind != MON_ROAMER_TRAINER) {
     x += 4;
     while (*label) {
       x += charWidth(*label++);

@@ -4,7 +4,7 @@
 
 #include "audio.h"
 #include "blocks.h"
-#include "cobblemon.h"
+#include "mon64.h"
 #include "day_cycle.h"
 #include "graphics.h"
 #include "items.h"
@@ -258,11 +258,11 @@ void initMobs() {
     mob_special_effects[index].type = MOB_SPECIAL_NONE;
     mob_special_effects[index].hit_count = 0;
   }
-  /* Seed the world with the animals the pool still owns after COBBLEMON has
+  /* Seed the world with the animals the pool still owns after 64MON has
      taken its share, so a creature world does not open with a full herd that
      then despawns to make room. */
   {
-    u8 reserve = cobblemonRoamerReserve();
+    u8 reserve = mon64RoamerReserve();
     u8 seeded = MOB_PASSIVE_BUDGET > reserve ?
       (u8) (MOB_PASSIVE_BUDGET - reserve) : 0;
 
@@ -526,11 +526,11 @@ static u8 spawnForBudget(u8 night) {
      budgeted around. */
   u8 passive_budget = worldModOn(MOD_CRITTERS) ?
     MOB_PASSIVE_BUDGET + MOB_NIGHT_HOSTILE_BUDGET : MOB_PASSIVE_BUDGET;
-  /* COBBLEMON takes its roamers out of this budget rather than adding a pool
+  /* 64MON takes its roamers out of this budget rather than adding a pool
      beside it.  A world with creatures in it therefore simulates and draws
      exactly as many entities as one without -- it simply has fewer sheep.
      The reserve is zero when the mod is off. */
-  u8 roamer_reserve = cobblemonRoamerReserve();
+  u8 roamer_reserve = mon64RoamerReserve();
 
   passive_budget = passive_budget > roamer_reserve ?
     (u8) (passive_budget - roamer_reserve) : 0;

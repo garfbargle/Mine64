@@ -54,6 +54,26 @@ u8 storageWriteFreezeReport(const char *text, u32 length);
 #define LOAD_DONE 1     /* the world is in memory and verified */
 #define LOAD_GENERATE 2 /* nothing loadable here; generate a fresh world */
 
+/*
+ * Sliced save, on the same terms as the sliced load below and for the same
+ * reason: ~200 KB of packed blocks through a 512-byte window is seconds of
+ * cart traffic, and doing it inside one graphics callback stops the picture,
+ * the controller and the freeze watchdog's heartbeat together -- which makes
+ * a save that worked indistinguishable from a console that died.
+ *
+ * beginSaveGame validates, opens the file and writes the header page;
+ * stepSaveGame streams a bounded number of x-slabs per call and publishes the
+ * file when it runs out.  Both answer with one of the status codes below.
+ */
+#define SAVE_BUSY 0
+#define SAVE_DONE 1
+#define SAVE_FAILED 2
+
+u8 beginSaveGame(void);
+u8 stepSaveGame(u16 slabs);
+/* 0..100 across the payload; the header is one page and counts as zero. */
+u8 saveGameProgress(void);
+
 u8 beginLoadGame(void);
 u8 stepLoadGame(u16 slabs);
 /* Abandon a load in progress and close its file.  The blocks already written

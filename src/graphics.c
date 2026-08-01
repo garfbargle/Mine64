@@ -1,7 +1,7 @@
 #include <nusys.h>
 #include <assert.h>
 #include "graphics.h"
-#include "cobblemon.h"
+#include "mon64.h"
 #include "geometry.h"
 #include "items.h"
 #include "mobs.h"
@@ -3378,7 +3378,7 @@ void drawWorld() {
       /* Wild creatures, or the two facing each other in a battle.  Same
          entity pass, same tint, same combiner -- and never both, so the
          cost is bounded by whichever is larger rather than their sum. */
-      cobblemonDrawForPlayer(player_num);
+      mon64DrawForPlayer(player_num);
     }
     if (!cinematic && (active_player_count > 1 ||
         players[player_num].camera_mode == CAMERA_THIRD_PERSON)) {
@@ -4485,7 +4485,7 @@ static void drawGameText() {
   /* The HUD's fills were skipped for the battle above; skip its labels too,
      or the objective panel's text is left floating with no panel under it. */
   for (player_num = 0; player_num < active_player_count &&
-      !cobblemonBattleActive(); player_num++) {
+      !mon64BattleActive(); player_num++) {
     u32 x_offset = playerViewportX(player_num);
     u32 y_offset = playerViewportY(player_num);
     u32 viewport_height = playerViewportHeight();
@@ -4587,7 +4587,7 @@ void drawHUD() {
        panels all describe things nobody can do while one is running, and
        they would sit behind the battle's own panels saying so. */
     for (player_num = 0; player_num < active_player_count &&
-        !cobblemonBattleActive(); player_num++) {
+        !mon64BattleActive(); player_num++) {
       u32 crosshair_x = playerViewportX(player_num) + playerViewportWidth() / 2;
       u32 crosshair_y = playerViewportY(player_num) + playerViewportHeight() / 2;
       drawCrosshair(crosshair_x, crosshair_y, &players[player_num]);
@@ -4629,11 +4629,11 @@ void drawHUD() {
      * than under it.  Both leave the RDP configured for text, which is what
      * every branch above them also leaves behind.
      */
-    if (cobblemonBattleActive()) {
-      cobblemonDrawBattleInterface();
+    if (mon64BattleActive()) {
+      mon64DrawBattleInterface();
     } else {
       for (player_num = 0; player_num < active_player_count; player_num++) {
-        cobblemonDrawPrompt(player_num,
+        mon64DrawPrompt(player_num,
           playerViewportX(player_num) + playerViewportWidth() / 2,
           playerViewportY(player_num) + playerViewportHeight() - 34);
       }

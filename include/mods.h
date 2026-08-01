@@ -43,7 +43,7 @@
  * it changes is the ecology: four of the passive mob slots become wild
  * creatures instead of animals, so the entity count does not move either.
  */
-#define MOD_COBBLEMON 0x0400
+#define MOD_64MON 0x0400
 
 #define MOD_DEFAULTS \
   (MOD_CLASSIC | MOD_CAVES | MOD_RUINS | MOD_FORESTS | MOD_CRITTERS)

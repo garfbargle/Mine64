@@ -31,7 +31,7 @@ const WorldMod world_mod_table[WORLD_MOD_COUNT] = {
   /* Behaviour, not terrain: it spawns creatures where the animals would have
      been, so the world it is switched on in is block-for-block the world it
      is switched off in. */
-  {MOD_COBBLEMON, 0, FALSE, "COBBLEMON",
+  {MOD_64MON, 0, FALSE, "64MON",
     "CATCH RAISE AND BATTLE CREATURES"}
 };
 

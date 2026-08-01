@@ -6,7 +6,7 @@
 #include "player.h"
 #include "geometry.h"
 #include "graphics.h"
-#include "cobblemon.h"
+#include "mon64.h"
 #include "items.h"
 #include "mobs.h"
 #include "storage.h"
@@ -32,6 +32,7 @@
 #define WORLD_JOB_LOAD 1
 #define WORLD_JOB_GENERATE 2
 #define WORLD_JOB_MESH 3
+#define WORLD_JOB_SAVE 4
 
 /*
  * Budgets are per graphics callback.  A terrain column costs several octave
@@ -47,6 +48,10 @@
    and a half 512-byte cart reads.  MAX_X slabs at 60 Hz puts a whole save on
    screen in under two seconds without any single frame paying for it. */
 #define WORLD_LOAD_SLABS_PER_STEP 1
+/* Writing a slab is the same 1792 bytes as reading one, so it gets the same
+   budget.  A whole world reaches the cart in a shade under two seconds, and
+   no single frame pays for more than three and a half sector writes. */
+#define WORLD_SAVE_SLABS_PER_STEP 1
 
 /*
  * How the progress bar is divided between a job's two halves.
@@ -138,7 +143,10 @@ u8 worldJobProgress() {
   u8 share = world_job_mesh_start;
   u8 progress;
 
-  if (world_job_stage == WORLD_JOB_LOAD) {
+  if (world_job_stage == WORLD_JOB_SAVE) {
+    /* No mesh half to leave room for: writing the world is the whole job. */
+    progress = saveGameProgress();
+  } else if (world_job_stage == WORLD_JOB_LOAD) {
     progress = (u8) ((loadGameProgress() * share) / 100);
   } else if (world_job_stage == WORLD_JOB_GENERATE) {
     progress = (u8) ((worldGenerationProgress() * share) / 100);
@@ -213,7 +221,7 @@ static void beginWorldMeshStage(u8 place_players) {
   }
   initDroppedItems();
   initMobs();
-  initCobblemon();
+  initMon64();
   initGeometry();
   world_job_stage = WORLD_JOB_MESH;
   beginWorldMeshBuild();
@@ -266,7 +274,35 @@ static void beginWorldJob() {
   }
 }
 
+/*
+ * A save has ended.  Which message that deserves depends entirely on which
+ * screen asked for it, and the menu is the one place that knows -- a commit
+ * moves the naming card on, an in-game save posts its own confirmation.
+ */
+static void applySaveStatus(u8 status) {
+  if (status == SAVE_BUSY) {
+    world_job_stage = WORLD_JOB_SAVE;
+    return;
+  }
+  world_job_stage = WORLD_JOB_IDLE;
+  menuSaveFinished(status == SAVE_DONE);
+}
+
+/* Somebody asked for a save; the driver starts it on the next gated
+   callback, so the request never lands inside a frame's drawing. */
+static u8 world_save_requested;
+
+void requestWorldSave(void) {
+  world_save_requested = TRUE;
+}
+
 static void stepWorldJob() {
+  if (world_job_stage == WORLD_JOB_SAVE) {
+    diagPaintPhase(DIAG_PHASE_SAVE);
+    applySaveStatus(stepSaveGame(WORLD_SAVE_SLABS_PER_STEP));
+    return;
+  }
+
   if (world_job_stage == WORLD_JOB_LOAD) {
     diagPaintPhase(DIAG_PHASE_LOAD);
     applyLoadStatus(stepLoadGame(WORLD_LOAD_SLABS_PER_STEP));
@@ -438,14 +474,18 @@ void callbackGfx(int pendingGfx) {
       } else {
         stepWorldJob();
       }
-    } else if (menuCommitReady()) {
+    } else if (menuCommitReady() || world_save_requested) {
       /*
-       * The naming card's "creating world" frame has been drawn and drained,
-       * so the player can see why the console is about to stop.  This is the
-       * one remaining uninterruptible stretch in the front end.
+       * Start the write.  For a commit this is the callback after the naming
+       * card's "creating world" frame drained, so the bar the card draws is
+       * running from the first slab; for an in-game save it is simply the
+       * next gated slot.  A cart with nothing to write to skips straight to
+       * the finish, which is what leaves an emulator run playable.
        */
+      world_save_requested = FALSE;
+      world_job_progress_floor = 0;
       diagPaintPhase(DIAG_PHASE_SAVE);
-      menuCommitWorld();
+      applySaveStatus(saving_available ? beginSaveGame() : SAVE_DONE);
     } else if (worldGameBuildRequested()) {
       /*
        * Nothing to build.  A slot can only be entered once its preview has
@@ -538,7 +578,7 @@ void callbackGfx(int pendingGfx) {
      advance while AI and the player are frozen could turn a daylight menu
      visit into an unavoidable night ambush on close.  A battle is the same
      kind of pause and takes longer, so it holds the clock too. */
-  if (current_screen == GAME && !cobblemonBattleActive()) {
+  if (current_screen == GAME && !mon64BattleActive()) {
     updateDayCycle();
   } else {
     pauseDayCycle();
