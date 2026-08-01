@@ -18,7 +18,9 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from render import ROOT, Geometry, Scene, filmstrip, rpy  # noqa: E402
+from PIL.Image import NEAREST  # noqa: E402
+
+from render import ROOT, Geometry, Scene, define, filmstrip, rpy  # noqa: E402
 
 # QuadrupedModel's trailing scalars, in declaration order.
 JOINTS = ["neck_y", "neck_z", "hip_x", "hip_y", "front_hip_z", "back_hip_z",
@@ -75,6 +77,9 @@ class Quadruped(object):
 def frame(model, camera_yaw=25.0, distance=175.0, pitch=12.0, **pose):
     """camera_yaw 0 stands in front of the animal -- its front is -Z."""
     scene = Scene()
+    # drawMobsForPlayer clears G_CULL_BACK, which is what lets a face sheet's
+    # eyes and ears show whichever way their quads happen to be wound.
+    scene.cull = False
     scene.ground(y=0)
     model.pose(scene, **pose)
     scene.look_at((0, 40, 0), distance=distance, yaw=camera_yaw + 180.0,
@@ -82,12 +87,18 @@ def frame(model, camera_yaw=25.0, distance=175.0, pitch=12.0, **pose):
     return scene.image()
 
 
+def head_sweep():
+    """The clamp mobs.c actually enforces, so the strip shows the real limit."""
+    limit = define("MOB_HEAD_YAW_LIMIT")
+    return [-limit, -limit / 2, 0.0, limit / 2, limit]
+
+
 STRIPS = {
     # The head-turn from mobs.c: an animal tracks a held apple up to the clamp,
     # and its body keeps pointing where it was already going.
     "head-turn": lambda m: (
-        [frame(m, head_yaw=h, graze=0) for h in (-50, -25, 0, 25, 50)],
-        ["head %+d" % h for h in (-50, -25, 0, 25, 50)]),
+        [frame(m, head_yaw=h) for h in head_sweep()],
+        ["head %+.0f" % h for h in head_sweep()]),
     "walk": lambda m: (
         [frame(m, walk=p / 5.0, yaw=20) for p in range(5)],
         ["phase %d/5" % p for p in range(5)]),
@@ -131,10 +142,15 @@ def main():
         images, labels = STRIPS[args.strip](model)
         filmstrip(images, out, labels, scale=args.scale_up)
     else:
-        frame(model, camera_yaw=args.camera_yaw, distance=args.distance,
-              yaw=args.yaw, head_yaw=args.head_yaw, graze=args.graze,
-              walk=args.walk, scale=args.scale,
-              detailed=not args.plain).save(out)
+        image = frame(model, camera_yaw=args.camera_yaw,
+                      distance=args.distance, yaw=args.yaw,
+                      head_yaw=args.head_yaw, graze=args.graze,
+                      walk=args.walk, scale=args.scale,
+                      detailed=not args.plain)
+        if args.scale_up > 1:
+            image = image.resize((image.width * args.scale_up,
+                                  image.height * args.scale_up), NEAREST)
+        image.save(out)
     print(out)
 
 

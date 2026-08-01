@@ -397,6 +397,24 @@ after regenerating them.
 For the complete art-to-cartridge walkthrough, see
 [Custom texture workflow](docs/custom-textures.md).
 
+## Offline model preview
+
+Every model in the game is untextured boxes and quads run through
+`guRotateRPY` and `guPerspective`, and none of that needs an N64 to evaluate.
+`tools/preview` reads the vertex data out of `src/graphics.c` and rasterises
+it here, in about a quarter of a second:
+
+```sh
+tools/preview/mob.py pig --strip head-turn
+tools/preview/hand.py iron_sword --reach 0.5
+```
+
+The joint offsets come from the `QuadrupedModel` initialisers and the angles
+from the `FP_*` and `MOB_*` defines, so the picture cannot drift from the
+game. It answers where a part ends up, what occludes what, and whether the
+framing works -- not how fast it runs. See
+[Offline model preview](docs/offline-preview.md).
+
 ## Emulator screenshots
 
 `tools/emu` captures the GUI without a flashcart. It drives mupen64plus
@@ -410,8 +428,9 @@ tools/emu/run.sh tools/emu/scripts/gui-tour.txt
 
 That writes one labelled 640x480 PNG per `shot` in the script to `build/shots`.
 
-Emulation is only good enough for looking at interface layout. It flatters the
-GUI -- a clean digital framebuffer has none of the composite blur or overscan a
+Emulation is only good enough for looking at interface layout, and a question
+about a model is answered faster and more reliably by the preview above. It
+flatters the GUI -- a clean digital framebuffer has none of the composite blur or overscan a
 real TV adds -- frame pacing is not representative, and the two faults below do
 not reproduce, so legibility, performance, and RDP work still belong on
 hardware. For the script grammar and the frame-timing rules, see
@@ -427,14 +446,19 @@ fixed hardware budget, including third-person avatars and pickups. All
 per-frame display lists and referenced matrices are double-buffered so their
 memory stays immutable until the RSP finishes.
 
-The linked release program leaves roughly 150 KiB free below NuSystem's fixed
-framebuffer reservation, including the 1 MiB block window, the 1.25 MiB mesh
-arena, NuSystem task buffers, and doubled render state. It remains within the
-stock console's 4 MiB RDRAM; an Expansion Pak is not required.
-`tools/check_ram.py` runs at the end of every build and fails it on an
+The linked release program leaves roughly 36 KiB free below NuSystem's fixed
+framebuffer reservation, including the 1 MiB block window, the 1.125 MiB mesh
+arena, the 196 KiB home store, NuSystem task buffers, and doubled render state.
+It remains within the stock console's 4 MiB RDRAM; an Expansion Pak is not
+required. `tools/check_ram.py` runs at the end of every build and fails it on an
 overrun, because nothing at link time notices when BSS grows into addresses
-NuSystem pins at runtime. The audio variant does not currently fit and is
+NuSystem pins at runtime; it also warns under 64 KiB of headroom, which the
+release build currently trips. The audio variant does not currently fit and is
 deferred; see *Known gaps*.
+
+[RAM budget](docs/ram-budget.md) walks through what every large allocation is
+for and what can be reclaimed — the largest single item, 29 KiB in both builds,
+is five graphics microcodes that are linked and never selected.
 
 ### Freeze forensics
 

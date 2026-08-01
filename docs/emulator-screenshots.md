@@ -13,6 +13,12 @@ That produces `build/shots/01-title.png` through `09-camera.png` at native
 no window focus, and no desktop permissions, and it lands on the same screens
 every time.
 
+This is the tool for the interface and for anything that needs the game
+actually running. It is the wrong tool for a question about a model: the world
+is different on every run, a script has to walk to whatever it wants to look
+at, and the preroll alone is longer than the whole job. Pose the geometry
+offline instead -- see [Offline model preview](offline-preview.md).
+
 ## 1. Install the emulator
 
 ```sh
