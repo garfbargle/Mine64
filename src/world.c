@@ -318,10 +318,17 @@ static int terrainHeight(int x, int z) {
 
   /* Keep the normal route through the world broad and mostly level.  Small,
    * scattered lowlands form shore-level basins, while a slow contribution
-   * adds walkable grass hills. */
+   * adds walkable grass hills.
+   *
+   * The basin term is a ramp from zero at the threshold rather than a drop of
+   * a block plus a ramp.  The constant meant every basin rim was a step the
+   * moment the field crossed 0.28, and since these basins are what the open
+   * water in a default world is made of, that step was a coastline of low
+   * cliffs.  The steeper ramp reaches the same floor by the bottom of the
+   * field, so a basin keeps its depth and loses only its wall. */
   height = 9 + (int)(plains * 2.0f);
   if (lowlands < 0.28f) {
-    height -= 1 + (int)((0.28f - lowlands) * 8.0f);
+    height -= (int)((0.28f - lowlands) * 18.0f);
   }
   if (gentle_hills > 0.56f) {
     height += (int)((gentle_hills - 0.56f) * 9.0f);
@@ -364,48 +371,125 @@ static int terrainHeight(int x, int z) {
   return clampHeight(height);
 }
 
-static int isLake(int x, int z, int natural_height) {
-  float basin = perlin2d(x + 719, z + 337, 0.018f, 3);
-  float moisture = perlin2d(x + 281, z + 647, 0.033f, 2);
+/*
+ * Lakes and rivers are depressions in the land rather than tanks cut into it.
+ *
+ * They used to be a predicate and a fixed floor: inside the basin the ground
+ * dropped to a constant height, outside it kept whatever the land was doing.
+ * Every shoreline that produced was a vertical wall -- a couple of blocks of
+ * bank above the surface, three more hidden under it, and no way back out of
+ * the water that did not involve mining the bank away.  Water an even three
+ * deep from the first block also meant no wading: the shallows a shore reads
+ * as simply were not there.
+ *
+ * Carving a *continuous* amount out of the same fields makes them describe a
+ * bowl instead.  The carve fades to nothing at the feature's rim, so the bed
+ * shelves up to meet the bank, the water fills whatever ends up below sea
+ * level, and depth grows with distance from the shore for free.  The one
+ * property worth protecting when tuning the constants below is that the carve
+ * changes by less than a block per block of ground: that is exactly what
+ * guarantees a column at the waterline whose surface is level with it, which
+ * is what the player walks out on.
+ *
+ * A subtractive carve is also self-limiting where the old stamp was not.  The
+ * fixed floor had to be fenced off from high terrain or it sank a well into a
+ * mountainside; a depression on a summit is simply a dry hollow, so the
+ * height gate that used to be needed is gone.
+ */
 
-  /* Large, low-frequency islands in the basin signal become lakes only in
-   * low-to-mid terrain.  That avoids flat mountaintop puddles. */
-  return natural_height <= SEA_LEVEL + 3 &&
-    basin > 0.66f && moisture > 0.55f;
+/* 0 below `edge`, 1 above `full`, with a smooth knee between -- a threshold
+   turned into a slope. */
+static float smoothRamp(float value, float edge, float full) {
+  float t;
+
+  if (value <= edge) {
+    return 0.f;
+  }
+  if (value >= full) {
+    return 1.f;
+  }
+  t = (value - edge) / (full - edge);
+  return t * t * (3.f - 2.f * t);
 }
 
-static int isRiver(int x, int z, int natural_height) {
-  float watershed = perlin2d(x + 157, z + 491, 0.012f, 3);
-  float channel = absolute(perlin2d(x + 383, z + 73, 0.024f, 2) - 0.5f);
+/* Blocks of depression at the middle of a lake, and the span of the basin
+   field it is spread over.  Moisture no longer masks the basin off with an
+   edge of its own -- a hard mask is a cliff wherever it cuts across a bowl --
+   it biases where the basin manages to hold water instead. */
+#define LAKE_MOISTURE_WEIGHT .25f
+#define LAKE_EDGE .72f
+#define LAKE_DEEP .92f
+#define LAKE_DEPTH 6.f
 
+static float lakeCarve(int x, int z) {
+  float basin = perlin2d(x + 719, z + 337, 0.018f, 3);
+  float moisture;
+
+  /* Moisture can only move the basin by half its weight either way, so most of
+     the world can be answered without sampling it at all.  Both carves are on
+     the per-column path every chunk of terrain walks, which is the budget the
+     streaming ring is spending. */
+  if (basin + LAKE_MOISTURE_WEIGHT * .5f <= LAKE_EDGE) {
+    return 0.f;
+  }
+  moisture = perlin2d(x + 281, z + 647, 0.033f, 2);
+  return LAKE_DEPTH * smoothRamp(
+    basin + (moisture - .5f) * LAKE_MOISTURE_WEIGHT, LAKE_EDGE, LAKE_DEEP);
+}
+
+/* A river is shallower than a lake and has to stay narrow enough to read as
+   one, so its bed is spread over a band of the channel field wide enough to
+   shelve rather than drop.  RIVER_BANK against RIVER_DEPTH is the whole shape
+   of the valley: widen the band or lower the depth to flatten the banks. */
+#define RIVER_WATERSHED_EDGE .56f
+#define RIVER_WATERSHED_FULL .66f
+#define RIVER_BANK .11f
+#define RIVER_DEPTH 3.2f
+
+static float riverCarve(int x, int z) {
   /* An iso-line in a second noise field provides long, gently winding river
    * courses.  The watershed mask breaks it into distinct drainages instead
-   * of a regular grid of channels. */
-  return natural_height > SEA_LEVEL && natural_height <= SEA_LEVEL + 3 &&
-    watershed > 0.58f && channel < 0.022f;
+   * of a regular grid of channels -- and, tested first, it answers most of the
+   * world before the channel sample is taken. */
+  float watershed = perlin2d(x + 157, z + 491, 0.012f, 3);
+  float channel;
+
+  if (watershed <= RIVER_WATERSHED_EDGE) {
+    return 0.f;
+  }
+  channel = absolute(perlin2d(x + 383, z + 73, 0.024f, 2) - 0.5f);
+  return RIVER_DEPTH *
+    smoothRamp(RIVER_BANK - channel, 0.f, RIVER_BANK) *
+    smoothRamp(watershed, RIVER_WATERSHED_EDGE, RIVER_WATERSHED_FULL);
 }
+
+/* Deep enough to dive into, shallow enough to leave a floor worth mining
+   under the deepest water in the world. */
+#define WATER_FLOOR_MIN 3
 
 static int shapedSurfaceHeight(int x, int z, int natural_height,
     int *water_level) {
-  /* Lifting the terrain at spawn is not enough on its own: a lake or a river
+  int height = natural_height;
+
+  /* Lifting the terrain at spawn is not enough on its own: a basin or a river
      mouth is carved back *below* the waterline from a height that passed the
      lift, which would put the player right back in the water. */
-  u8 at_spawn = spawnLandBias(x, z, SPAWN_LAND_RADIUS, 1.f) > 0.f;
+  if (spawnLandBias(x, z, SPAWN_LAND_RADIUS, 1.f) <= 0.f) {
+    float lake = lakeCarve(x, z);
+    float river = riverCarve(x, z);
+    /* The deeper of the two rather than their sum: where a river runs into a
+       lake, taking both would dig a trench through the lake bed steep enough
+       to be the cliff all of this exists to remove. */
+    float carve = lake > river ? lake : river;
 
-  *water_level = -1;
-  if (natural_height <= SEA_LEVEL) {
-    *water_level = SEA_LEVEL;
-    return natural_height;
+    height -= (int) (carve + .5f);
+    if (height < WATER_FLOOR_MIN) {
+      height = WATER_FLOOR_MIN;
+    }
   }
-  if (!at_spawn && isLake(x, z, natural_height)) {
-    *water_level = SEA_LEVEL;
-    return SEA_LEVEL - 2;
-  }
-  if (!at_spawn && isRiver(x, z, natural_height)) {
-    *water_level = SEA_LEVEL;
-    return SEA_LEVEL - 1;
-  }
-  return natural_height;
+
+  *water_level = height <= SEA_LEVEL ? SEA_LEVEL : -1;
+  return height;
 }
 
 /*
