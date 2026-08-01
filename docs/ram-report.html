@@ -1,0 +1,542 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Mine64 — RDRAM map</title>
+
+<style>
+:root {
+  color-scheme: light;
+  --ground:    #e9edf1;
+  --surface:   #f9fbfc;
+  --surface-2: #eef2f5;
+  --ink:       #0d141b;
+  --ink-2:     #46586a;
+  --ink-3:     #7a8b9a;
+  --rule:      #ccd6dd;
+  --accent:    #0a6a64;
+  --accent-soft:#d6eae8;
+  --warn:      #9a5c00;
+  --warn-soft: #f6e6c9;
+  --crit:      #ad231c;
+  --crit-soft: #f8dcd9;
+  --good:      #1a6144;
+
+  --s1:#2a78d6; --s2:#eb6834; --s3:#1baf7a; --s4:#eda100;
+  --s5:#e87ba4; --s6:#008300; --s7:#4a3aa7; --s8:#e34948;
+  --resv:#94a3b1; --code:#5a6c7e;
+
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, Roboto, sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --ground:#0b1015; --surface:#131a21; --surface-2:#1a232c;
+    --ink:#e6edf3; --ink-2:#a2b3c2; --ink-3:#71828f; --rule:#28323c;
+    --accent:#3fb5aa; --accent-soft:#10312f;
+    --warn:#d19a3c; --warn-soft:#33260f;
+    --crit:#e87b74; --crit-soft:#3a1a17; --good:#4fb489;
+    --s1:#3987e5; --s2:#d95926; --s3:#199e70; --s4:#c98500;
+    --s5:#d55181; --s6:#008300; --s7:#9085e9; --s8:#e66767;
+    --resv:#4f5e6c; --code:#6a7d90;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --ground:#0b1015; --surface:#131a21; --surface-2:#1a232c;
+  --ink:#e6edf3; --ink-2:#a2b3c2; --ink-3:#71828f; --rule:#28323c;
+  --accent:#3fb5aa; --accent-soft:#10312f;
+  --warn:#d19a3c; --warn-soft:#33260f;
+  --crit:#e87b74; --crit-soft:#3a1a17; --good:#4fb489;
+  --s1:#3987e5; --s2:#d95926; --s3:#199e70; --s4:#c98500;
+  --s5:#d55181; --s6:#008300; --s7:#9085e9; --s8:#e66767;
+  --resv:#4f5e6c; --code:#6a7d90;
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--ground);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 15px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+.wrap { max-width: 1240px; margin: 0 auto; padding: 26px 22px 40px; }
+
+/* ---- header ---- */
+.top {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 14px 24px;
+  padding-bottom: 14px;
+  border-bottom: 2px solid var(--ink);
+}
+h1 {
+  font-family: var(--mono);
+  font-size: clamp(19px, 2.6vw, 26px);
+  font-weight: 600;
+  letter-spacing: -0.025em;
+  margin: 0;
+}
+h1 em { font-style: normal; color: var(--ink-3); font-weight: 400; }
+.controls { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.verdict {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+  padding: 5px 11px;
+  border-radius: 2px;
+  white-space: nowrap;
+}
+.verdict b { font-size: 15px; font-weight: 600; }
+.verdict--warn { background: var(--warn-soft); color: var(--warn); }
+.verdict--crit { background: var(--crit-soft); color: var(--crit); }
+.toggle { display: inline-flex; border: 1px solid var(--rule); background: var(--surface-2); padding: 2px; }
+.toggle button {
+  font-family: var(--mono); font-size: 11.5px; padding: 5px 12px;
+  border: 0; background: transparent; color: var(--ink-2); cursor: pointer;
+}
+.toggle button[aria-pressed="true"] { background: var(--ink); color: var(--ground); }
+.toggle button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+/* ---- crumbs ---- */
+.crumbs {
+  display: flex; align-items: center; gap: 7px; flex-wrap: wrap;
+  font-family: var(--mono); font-size: 11.5px; color: var(--ink-3);
+  margin: 14px 0 8px; min-height: 22px;
+}
+.crumbs button {
+  font: inherit; border: 0; background: none; color: var(--accent);
+  cursor: pointer; padding: 2px 0; text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.crumbs button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.crumbs span.sep { color: var(--rule); }
+.crumbs span.here { color: var(--ink); }
+.crumbs .hint { margin-left: auto; color: var(--ink-3); }
+
+/* ---- treemap ---- */
+.tm {
+  position: relative;
+  width: 100%;
+  height: clamp(400px, 66vh, 760px);
+  background: var(--surface-2);
+  border: 1px solid var(--rule);
+  overflow: hidden;
+}
+.box { position: absolute; overflow: hidden; }
+.box__fill {
+  position: absolute; inset: 0;
+  background: var(--bc, var(--resv));
+  border: 1px solid rgba(255,255,255,.28);
+}
+.box--leaf .box__fill { cursor: default; }
+.box--drill { cursor: zoom-in; }
+.box--drill:hover > .box__fill { filter: brightness(1.14) saturate(1.08); }
+.box__lbl {
+  position: absolute; left: 6px; top: 3px; right: 4px;
+  font-family: var(--mono); font-size: 10.5px; line-height: 1.32;
+  color: #fff; text-shadow: 0 1px 2px rgba(0,0,0,.75), 0 0 3px rgba(0,0,0,.6);
+  pointer-events: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.box__lbl b { font-weight: 600; }
+.box__lbl i { font-style: normal; opacity: .85; }
+.box__kids { position: absolute; inset: 0; }
+.box--faint .box__fill { opacity: .42; }
+.box--free .box__fill {
+  background: var(--accent-soft);
+  border: 1px dashed var(--accent);
+}
+.box--free .box__lbl { color: var(--accent); text-shadow: none; }
+.box--crash .box__fill {
+  background: repeating-linear-gradient(-45deg, var(--crit) 0 3px, var(--crit-soft) 3px 9px);
+  border: 1px solid var(--crit);
+}
+/* The hatch is too busy to read white text over. */
+.box--crash .box__lbl {
+  color: var(--crit);
+  text-shadow: none;
+  background: var(--surface);
+  padding: 1px 5px;
+  left: 3px; top: 3px;
+  right: auto;
+  max-width: calc(100% - 8px);
+}
+.flagmark {
+  position: absolute; right: 5px; top: 4px;
+  width: 7px; height: 7px; border-radius: 50%;
+  background: #fff; box-shadow: 0 0 0 2px rgba(0,0,0,.35);
+  pointer-events: none;
+}
+
+/* ---- legend ---- */
+.legend {
+  display: flex; flex-wrap: wrap; gap: 5px 18px;
+  margin-top: 14px;
+  font-family: var(--mono); font-size: 11px; color: var(--ink-2);
+}
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.sw { width: 10px; height: 10px; border-radius: 2px; flex: none; }
+
+/* ---- findings ---- */
+.flags { margin-top: 26px; border-top: 1px solid var(--rule); padding-top: 18px; }
+.flags h2 {
+  font-family: var(--mono); font-size: 11px; letter-spacing: .14em;
+  text-transform: uppercase; color: var(--ink-3); margin: 0 0 12px; font-weight: 500;
+}
+.flag {
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr);
+  gap: 4px 18px;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--rule);
+  align-items: baseline;
+}
+.flag:last-child { border-bottom: 0; }
+.flag b {
+  font-family: var(--mono); font-size: 15px; font-weight: 600;
+  font-variant-numeric: tabular-nums; text-align: right;
+  color: var(--fc, var(--accent)); letter-spacing: -0.02em;
+}
+.flag p { margin: 0; font-size: 13.5px; color: var(--ink-2); }
+.flag p strong { color: var(--ink); font-weight: 600; }
+code { font-family: var(--mono); font-size: .9em; color: var(--ink); }
+
+/* ---- tooltip ---- */
+#tip {
+  position: fixed; z-index: 60; pointer-events: none;
+  background: var(--ink); color: var(--ground);
+  font-family: var(--mono); font-size: 11.5px; line-height: 1.5;
+  padding: 9px 12px; border-radius: 3px; max-width: 290px;
+  opacity: 0; transition: opacity .09s;
+  font-variant-numeric: tabular-nums;
+}
+#tip.on { opacity: 1; }
+#tip b { display: block; font-weight: 600; font-size: 12.5px; }
+#tip u { display: block; text-decoration: none; opacity: .62; margin-top: 2px; }
+#tip em {
+  display: block; font-style: normal; margin-top: 6px;
+  font-family: var(--sans); font-size: 12px; line-height: 1.45; opacity: .9;
+}
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+@media (max-width: 720px) {
+  .flag { grid-template-columns: minmax(0, 1fr); }
+  .flag b { text-align: left; }
+  .tm { height: 62vh; }
+}
+</style>
+</head>
+<body>
+
+<div class="wrap">
+
+<div class="top">
+  <div>
+    <h1>Mine64 <em>/</em> 4 MiB RDRAM</h1>
+  </div>
+  <div class="controls">
+    <div class="verdict" id="verdict"></div>
+    <div class="toggle" role="group" aria-label="Build">
+      <button type="button" data-build="nonaudio" aria-pressed="true">make</button>
+      <button type="button" data-build="audio" aria-pressed="false">make audio</button>
+    </div>
+  </div>
+</div>
+
+<div class="crumbs" id="crumbs"></div>
+<div class="tm" id="tm"></div>
+<div class="legend" id="legend"></div>
+
+<div class="flags">
+  <h2>Reclaimable</h2>
+
+  <div class="flag" style="--fc: var(--good)">
+    <b>29.2 KiB</b>
+    <p><strong>Five of six microcodes are linked and never run.</strong>
+    <code>src/graphics.c</code> holds the only <code>nuGfxTaskStart</code> call and
+    always passes F3DEX2. Dropping the rest needs ten stub symbols, because
+    <code>nuGfxInit_ex2</code> holds a static table of all six.</p>
+  </div>
+
+  <div class="flag" style="--fc: var(--good)">
+    <b>~224 KiB</b>
+    <p><strong>The audio heap is a game parameter, not a reservation.</strong>
+    <code>src/audio.c</code> passes address and size to <code>nuAuMgrInit</code>
+    itself. 320 KiB is the SDK default; this game's voice and DMA config needs
+    about 73 KiB. Confirm with <code>nuAuHeapGetUsed()</code> first.</p>
+  </div>
+
+  <div class="flag" style="--fc: var(--warn)">
+    <b>64 KiB</b>
+    <p><strong>The RDP FIFO is the SDK's 128 KiB.</strong> Its size is baked into
+    <code>nusys.o</code>, so halving it means rebuilding libnusys. With the fifo
+    microcode a short buffer costs throughput, not correctness.</p>
+  </div>
+
+  <div class="flag" style="--fc: var(--warn)">
+    <b>~22 KiB</b>
+    <p><strong>rmon and the thread profiler are in the release build.</strong>
+    <code>rmonIOStack</code> and friends are linked against plain
+    <code>-lultra</code>. Worth checking how this SDK builds libultra.</p>
+  </div>
+
+  <div class="flag" style="--fc: var(--s2)">
+    <b>480 KiB</b>
+    <p><strong>Paid for, not reclaimable.</strong> The window is 32 x 32 slots
+    because lookup must be a mask, but a stream radius of 12 spans 25 columns —
+    so 399 slots of <code>window_blocks</code> and 78 KiB of per-slot tables can
+    never be occupied. Spending it means more view distance, which costs frame
+    time, not RDRAM.</p>
+  </div>
+</div>
+
+</div>
+
+<div id="tip" aria-hidden="true"></div>
+
+<script>
+const DATA = {"nonaudio":{"c":[{"n":"Z buffer","v":153600,"k":"resv","d":"NU_GFX_ZBUFFER_ADDR. The image starts immediately above it, so none of it is wasted."},{"n":"Code + data","v":404080,"k":"code","c":[{"n":"Game code","v":305804},{"n":"Microcode","v":36160,"k":"flag","d":"Six graphics microcodes are linked. Exactly one is ever selected."},{"n":"Read-only data","v":56206},{"n":"padding","v":5910,"f":1}]},{"n":"BSS","v":3138288,"k":"bss","c":[{"n":"Mesh arena","v":1215105,"c":[{"n":"mesh_arena","v":1179648,"d":"147,456 Gfx of column meshes, first-fit with relocation defrag. 37% of BSS."},{"n":"mesh_blocks","v":32768,"d":"2,048 allocation records: every live column plus every staged replacement."},{"n":"mesh_cache","v":2673,"d":""},{"n":"6 smaller","v":16,"f":1}]},{"n":"Terrain window","v":1067167,"c":[{"n":"window_blocks","v":1048576,"d":"1,024 column slots x 1 KiB. The stream radius can fill 625 of them."},{"n":"details","v":6144,"d":""},{"n":"trees","v":4480,"d":""},{"n":"window_keys","v":4096,"d":""},{"n":"28 smaller","v":3871,"f":1}]},{"n":"Per-slot render tables","v":205824,"c":[{"n":"column_starts","v":65536,"d":"Gfx* per texture bank per slot, for the generation on screen."},{"n":"staged_starts","v":65536,"d":"The same table again, for a world build in flight."},{"n":"c_models","v":65536,"d":"One 64-byte Mtx per slot holding nothing but a translation."},{"n":"visible_columns","v":4096,"d":""},{"n":"5 smaller","v":5120,"f":1}]},{"n":"Home store","v":203049,"c":[{"n":"home_blocks","v":200704,"d":"The 112x32x112 save extent kept whole, so building is never rationed."},{"n":"9 smaller","v":2345,"f":1}]},{"n":"NuSystem / RSP","v":163563,"c":[{"n":"nuRDPOutputBuf","v":131072,"d":"The SDK's RDP command FIFO. Sized by nusys.o, not by this game."},{"n":"nuScStack","v":8192,"d":""},{"n":"nuScAudioStack","v":8192,"d":""},{"n":"nuScGraphicsStack","v":8192,"d":""},{"n":"nuYieldBuf","v":3088,"d":""},{"n":"41 smaller","v":4827,"f":1}]},{"n":"Frame display lists","v":131314,"c":[{"n":"frame_display_lists","v":106496,"d":"2 x 6,656 Gfx. World, targeting and HUD share one RSP task."},{"n":"column_quads","v":12480,"d":""},{"n":"column_baked","v":12288,"d":""},{"n":"6 smaller","v":50,"f":1}]},{"n":"Threads & debug","v":89429,"c":[{"n":"rmonIOStack","v":16384,"d":"libultra's remote debug monitor, present in a release build."},{"n":"IdleStack","v":8192,"d":""},{"n":"GfxTaskMgrStack","v":8192,"d":""},{"n":"GfxStack","v":8192,"d":""},{"n":"siMgrStack","v":8192,"d":""},{"n":"nuMainStack","v":8192,"d":""},{"n":"piThreadStack","v":4096,"d":""},{"n":"viThreadStack","v":4096,"d":""},{"n":"250 smaller","v":23893,"f":1}]},{"n":"Entity matrices","v":62444,"c":[{"n":"mob_translate","v":7168,"d":""},{"n":"mob_rotate","v":6144,"d":""},{"n":"creature_verts","v":5632,"d":""},{"n":"water_top_verts","v":4096,"d":""},{"n":"steve_translate","v":3584,"d":""},{"n":"steve_rotate","v":3584,"d":""},{"n":"shadow_verts","v":3456,"d":""},{"n":"falling_tree_box_translate","v":3072,"d":""},{"n":"24 smaller","v":25708,"f":1}]},{"n":"padding","v":393,"f":1}]},{"n":"Free","v":36512,"k":"free","d":"Headroom before the framebuffers. check_ram.py warns below 64 KiB."},{"n":"Framebuffers","v":460800,"k":"resv","d":"Three 320x240 16bpp buffers, pinned at the top of RDRAM."}],"end":2151180640,"limit":2151217152,"slack":36512,"bss":3138288,"text":404080,"fns":794,"objs":405},"audio":{"c":[{"n":"Z buffer","v":153600,"k":"resv","d":"NU_GFX_ZBUFFER_ADDR. The image starts immediately above it, so none of it is wasted."},{"n":"Code + data","v":428544,"k":"code","c":[{"n":"Game code","v":326012},{"n":"Microcode","v":40480,"k":"flag","d":"Six graphics microcodes are linked. Exactly one is ever selected."},{"n":"Read-only data","v":55716},{"n":"padding","v":6336,"f":1}]},{"n":"BSS","v":3140208,"k":"bss","c":[{"n":"Mesh arena","v":1215105,"c":[{"n":"mesh_arena","v":1179648,"d":"147,456 Gfx of column meshes, first-fit with relocation defrag. 37% of BSS."},{"n":"mesh_blocks","v":32768,"d":"2,048 allocation records: every live column plus every staged replacement."},{"n":"mesh_cache","v":2673,"d":""},{"n":"6 smaller","v":16,"f":1}]},{"n":"Terrain window","v":1067167,"c":[{"n":"window_blocks","v":1048576,"d":"1,024 column slots x 1 KiB. The stream radius can fill 625 of them."},{"n":"details","v":6144,"d":""},{"n":"trees","v":4480,"d":""},{"n":"window_keys","v":4096,"d":""},{"n":"28 smaller","v":3871,"f":1}]},{"n":"Per-slot render tables","v":205824,"c":[{"n":"column_starts","v":65536,"d":"Gfx* per texture bank per slot, for the generation on screen."},{"n":"staged_starts","v":65536,"d":"The same table again, for a world build in flight."},{"n":"c_models","v":65536,"d":"One 64-byte Mtx per slot holding nothing but a translation."},{"n":"visible_columns","v":4096,"d":""},{"n":"5 smaller","v":5120,"f":1}]},{"n":"Home store","v":203049,"c":[{"n":"home_blocks","v":200704,"d":"The 112x32x112 save extent kept whole, so building is never rationed."},{"n":"9 smaller","v":2345,"f":1}]},{"n":"NuSystem / RSP","v":165164,"c":[{"n":"nuRDPOutputBuf","v":131072,"d":"The SDK's RDP command FIFO. Sized by nusys.o, not by this game."},{"n":"nuScStack","v":8192,"d":""},{"n":"nuScAudioStack","v":8192,"d":""},{"n":"nuScGraphicsStack","v":8192,"d":""},{"n":"nuYieldBuf","v":3088,"d":""},{"n":"67 smaller","v":6428,"f":1}]},{"n":"Frame display lists","v":131314,"c":[{"n":"frame_display_lists","v":106496,"d":"2 x 6,656 Gfx. World, targeting and HUD share one RSP task."},{"n":"column_quads","v":12480,"d":""},{"n":"column_baked","v":12288,"d":""},{"n":"6 smaller","v":50,"f":1}]},{"n":"Threads & debug","v":89714,"c":[{"n":"rmonIOStack","v":16384,"d":"libultra's remote debug monitor, present in a release build."},{"n":"IdleStack","v":8192,"d":""},{"n":"GfxTaskMgrStack","v":8192,"d":""},{"n":"GfxStack","v":8192,"d":""},{"n":"siMgrStack","v":8192,"d":""},{"n":"nuMainStack","v":8192,"d":""},{"n":"piThreadStack","v":4096,"d":""},{"n":"viThreadStack","v":4096,"d":""},{"n":"269 smaller","v":24178,"f":1}]},{"n":"Entity matrices","v":62444,"c":[{"n":"mob_translate","v":7168,"d":""},{"n":"mob_rotate","v":6144,"d":""},{"n":"creature_verts","v":5632,"d":""},{"n":"water_top_verts","v":4096,"d":""},{"n":"steve_translate","v":3584,"d":""},{"n":"steve_rotate","v":3584,"d":""},{"n":"shadow_verts","v":3456,"d":""},{"n":"falling_tree_box_translate","v":3072,"d":""},{"n":"24 smaller","v":25708,"f":1}]},{"n":"padding","v":427,"f":1}]},{"n":"Overrun","v":317552,"k":"crash","d":"BSS and the audio heap claim the same addresses. Corrupt audio or video, on hardware only."},{"n":"Audio heap","v":327680,"k":"warn","d":"NU_AU_HEAP_SIZE, the SDK default. src/audio.c passes it explicitly, so the size is Mine64's choice. Its own config needs about 73 KiB."},{"n":"Framebuffers","v":460800,"k":"resv","d":"Three 320x240 16bpp buffers, pinned at the top of RDRAM."}],"end":2151207024,"limit":2150889472,"slack":-317552,"bss":3140208,"text":428544,"fns":896,"objs":450}};
+
+const KIND = {
+  resv:  "--resv",  code: "--code",
+  bss:   "--ink-3", free: "--accent", warn: "--warn", crit: "--crit"
+};
+const GROUP_COLOR = {
+  "Mesh arena":"--s1", "Terrain window":"--s2", "Per-slot render tables":"--s3",
+  "Home store":"--s4", "NuSystem / RSP":"--s5", "Frame display lists":"--s6",
+  "Threads & debug":"--s7", "Entity matrices":"--s8"
+};
+const RDRAM = 4 * 1024 * 1024;
+
+const $ = s => document.querySelector(s);
+const el = (t, c) => { const n = document.createElement(t); if (c) n.className = c; return n; };
+const commas = n => n.toLocaleString("en-US");
+const kib = b => b >= 10240 ? Math.round(b / 1024) : (b / 1024).toFixed(1);
+
+let build = "nonaudio";
+let path = [];   /* drill path of node names */
+
+/* ---------- squarified treemap ---------- */
+function squarify(nodes, x, y, w, h) {
+  const out = [];
+  const items = nodes.filter(n => n.v > 0).slice().sort((a, b) => b.v - a.v);
+  const total = items.reduce((s, n) => s + n.v, 0);
+  if (!total || w <= 0 || h <= 0) return out;
+  const scale = (w * h) / total;
+  const q = items.map(n => ({ node: n, area: n.v * scale }));
+
+  let rx = x, ry = y, rw = w, rh = h;
+  let row = [], rowArea = 0;
+
+  const worst = (areas, len) => {
+    const sum = areas.reduce((a, b) => a + b, 0);
+    if (sum <= 0) return Infinity;
+    const mx = Math.max.apply(null, areas), mn = Math.min.apply(null, areas);
+    const s2 = sum * sum, l2 = len * len;
+    return Math.max((l2 * mx) / s2, s2 / (l2 * mn));
+  };
+
+  function flush() {
+    const short = Math.min(rw, rh);
+    if (short <= 0) return;
+    const thick = rowArea / short;
+    let off = 0;
+    const horizontal = rw >= rh;   /* rows run down the short side */
+    row.forEach(it => {
+      const seg = it.area / thick;
+      if (horizontal) out.push({ node: it.node, x: rx, y: ry + off, w: thick, h: seg });
+      else            out.push({ node: it.node, x: rx + off, y: ry, w: seg, h: thick });
+      off += seg;
+    });
+    if (horizontal) { rx += thick; rw -= thick; }
+    else            { ry += thick; rh -= thick; }
+    row = []; rowArea = 0;
+  }
+
+  q.forEach(it => {
+    const short = Math.min(rw, rh);
+    const cur = row.map(r => r.area);
+    if (row.length && worst(cur, short) < worst(cur.concat([it.area]), short)) flush();
+    row.push(it); rowArea += it.area;
+  });
+  flush();
+  return out;
+}
+
+/* ---------- tooltip ---------- */
+const tip = $("#tip");
+function bindTip(node, html) {
+  node.addEventListener("pointerenter", () => { tip.innerHTML = html; tip.classList.add("on"); });
+  node.addEventListener("pointermove", e => {
+    tip.style.left = Math.min(e.clientX + 15, innerWidth - tip.offsetWidth - 8) + "px";
+    tip.style.top  = Math.min(e.clientY + 15, innerHeight - tip.offsetHeight - 8) + "px";
+  });
+  node.addEventListener("pointerleave", () => tip.classList.remove("on"));
+}
+
+/* ---------- rendering ---------- */
+function colorOf(node, depth, inheritedVar) {
+  if (node.k && KIND[node.k]) return KIND[node.k];
+  if (GROUP_COLOR[node.n]) return GROUP_COLOR[node.n];
+  return inheritedVar || "--resv";
+}
+
+function tipFor(node, cvar) {
+  const pct = (node.v / RDRAM) * 100;
+  return "<b>" + node.n + "</b>" +
+    commas(node.v) + " B &middot; " + kib(node.v) + " KiB" +
+    "<u>" + pct.toFixed(pct < 1 ? 2 : 1) + "% of RDRAM" +
+    (node.c ? " &middot; " + node.c.length + " parts" : "") + "</u>" +
+    (node.d ? "<em>" + node.d + "</em>" : "");
+}
+
+function render(nodes, host, x, y, w, h, depth, inheritedVar) {
+  squarify(nodes, x, y, w, h).forEach(r => {
+    const node = r.node;
+    const cvar = colorOf(node, depth, inheritedVar);
+    const b = el("div", "box");
+    b.style.cssText = "left:" + r.x + "px;top:" + r.y + "px;width:" + r.w + "px;height:" + r.h + "px";
+
+    const fill = el("div", "box__fill");
+    fill.style.setProperty("--bc", "var(" + cvar + ")");
+    if (node.f) b.classList.add("box--faint");
+    if (node.k === "free") b.classList.add("box--free");
+    if (node.k === "crash") b.classList.add("box--crash");
+    b.appendChild(fill);
+
+    const kids = node.c && node.c.length;
+    const roomy = r.w > 132 && r.h > 54;
+    const headroom = r.h > 15 && r.w > 46;
+
+    if (headroom) {
+      const l = el("div", "box__lbl");
+      l.innerHTML = "<b>" + node.n + "</b>" +
+        (r.w > 108 ? " <i>" + kib(node.v) + " KiB</i>" : "");
+      b.appendChild(l);
+    }
+    if (node.k === "flag" || (node.d && node.k === "warn")) {
+      b.appendChild(el("div", "flagmark"));
+    }
+
+    if (kids && roomy && depth < 2) {
+      const pad = depth === 0 ? 17 : 15;
+      const inner = el("div", "box__kids");
+      b.appendChild(inner);
+      render(node.c, inner, 2, pad, r.w - 4, r.h - pad - 2, depth + 1, cvar);
+      b.classList.add("box--drill");
+      b.addEventListener("click", e => { e.stopPropagation(); drill(node.n); });
+    } else if (kids) {
+      b.classList.add("box--drill");
+      b.addEventListener("click", e => { e.stopPropagation(); drill(node.n); });
+    } else {
+      b.classList.add("box--leaf");
+    }
+
+    bindTip(fill, tipFor(node, cvar));
+    host.appendChild(b);
+  });
+}
+
+function nodeAtPath() {
+  let list = DATA[build].c, node = null;
+  for (const name of path) {
+    node = list.find(n => n.n === name);
+    if (!node || !node.c) break;
+    list = node.c;
+  }
+  return { node, list };
+}
+
+function drill(name) {
+  const { list } = nodeAtPath();
+  const next = list.find(n => n.n === name);
+  if (next && next.c && next.c.length) { path = path.concat([name]); draw(); }
+}
+
+function draw() {
+  const tm = $("#tm");
+  tm.innerHTML = "";
+  const { node, list } = nodeAtPath();
+  render(list, tm, 0, 0, tm.clientWidth, tm.clientHeight, 0,
+         node ? colorOf(node, 0) : null);
+
+  /* crumbs */
+  const c = $("#crumbs");
+  c.innerHTML = "";
+  const mk = (label, idx) => {
+    if (idx === path.length) {
+      const s = el("span", "here"); s.textContent = label; c.appendChild(s);
+    } else {
+      const btn = el("button");
+      btn.type = "button"; btn.textContent = label;
+      btn.addEventListener("click", () => { path = path.slice(0, idx); draw(); });
+      c.appendChild(btn);
+    }
+  };
+  mk("4 MiB RDRAM", 0);
+  path.forEach((p, i) => {
+    const s = el("span", "sep"); s.textContent = "›"; c.appendChild(s);
+    mk(p, i + 1);
+  });
+  const hint = el("span", "hint");
+  hint.textContent = path.length ? "hover for detail" : "click a box to open it · hover for detail";
+  c.appendChild(hint);
+
+  /* header numbers */
+  const b = DATA[build];
+  const claimed = b.c.reduce((s, n) => s + n.v, 0);
+  const v = $("#verdict");
+  if (b.slack >= 0) {
+    v.className = "verdict verdict--warn";
+    v.innerHTML = "<b>" + kib(b.slack) + " KiB</b> free before the framebuffers";
+  } else {
+    v.className = "verdict verdict--crit";
+    v.innerHTML = "<b>" + kib(-b.slack) + " KiB</b> past the audio heap · claims " +
+      (claimed / 1048576).toFixed(2) + " MiB of 4.00";
+  }
+}
+
+/* legend */
+[["Reserved by hardware", "--resv"], ["Code + data", "--code"]]
+  .concat(Object.entries(GROUP_COLOR).map(([n, v]) => [n, v]))
+  .forEach(([n, v]) => {
+    const s = el("span");
+    const sw = el("i", "sw");
+    sw.style.background = "var(" + v + ")";
+    s.appendChild(sw); s.appendChild(document.createTextNode(n));
+    $("#legend").appendChild(s);
+  });
+
+document.querySelectorAll(".toggle button").forEach(btn => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".toggle button").forEach(x =>
+      x.setAttribute("aria-pressed", String(x === btn)));
+    build = btn.dataset.build;
+    path = [];
+    draw();
+  });
+});
+
+/* The map is sized in vh, so redraw whenever the box itself changes size —
+   an initial paint measured against a not-yet-settled layout leaves a strip
+   of the container unfilled. */
+let rt, lastW = 0, lastH = 0;
+new ResizeObserver(() => {
+  const w = $("#tm").clientWidth, h = $("#tm").clientHeight;
+  if (w === lastW && h === lastH) return;
+  lastW = w; lastH = h;
+  clearTimeout(rt);
+  rt = setTimeout(draw, 60);
+}).observe($("#tm"));
+
+draw();
+</script>
+
+</body>
+</html>
