@@ -10,7 +10,9 @@
 
 #define FOV_Y 60
 #define FOV_Y_COOP 40
-#define FOV_Y_LOADING 34
+/* Wider than the game's own lens would be, deliberately: the scenic camera
+   sits low, and a long lens flattened the terrain into a texture swatch. */
+#define FOV_Y_LOADING 48
 #define FOV_RATIO ((float) SCREEN_WD / (float) SCREEN_HT)
 #define COOP_FOV_RATIO ((float) SCREEN_WD / (float) (SCREEN_HT / 2))
 #define FOUR_PLAYER_FOV_RATIO ((float) (SCREEN_WD / 2) / (float) (SCREEN_HT / 2))
@@ -38,8 +40,11 @@
    or the gap either side of a world load -- and the orbit must not teleport
    across it. */
 #define LOADING_MAX_FRAME_SECONDS .25f
-#define LOADING_ORBIT_RADIUS 2240.f
-#define LOADING_CAMERA_HEIGHT 2450.f
+#define LOADING_ORBIT_RADIUS 2000.f
+/* The world is 32 blocks tall, so 2450 units put the camera above every peak
+   the generator can produce and the terrain read as a flat map.  1650 is
+   inside the terrain's own height band: hills and trees now stand up in it. */
+#define LOADING_CAMERA_HEIGHT 1650.f
 #define LOADING_CAMERA_BOB 120.f
 #define LOADING_WORLD_CENTER (MAX_X * BLOCK_SIZE / 2.f)
 /* World units: deliberately below one pixel at normal interaction distance,
@@ -518,9 +523,10 @@ void updateLoadingCamera() {
   }
   low_orbit = sinf(angle * .5f * M_DTOR);
 
-  /* Keep the orbit over the terrain and use a narrower lens below. Together
-     they fit the complete view inside the 96-column cinematic budget, so the
-     horizon never relies on distance-based column removal. */
+  /* Keep the orbit over the terrain and close in.  The wide lens sees more
+     of the world per column, so the whole view still fits inside the
+     96-column cinematic budget and the horizon never relies on
+     distance-based column removal. */
   loading_camera.position.x = LOADING_WORLD_CENTER +
     sinf(angle * M_DTOR) * LOADING_ORBIT_RADIUS;
   loading_camera.position.z = LOADING_WORLD_CENTER +
@@ -528,14 +534,14 @@ void updateLoadingCamera() {
   loading_camera.position.y = LOADING_CAMERA_HEIGHT +
     low_orbit * LOADING_CAMERA_BOB;
   loading_camera.yaw = angle;
-  /* Aim into the near/middle terrain rather than across the whole map. The
-     48-degree downward view keeps the far edge above the frame while the
-     closer orbit preserves roughly the previous terrain scale. */
+  /* Aim into the near/middle terrain rather than across the whole map.  The
+     steeper the tilt, the nearer the ground the top of the frame lands on, so
+     the streamed world's far edge stays out of shot. */
   /* Player pitch is normalized to 0..360, and the column culler relies on
-     that convention when choosing the conservative world-height edge.  -48
+     that convention when choosing the conservative world-height edge.  -40
      renders the same view, but makes culling treat this downward camera as an
      upward one and clips columns before they leave the screen. */
-  loading_camera.pitch = 312.f;
+  loading_camera.pitch = 320.f;
   loading_camera.camera_mode = CAMERA_FIRST_PERSON;
   camera_position = loading_camera.position;
 
