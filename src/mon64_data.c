@@ -174,7 +174,7 @@ const MonRig mon_rigs[MON_RIG_COUNT] = {
 };
 
 /*
- * The trainer, who is not a creature.
+ * The trainers, who are not creatures.
  *
  * A trainer used to be drawn from the species they were spawned beside, so
  * the one entity in the world that is supposed to be another person looked
@@ -182,41 +182,114 @@ const MonRig mon_rigs[MON_RIG_COUNT] = {
  * that distinguished them, which is not something the player should have to
  * read to know what they are walking toward.
  *
- * The measurements are drawSteve's own, taken from makeStevePose: legs 0..44
- * above the feet, torso 44..88, head 88..120, arms hung at +-25.  So it is
- * the player's body in the creature rig's format, which costs one table
- * instead of a second humanoid draw path, and it stands twice the height of
- * anything else roaming -- a silhouette the player can read across a field.
- * The head wears the real face sheet; see mon64_draw.c.
+ * The first six boxes of both rigs are drawSteve's own measurements, taken
+ * from makeStevePose: legs 0..44 above the feet, torso 44..88, head 88..120,
+ * arms hung at +-25.  So a trainer is the player's body in the creature rig's
+ * format, which costs a table instead of a second humanoid draw path, and it
+ * stands twice the height of anything else roaming -- a silhouette the player
+ * can read across a field.  The head wears the real face sheet; see
+ * mon64_draw.c.
+ *
+ * Everything after those six is hair, and hair is the whole of the
+ * difference between the two of them.  The face sheet paints a hairline and
+ * sideburns flat onto the front of the head, which on its own reads as a
+ * fringe drawn on a bald man: at this scale a person needs a volume above the
+ * skull before the front of it means anything.
  */
-const MonRig mon_trainer_rig = {
-  6, 120, {
-    {  0,  66,  0, 18, 22,  9, MON_TONE_PRIMARY,   MON_ROLE_BODY,  1},
-    {  0, 104,  0, 16, 16, 16, MON_TONE_ACCENT,    MON_ROLE_HEAD,  1},
+const MonRig mon_trainer_bodies[MON_TRAINER_BODIES] = {
+  /*
+   * The short-haired body.  A crown, a panel down the nape, and a short box
+   * at each temple: four boxes of hair, the last two only there to cover the
+   * face sheet's painted sideburns, which are a fixed brown and would pin
+   * every trainer wearing this body to one hair colour.
+   */
+  {10, 120, {
+    {  0,  66,   0, 18, 22,  9, MON_TONE_PRIMARY,   MON_ROLE_BODY,  1},
+    {  0, 104,   0, 16, 16, 16, MON_TONE_ACCENT,    MON_ROLE_HEAD,  1},
     /* Arms and legs are crossed between the A and B halves of the gait, so a
        walking trainer swings opposite arm to leg like a person rather than
        hopping like a rabbit. */
-    {-25,  66,  0,  7, 22,  7, MON_TONE_ACCENT,    MON_ROLE_ARM_B, 1},
-    { 25,  66,  0,  7, 22,  7, MON_TONE_ACCENT,    MON_ROLE_ARM_A, 1},
-    {-10,  22,  0,  8, 22,  8, MON_TONE_SECONDARY, MON_ROLE_LEG_A, 1},
-    { 10,  22,  0,  8, 22,  8, MON_TONE_SECONDARY, MON_ROLE_LEG_B, 1}
-  }
+    {-25,  66,   0,  7, 22,  7, MON_TONE_ACCENT,    MON_ROLE_ARM_B, 1},
+    { 25,  66,   0,  7, 22,  7, MON_TONE_ACCENT,    MON_ROLE_ARM_A, 1},
+    {-10,  22,   0,  8, 22,  8, MON_TONE_SECONDARY, MON_ROLE_LEG_A, 1},
+    { 10,  22,   0,  8, 22,  8, MON_TONE_SECONDARY, MON_ROLE_LEG_B, 1},
+    /* Proud of the skull by a unit all round, and carried two units past the
+       face plane at the front.  Stopping level with the head, as it first
+       did, leaves the skin between the crown and the painted fringe showing
+       as a bare line across the forehead; going past it means the crown is
+       the fringe, and there is no seam to miss. */
+    {  0, 118,   0, 17,  4, 18, MON_TONE_HAIR,      MON_ROLE_HEAD,  1},
+    {  0, 104,  16, 17, 12,  2, MON_TONE_HAIR,      MON_ROLE_HEAD,  1},
+    {-14, 109,  -9,  3,  5,  9, MON_TONE_HAIR,      MON_ROLE_HEAD,  1},
+    { 14, 109,  -9,  3,  5,  9, MON_TONE_HAIR,      MON_ROLE_HEAD,  1}
+  }},
+  /*
+   * The long-haired body.  A deeper crown, a fringe, a full strand down each
+   * temple, and a ponytail off the back.
+   *
+   * The ponytail takes the tail role, so it swings as she walks -- the one
+   * piece of motion on either body that is not a shared limb, and free,
+   * because the pose already computes that sine for the eels.
+   */
+  {11, 120, {
+    {  0,  66,   0, 18, 22,  9, MON_TONE_PRIMARY,   MON_ROLE_BODY,  1},
+    {  0, 104,   0, 16, 16, 16, MON_TONE_ACCENT,    MON_ROLE_HEAD,  1},
+    {-25,  66,   0,  7, 22,  7, MON_TONE_ACCENT,    MON_ROLE_ARM_B, 1},
+    { 25,  66,   0,  7, 22,  7, MON_TONE_ACCENT,    MON_ROLE_ARM_A, 1},
+    {-10,  22,   0,  8, 22,  8, MON_TONE_SECONDARY, MON_ROLE_LEG_A, 1},
+    { 10,  22,   0,  8, 22,  8, MON_TONE_SECONDARY, MON_ROLE_LEG_B, 1},
+    /* This crown is deeper than the short body's and hung further back, so it
+       clothes the sides and the whole back of the skull down to the neck
+       instead of sitting on top like a cap: from behind, long hair has no
+       scalp in it.  Its front edge stays inside the head, which is what keeps
+       the face clear without a second box. */
+    {  0, 110,   4, 17, 13, 16, MON_TONE_HAIR,      MON_ROLE_HEAD,  1},
+    /* The fringe stops a unit above the eyes -- level with them reads as a
+       blindfold -- and is deep rather than flat so it reaches back into the
+       crown, whose top it shares: a fringe that only hangs in front of the
+       face plane leaves the top of the skull bare between the two, and one
+       that stops short of the crown in either width or height puts a step
+       across it.  Same halves as the crown, therefore, in both. */
+    {  0, 118, -15, 17,  5,  5, MON_TONE_HAIR,      MON_ROLE_HEAD,  1},
+    {-14, 106,  -8,  3,  9, 12, MON_TONE_HAIR,      MON_ROLE_HEAD,  1},
+    { 14, 106,  -8,  3,  9, 12, MON_TONE_HAIR,      MON_ROLE_HEAD,  1},
+    {  0,  99,  23,  5, 16,  5, MON_TONE_HAIR,      MON_ROLE_TAIL,  1}
+  }}
 };
 
 /*
- * Four trainers to meet, chosen by the seed their roamer was spawned with --
+ * The people you meet, chosen by the seed their roamer was spawned with --
  * the same seed their team comes from, so a trainer who is the same fight
- * twice is also the same person twice, still without a byte being stored.
+ * twice is the same person twice, down to the name on the badge, still
+ * without a byte being written down.
  *
- * Shirt, trousers and skin, in the tone slots the rig's boxes select.  These
- * are the lit values: buildBox darkens the far face itself, exactly as it
- * does for a species palette.
+ * A name is what the badge says instead of TRAINER.  Five characters is the
+ * ceiling: the badge sizes itself to its contents and has to fit inside a
+ * quarter-screen viewport in four-player.
+ *
+ * Then the body, and a look: shirt, trousers, skin and hair, in the tone
+ * slots the rig's boxes select.  These are the lit values -- buildBox darkens
+ * the far face itself, exactly as it does for a species palette.  Nobody
+ * wears the player's blue over the player's own skin, because a trainer
+ * walking toward you in co-op must not read as the other player.
  */
-const MonLook mon_trainer_looks[MON_TRAINER_LOOKS] = {
-  {{ 64, 150, 198}, { 61,  82, 174}, {205, 145,  98}},  /* the player's own */
-  {{198,  78,  70}, { 72,  66,  62}, {232, 186, 148}},
-  {{ 96, 168,  96}, { 96,  74,  52}, {170, 118,  82}},
-  {{224, 196,  88}, { 74,  86, 104}, {138,  94,  66}}
+const MonTrainer mon_trainers[MON_TRAINER_COUNT] = {
+  {"SAM",   MON_TRAINER_BODY_SHORT,
+    {{ 96, 168,  96}, { 74,  86, 104}, {205, 145,  98}, { 72,  48,  28}}},
+  {"TOBY",  MON_TRAINER_BODY_SHORT,
+    {{226, 140,  66}, { 96,  74,  52}, {232, 186, 148}, {198, 150,  72}}},
+  {"MILO",  MON_TRAINER_BODY_SHORT,
+    {{ 92, 104, 190}, { 60,  64,  78}, {138,  94,  66}, { 40,  34,  32}}},
+  {"ELI",   MON_TRAINER_BODY_SHORT,
+    {{ 80, 164, 158}, { 70,  74,  80}, {170, 118,  82}, {120,  72,  44}}},
+  {"KALIA", MON_TRAINER_BODY_LONG,
+    {{206,  92,  86}, { 72,  66,  90}, {232, 186, 148}, {158, 118,  74}}},
+  {"MAYA",  MON_TRAINER_BODY_LONG,
+    {{158, 110, 190}, { 64,  60,  84}, {138,  94,  66}, { 44,  38,  44}}},
+  {"NORA",  MON_TRAINER_BODY_LONG,
+    {{224, 196,  88}, {104,  80,  56}, {205, 145,  98}, {186,  96,  52}}},
+  {"IVY",   MON_TRAINER_BODY_LONG,
+    {{ 72, 150, 120}, { 56,  72,  60}, {170, 118,  82}, { 96,  66,  42}}}
 };
 
 /*
@@ -402,3 +475,7 @@ const MonSpecies mon_species[MON_SPECIES_COUNT] = {
     {118, 122, 118}, { 74,  78,  74}, {198, 138,  76},
     {MV_BOULDER, MV_RUBBLE, MV_RUSH, MV_PEBBLE}, {1, 1, 1, 1}}
 };
+
+const MonTrainer *mon64TrainerFromSeed(u32 seed) {
+  return &mon_trainers[seed % MON_TRAINER_COUNT];
+}

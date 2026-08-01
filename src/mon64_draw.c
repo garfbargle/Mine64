@@ -124,6 +124,9 @@ typedef struct {
   const u8 *primary;
   const u8 *secondary;
   const u8 *accent;
+  /* Only a trainer has one; a species points this at a colour it already
+     uses, because no box in the roster ever asks for it. */
+  const u8 *hair;
   u8 scale;
   u8 bulk;
   u8 maturity;
@@ -132,6 +135,9 @@ typedef struct {
 } CreatureSkin;
 
 static const u8 *toneColor(const CreatureSkin *skin, u8 tone) {
+  if (tone == MON_TONE_HAIR) {
+    return skin->hair;
+  }
   if (tone == MON_TONE_SECONDARY) {
     return skin->secondary;
   }
@@ -287,6 +293,7 @@ static void drawCreature(u8 slot, u8 species_id, Vector3 position, float yaw,
   skin.primary = species->primary;
   skin.secondary = species->secondary;
   skin.accent = species->accent;
+  skin.hair = species->accent;
   skin.scale = species->scale;
   skin.bulk = species->bulk;
   skin.maturity = species->maturity;
@@ -298,24 +305,26 @@ static void drawCreature(u8 slot, u8 species_id, Vector3 position, float yaw,
 /*
  * A trainer, who is another player rather than another animal.
  *
- * Same rig every time, unscaled, and a look chosen by the seed the roamer
+ * Which of the two, and what they are wearing, comes from the seed the roamer
  * was spawned with -- the seed their team already comes from, so the trainer
- * who is the same fight twice is the same person twice.
+ * who is the same fight twice is the same person twice.  Unscaled, always:
+ * the face sheet is authored for a head of one size.
  */
 static void drawTrainer(u8 slot, u32 seed, Vector3 position, float yaw,
     const CreaturePose *pose) {
-  const MonLook *look = &mon_trainer_looks[seed % MON_TRAINER_LOOKS];
+  const MonTrainer *who = mon64TrainerFromSeed(seed);
   CreatureSkin skin;
 
-  skin.primary = look->primary;
-  skin.secondary = look->secondary;
-  skin.accent = look->accent;
+  skin.primary = who->look.primary;
+  skin.secondary = who->look.secondary;
+  skin.accent = who->look.accent;
+  skin.hair = who->look.hair;
   skin.scale = 100;
   skin.bulk = 100;
   skin.maturity = 3;
   skin.front_lit = TRUE;
-  drawRig(slot, &mon_trainer_rig, &skin, MON_TRAINER_HEAD_PART, position, yaw,
-    pose);
+  drawRig(slot, &mon_trainer_bodies[who->body], &skin, MON_TRAINER_HEAD_PART,
+    position, yaw, pose);
 }
 
 /* PRIM * SHADE, the combiner every untextured entity in the game uses.  The
@@ -914,7 +923,13 @@ void mon64DrawPrompt(u8 player_num, u32 center_x, u32 bottom_y) {
   if (roamer->species >= MON_SPECIES_COUNT) {
     return;
   }
-  label = roamer->kind == MON_ROAMER_TRAINER ? "TRAINER" :
+  /* A person is named, an animal is a species.  The badge used to say TRAINER
+     for everyone, which was the right word back when they were all drawn as
+     the same borrowed animal; now that the one in front of you has their own
+     face and their own clothes, the badge may as well say who they are.  Both
+     come from the seed, so the name always belongs to the body wearing it. */
+  label = roamer->kind == MON_ROAMER_TRAINER ?
+    mon64TrainerFromSeed(roamer->seed)->name :
     mon_species[roamer->species].name;
 
   /* Sized to its contents rather than fixed, so a four-player viewport gets

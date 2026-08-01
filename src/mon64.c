@@ -1055,7 +1055,16 @@ static void beginTrainerBattle(u8 player_num, MonRoamer *roamer) {
   buildTrainerTeam(roamer->seed, roamer->level);
   mon_battle.npc_active = 0;
   setPhase(MON_PHASE_COMMAND);
-  pushMessage("A TRAINER WANTS TO BATTLE!");
+  /* By name, because the badge the player just read was a name.  It comes
+     from the same seed the team above does, so the person who challenges is
+     the person who was standing there. */
+  {
+    char *out = message_scratch;
+    out = appendText(out, mon64TrainerFromSeed(roamer->seed)->name);
+    out = appendText(out, " WANTS TO BATTLE!");
+    *out = 0;
+    pushMessage(message_scratch);
+  }
   sendOutNpc();
   sendOutPlayerLead(0);
   takeBattleView();

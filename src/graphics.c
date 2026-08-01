@@ -723,6 +723,30 @@ static Vtx steve_leg_verts[] = {
 };
 
 /*
+ * Hair: a crown over the skull and a panel down the nape, in head-local
+ * units, so both ride the head transform the face sheet already uses and cost
+ * no matrix of their own.
+ *
+ * The face sheet paints a hairline and sideburns flat onto the front of the
+ * head, and for a long time that was all the hair Steve had -- a fringe and
+ * sideburns drawn on a bald skull, which is fine only until something stands
+ * next to him with hair on top.  64MON's trainers are built to these exact
+ * measurements (see mon_trainer_bodies), so the two boxes below are the same
+ * two they wear, in the same brown the painted hairline already uses: the
+ * crown covers that hairline and becomes it, and the sideburns run on out
+ * from under the crown.
+ *
+ * Proud of the skull by a unit all round, and two units past the face plane
+ * at the front.  Stopping level with the head leaves a bare line of scalp
+ * between the crown and the fringe -- invisible from straight on, and the
+ * first thing the eye finds from anywhere else.
+ */
+DETAIL_BOX(steve_hair_crown_verts, -17, 10, -18, 17, 18, 18,
+  51, 34, 20, 72, 48, 28);
+DETAIL_BOX(steve_hair_nape_verts, -17, -12, 14, 17, 12, 18,
+  51, 34, 20, 72, 48, 28);
+
+/*
  * ANIMALS.  All chunky shaded geometry, matching Steve's inexpensive
  * renderer: no character atlas, no UV work, nothing the RDP has to load.
  *
@@ -953,13 +977,22 @@ Vtx steve_face_verts[] = {
   STEVE_VERTEX(-5, 2, -17, 55, 125, 210), STEVE_VERTEX(-11, 2, -17, 55, 125, 210),
   STEVE_VERTEX(5, 8, -17, 55, 125, 210), STEVE_VERTEX(11, 8, -17, 55, 125, 210),
   STEVE_VERTEX(11, 2, -17, 55, 125, 210), STEVE_VERTEX(5, 2, -17, 55, 125, 210),
-  /* Hairline and sideburns frame the otherwise intentionally simple face. */
-  STEVE_VERTEX(-15, 15, -17, 72, 48, 28), STEVE_VERTEX(15, 15, -17, 72, 48, 28),
+  /*
+   * Hairline and sideburns frame the otherwise intentionally simple face.
+   *
+   * The hairline runs to the top edge of the head box rather than stopping a
+   * unit short, so the hair meets the crown instead of leaving a bare line
+   * across the forehead -- which is invisible on Steve, whose hair is only
+   * this sheet, and glaring on a trainer, who has a box of hair above it.
+   * The sideburns stop below the eyes; they used to run down to the mouth,
+   * which reads less as hair beside the ear than as a chinstrap.
+   */
+  STEVE_VERTEX(-15, 16, -17, 72, 48, 28), STEVE_VERTEX(15, 16, -17, 72, 48, 28),
   STEVE_VERTEX(15, 10, -17, 72, 48, 28), STEVE_VERTEX(-15, 10, -17, 72, 48, 28),
   STEVE_VERTEX(-15, 10, -17, 72, 48, 28), STEVE_VERTEX(-11, 10, -17, 72, 48, 28),
-  STEVE_VERTEX(-11, -7, -17, 72, 48, 28), STEVE_VERTEX(-15, -7, -17, 72, 48, 28),
+  STEVE_VERTEX(-11, 0, -17, 72, 48, 28), STEVE_VERTEX(-15, 0, -17, 72, 48, 28),
   STEVE_VERTEX(11, 10, -17, 72, 48, 28), STEVE_VERTEX(15, 10, -17, 72, 48, 28),
-  STEVE_VERTEX(15, -7, -17, 72, 48, 28), STEVE_VERTEX(11, -7, -17, 72, 48, 28),
+  STEVE_VERTEX(15, 0, -17, 72, 48, 28), STEVE_VERTEX(11, 0, -17, 72, 48, 28),
   /* One subdued mouth keeps the face readable without needing another part. */
   STEVE_VERTEX(-5, -7, -17, 116, 57, 49), STEVE_VERTEX(5, -7, -17, 116, 57, 49),
   STEVE_VERTEX(5, -9, -17, 116, 57, 49), STEVE_VERTEX(-5, -9, -17, 116, 57, 49)
@@ -2759,13 +2792,20 @@ static void drawStevePart(u8 player_num, u8 part, Vtx *verts, Gfx *part_dl) {
   gSPDisplayList(dlp++, part_dl);
 }
 
-static void drawSteveFace(u8 player_num) {
+/* The face sheet and the two hair boxes, all three bound to the head's own
+   matrices: one load between them, and no part of the head can ever drift
+   from the rest of it. */
+static void drawSteveHeadDetail(u8 player_num) {
   gSPMatrix(dlp++, OS_K0_TO_PHYSICAL(&steve_translate[dl_no][player_num][STEVE_HEAD]),
     G_MTX_MODELVIEW | G_MTX_LOAD | G_MTX_NOPUSH);
   gSPMatrix(dlp++, OS_K0_TO_PHYSICAL(&steve_rotate[dl_no][player_num][STEVE_HEAD]),
     G_MTX_MODELVIEW | G_MTX_MUL | G_MTX_NOPUSH);
   gSPVertex(dlp++, steve_face_verts, 24, 0);
   gSPDisplayList(dlp++, steve_face_display_list);
+  gSPVertex(dlp++, steve_hair_crown_verts, 8, 0);
+  gSPDisplayList(dlp++, steve_box_display_list);
+  gSPVertex(dlp++, steve_hair_nape_verts, 8, 0);
+  gSPDisplayList(dlp++, steve_box_display_list);
 }
 
 static void drawSteve(u8 player_num) {
@@ -2788,9 +2828,9 @@ static void drawSteve(u8 player_num) {
   drawStevePart(player_num, STEVE_RIGHT_LEG, steve_leg_verts, steve_box_display_list);
   drawStevePart(player_num, STEVE_HEAD, steve_head_verts, steve_box_display_list);
 
-  /* The face shares the head transform, so its direction matches pitch and
+  /* The face and hair share the head transform, so they match its pitch and
      yaw exactly without a separate skeleton node. */
-  drawSteveFace(player_num);
+  drawSteveHeadDetail(player_num);
 }
 
 /* The first-person arm pivots at the elbow, not at the hand.  Local +Y of
