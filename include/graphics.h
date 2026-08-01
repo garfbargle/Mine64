@@ -192,14 +192,54 @@ typedef enum {
   BUTTON_ICON_L,
   BUTTON_ICON_R,
   BUTTON_ICON_Z,
+  /* Not buttons, but every screen that names one names buttons alongside it. */
+  BUTTON_ICON_STICK,
+  BUTTON_ICON_DPAD,
   BUTTON_ICON_COUNT
 } ButtonIconId;
 
+/* For a legend entry whose control is a single button: drawing it is a no-op
+   and it measures zero, so the second slot simply disappears. */
+#define BUTTON_ICON_NONE BUTTON_ICON_COUNT
+
 void drawButtonIcon(ButtonIconId id, u32 x, u32 y);
-/* The round buttons are 13x13 and the shoulders 19x11; ask rather than
-   assume, so a label can be laid out beside either. */
+/* The round buttons are 13x13, the shoulders 19x11 and the D-pad 13x13; ask
+   rather than assume, so a label can be laid out beside any of them. */
 u32 buttonIconWidth(ButtonIconId id);
 u32 buttonIconHeight(ButtonIconId id);
+
+/*
+ * A legend row: each control, then what pressing it does.  `icon2` is for the
+ * controls that are a pair -- C left and C right moving one cursor -- and is
+ * BUTTON_ICON_NONE otherwise.
+ *
+ * A row is drawn twice, once per phase: drawLegendIcons from the screen's
+ * fills, drawLegendLabels from its text.  Give both the same entries, x and
+ * y, and the words land on their icons; there is deliberately no single call
+ * that does both, because there is no phase in which it would be legal.
+ */
+typedef struct {
+  ButtonIconId icon;
+  ButtonIconId icon2;
+  const char *label;
+} LegendEntry;
+
+#define LEGEND_ROW_HEIGHT 13
+#define LEGEND_ICON_GAP 3
+#define LEGEND_PAIR_GAP 2
+#define LEGEND_ENTRY_GAP 11
+/* Centres an 8px glyph box against a 13px button. */
+#define LEGEND_LABEL_DROP 2
+/* Icons drawn in one grouped pass; rows longer than this are truncated
+   rather than split, because no legend in the game is close to it. */
+#define LEGEND_MAX_ICONS 12
+
+#define LEGEND_COUNT(table) ((u8) (sizeof (table) / sizeof (LegendEntry)))
+
+u32 legendEntryWidth(const LegendEntry *entry);
+u32 legendWidth(const LegendEntry *entries, u8 count);
+void drawLegendIcons(const LegendEntry *entries, u8 count, u32 x, u32 y);
+void drawLegendLabels(const LegendEntry *entries, u8 count, u32 x, u32 y);
 void draw(int can_reclaim_mesh_arena);
 /* Frames that exceeded the command budget and had to shed terrain or be
    dropped.  Non-zero means the frame list was overflowing. */

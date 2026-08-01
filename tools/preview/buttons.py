@@ -29,7 +29,8 @@ ROOT = hud.ROOT
 
 # Order and labels as the guides use them.
 ORDER = ["button_a", "button_b", "button_start", "button_c_up", "button_c_down",
-         "button_c_left", "button_c_right", "button_l", "button_r", "button_z"]
+         "button_c_left", "button_c_right", "button_l", "button_r", "button_z",
+         "button_stick", "button_dpad"]
 
 
 def _shell_color(src):
@@ -51,28 +52,27 @@ def _macro_shape(src, kind):
 def load_styles():
     src = _source()
     styles = {}
-    round_names, round_nums = _macro_shape(src, "ROUND_BUTTON")
-    wide_names, wide_nums = _macro_shape(src, "WIDE_BUTTON")
+    shapes = {kind: _macro_shape(src, "%s_BUTTON" % kind)
+              for kind in ("ROUND", "WIDE", "CROSS")}
     shell = _shell_color(src)
 
     for name in ORDER:
         m = re.search(
             r"static const ButtonStyle\s+%s\s*=\s*\{(.*?)\};" % name, src, re.S)
         body = m.group(1)
-        macro = re.search(r"(ROUND|WIDE)_BUTTON\(([^)]*)\)", body)
+        macro = re.search(r"(ROUND|WIDE|CROSS)_BUTTON\(([^)]*)\)", body)
         kind = macro.group(1)
         args = [a.strip() for a in macro.group(2).split(",")]
         glyph_name = args[0]
-        if kind == "ROUND":
-            shell_name, face_name = round_names[0], round_names[1]
-            shell_n, face_n = round_nums[0], round_nums[1]
-            gx, gy = int(args[1]), int(args[2])
-            w, h = round_nums[2], round_nums[3]
+        names, nums = shapes[kind]
+        shell_name, face_name = names[0], names[1]
+        shell_n, face_n = nums[0], nums[1]
+        if kind == "WIDE":
+            # WIDE_BUTTON fixes its glyph offset in the macro body.
+            gx, gy, w, h = nums[2], nums[3], nums[4], nums[5]
         else:
-            shell_name, face_name = wide_names[0], wide_names[1]
-            shell_n, face_n = wide_nums[0], wide_nums[1]
-            gx, gy = wide_nums[2], wide_nums[3]
-            w, h = wide_nums[4], wide_nums[5]
+            gx, gy = int(args[1]), int(args[2])
+            w, h = nums[2], nums[3]
 
         colors = _resolve_colors(src, body[macro.end():])
         styles[name] = {

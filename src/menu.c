@@ -357,79 +357,11 @@ static void setMenuTextColor(u8 red, u8 green, u8 blue) {
 #define SETUP_STRIP_TOP 200
 #define SETUP_STRIP_BOTTOM 234
 
-/*
- * A legend row: a controller button, then what pressing it does.  The icons
- * are fill sprites and the labels are text, so the row is drawn twice from
- * opposite ends of the screen's two phases -- which is exactly why the x of
- * each entry is computed here rather than typed into both.
- */
-typedef struct {
-  ButtonIconId icon;
-  const char *label;
-} LegendEntry;
-
-#define LEGEND_ROW_HEIGHT 13
-#define LEGEND_ICON_GAP 3
-#define LEGEND_ENTRY_GAP 11
-/* Centres an 8px glyph box against a 13px button. */
-#define LEGEND_LABEL_DROP 2
-
-static u32 stringWidth(const char *text);
-
-static u32 legendEntryWidth(const LegendEntry *entry) {
-  return buttonIconWidth(entry->icon) + LEGEND_ICON_GAP +
-    stringWidth(entry->label);
-}
-
-static u32 legendWidth(const LegendEntry *entries, u8 count) {
-  u32 width = 0;
-  u8 i;
-
-  for (i = 0; i < count; i++) {
-    width += legendEntryWidth(&entries[i]);
-    if (i + 1 < count) {
-      width += LEGEND_ENTRY_GAP;
-    }
-  }
-  return width;
-}
-
-/* Fills phase.  The shoulder buttons are shorter than the round ones, so each
-   icon is centred against the row rather than hung from its top. */
-static void drawLegendIcons(const LegendEntry *entries, u8 count, u32 x,
-    u32 y) {
-  u8 i;
-
-  for (i = 0; i < count; i++) {
-    drawButtonIcon(entries[i].icon, x,
-      y + (LEGEND_ROW_HEIGHT - buttonIconHeight(entries[i].icon)) / 2);
-    x += legendEntryWidth(&entries[i]) + LEGEND_ENTRY_GAP;
-  }
-}
-
-/* Text phase, walking the same entries by the same arithmetic. */
-static void drawLegendLabels(const LegendEntry *entries, u8 count, u32 x,
-    u32 y) {
-  u8 i;
-
-  for (i = 0; i < count; i++) {
-    drawString(entries[i].label,
-      x + buttonIconWidth(entries[i].icon) + LEGEND_ICON_GAP,
-      y + LEGEND_LABEL_DROP);
-    x += legendEntryWidth(&entries[i]) + LEGEND_ENTRY_GAP;
-  }
-}
-
-/*
- * What the four controls on the world setup screen do.  START in particular
- * was the word "START" doing a picture's job on the one screen where a player
- * is deciding whether to commit to a world.
- */
 static const LegendEntry world_setup_legend[] = {
-  { BUTTON_ICON_A, "PICK" },
-  { BUTTON_ICON_R, "REROLL" },
-  { BUTTON_ICON_B, "BACK" },
-  { BUTTON_ICON_START, "CREATE" }
+  { BUTTON_ICON_A, BUTTON_ICON_NONE, "PICK" },
+  { BUTTON_ICON_R, BUTTON_ICON_NONE, "REROLL" },
+  { BUTTON_ICON_B, BUTTON_ICON_NONE, "BACK" },
+  { BUTTON_ICON_START, BUTTON_ICON_NONE, "CREATE" }
 };
 
 #define WORLD_SETUP_LEGEND_COUNT \

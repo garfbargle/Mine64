@@ -4610,6 +4610,20 @@ static const HudSpan glyph_z_spans[] = {
   {1, 4, 1, 4}, {0, 5, 0, 5}, {0, 6, 4, 6}
 };
 
+/* The D-pad is the one control that is not a disc or a bar.  A fat plus,
+   eroded by one for its face, which leaves a border everywhere including the
+   six inside corners. */
+static const HudSpan button_cross_shell_spans[] = {
+  {4, 0, 8, 3},
+  {0, 4, 12, 8},
+  {4, 9, 8, 12}
+};
+
+static const HudSpan button_cross_face_spans[] = {
+  {5, 1, 7, 11},
+  {1, 5, 11, 7}
+};
+
 /* Arrows: seven by five lying down, five by seven standing up, both with a
    two-row base so they stay solid triangles rather than thin darts. */
 static const HudSpan glyph_up_spans[] = {
@@ -4628,6 +4642,16 @@ static const HudSpan glyph_left_spans[] = {
 static const HudSpan glyph_right_spans[] = {
   {0, 0, 1, 0}, {0, 1, 2, 1}, {0, 2, 3, 2}, {0, 3, 4, 3},
   {0, 4, 3, 4}, {0, 5, 2, 5}, {0, 6, 1, 6}
+};
+
+/* The stick's dished top, seen from above: a dark disc in a grey one. */
+static const HudSpan glyph_knob_spans[] = {
+  {1, 0, 3, 0}, {0, 1, 4, 3}, {1, 4, 3, 4}
+};
+
+/* The D-pad's pivot. */
+static const HudSpan glyph_pivot_spans[] = {
+  {0, 0, 2, 2}
 };
 
 typedef struct {
@@ -4658,6 +4682,10 @@ static const u8 button_shell_color[3] = {10, 10, 12};
 #define WIDE_BUTTON(glyph) \
   button_wide_shell_spans, button_wide_face_spans, glyph, \
   5, 3, sizeof (glyph) / sizeof (HudSpan), 7, 2, 19, 11
+
+#define CROSS_BUTTON(glyph, gx, gy) \
+  button_cross_shell_spans, button_cross_face_spans, glyph, \
+  3, 2, sizeof (glyph) / sizeof (HudSpan), gx, gy, 13, 13
 
 #define BUTTON_WHITE {238, 240, 245}
 #define BUTTON_YELLOW {232, 190, 46}
@@ -4703,6 +4731,17 @@ static const ButtonStyle button_r = {
 
 static const ButtonStyle button_z = {
   WIDE_BUTTON(glyph_z_spans), BUTTON_GREY, BUTTON_SHOULDER_DARK
+};
+
+/* The stick and the D-pad are not buttons, but every place that names one
+   names buttons in the same breath, so they belong to the same family and
+   the same lane.  Both are the controller's own dark grey. */
+static const ButtonStyle button_stick = {
+  ROUND_BUTTON(glyph_knob_spans, 4, 4), BUTTON_GREY, {74, 77, 82}
+};
+
+static const ButtonStyle button_dpad = {
+  CROSS_BUTTON(glyph_pivot_spans, 5, 5), {104, 107, 112}, {58, 60, 64}
 };
 
 typedef struct {
@@ -4770,7 +4809,9 @@ static const ButtonStyle *const button_icons[BUTTON_ICON_COUNT] = {
   &button_c_right,
   &button_l,
   &button_r,
-  &button_z
+  &button_z,
+  &button_stick,
+  &button_dpad
 };
 
 /*
@@ -4797,6 +4838,86 @@ u32 buttonIconWidth(ButtonIconId id) {
 
 u32 buttonIconHeight(ButtonIconId id) {
   return (u32) id < BUTTON_ICON_COUNT ? button_icons[id]->height : 0;
+}
+
+/*
+ * A legend row -- the controls, then what each one does -- is the shape every
+ * screen that explains itself ends up wanting, so it lives here once.
+ *
+ * The row is drawn twice, from opposite ends of a screen's two phases: the
+ * icons are fill sprites and the labels are textured rectangles, and the RDP
+ * cannot be swapped between them mid-card.  Both walks measure the row by the
+ * same arithmetic, which is the only thing keeping the words on their icons
+ * when the two passes are fifty lines apart in the source.
+ */
+static u32 hudStringWidth(const char *text);
+
+u32 legendEntryWidth(const LegendEntry *entry) {
+  u32 width = buttonIconWidth(entry->icon);
+
+  if (entry->icon2 != BUTTON_ICON_NONE) {
+    width += LEGEND_PAIR_GAP + buttonIconWidth(entry->icon2);
+  }
+  return width + LEGEND_ICON_GAP + hudStringWidth(entry->label);
+}
+
+u32 legendWidth(const LegendEntry *entries, u8 count) {
+  u32 width = 0;
+  u8 i;
+
+  for (i = 0; i < count; i++) {
+    width += legendEntryWidth(&entries[i]);
+    if (i + 1 < count) {
+      width += LEGEND_ENTRY_GAP;
+    }
+  }
+  return width;
+}
+
+/* Fills phase.  The shoulders are shorter than the round buttons, so an icon
+   is centred against the row rather than hung from its top. */
+void drawLegendIcons(const LegendEntry *entries, u8 count, u32 x, u32 y) {
+  ButtonPlacement icons[LEGEND_MAX_ICONS];
+  u8 placed = 0;
+  u8 i;
+
+  for (i = 0; i < count && placed < LEGEND_MAX_ICONS; i++) {
+    u32 slot = x;
+    u8 pair;
+
+    for (pair = 0; pair < 2 && placed < LEGEND_MAX_ICONS; pair++) {
+      ButtonIconId id = pair == 0 ? entries[i].icon : entries[i].icon2;
+
+      if (id == BUTTON_ICON_NONE) {
+        continue;
+      }
+      icons[placed].style = button_icons[id];
+      icons[placed].x = slot;
+      icons[placed].y = y + (LEGEND_ROW_HEIGHT - buttonIconHeight(id)) / 2;
+      placed++;
+      slot += buttonIconWidth(id) + LEGEND_PAIR_GAP;
+    }
+    x += legendEntryWidth(&entries[i]) + LEGEND_ENTRY_GAP;
+  }
+  /* One grouped pass over the whole row: the shells are a single fill colour
+     however many buttons are in it, and only a change of face or glyph colour
+     between neighbours costs another sync. */
+  drawButtonIcons(icons, placed);
+}
+
+/* Text phase, walking the same entries by the same arithmetic. */
+void drawLegendLabels(const LegendEntry *entries, u8 count, u32 x, u32 y) {
+  u8 i;
+
+  for (i = 0; i < count; i++) {
+    u32 label_x = x + buttonIconWidth(entries[i].icon) + LEGEND_ICON_GAP;
+
+    if (entries[i].icon2 != BUTTON_ICON_NONE) {
+      label_x += LEGEND_PAIR_GAP + buttonIconWidth(entries[i].icon2);
+    }
+    drawString(entries[i].label, label_x, y + LEGEND_LABEL_DROP);
+    x += legendEntryWidth(&entries[i]) + LEGEND_ENTRY_GAP;
+  }
 }
 
 static void drawObjectivePanel(Player *player) {
@@ -5234,18 +5355,42 @@ static void drawInventoryFocus(u32 x, u32 y) {
     x + INVENTORY_SLOT_SIZE, y + INVENTORY_SLOT_SIZE - 3);
 }
 
-static void drawInventoryButton(u32 x, u32 y, u8 red, u8 green, u8 blue,
-    u8 wide) {
-  gDPPipeSync(dlp++);
-  gDPSetCycleType(dlp++, G_CYC_FILL);
-  gDPSetRenderMode(dlp++, G_RM_NOOP, G_RM_NOOP2);
-  setHudFillColor(11, 13, 15);
-  gDPFillRectangle(dlp++, x, y, x + (wide ? 21 : 13), y + 13);
-  setHudFillColor(red, green, blue);
-  gDPFillRectangle(dlp++, x + 2, y + 2, x + (wide ? 19 : 11), y + 11);
-  setHudFillColor(min(255, red + 55), min(255, green + 55),
-    min(255, blue + 55));
-  gDPFillRectangle(dlp++, x + 3, y + 3, x + (wide ? 18 : 10), y + 4);
+/*
+ * The inventory footer named its controls in a private shorthand -- CU, CL,
+ * CR, CD -- on the one screen in the game where four different C directions
+ * do four different things, so it was exactly the screen least able to
+ * afford it.  The arrows say which direction; the words say what it does.
+ */
+static const LegendEntry inventory_output_legend[] = {
+  { BUTTON_ICON_A, BUTTON_ICON_NONE, "CRAFT ONE" },
+  { BUTTON_ICON_C_UP, BUTTON_ICON_NONE, "CRAFT MAX" },
+  { BUTTON_ICON_B, BUTTON_ICON_NONE, "BACK" }
+};
+
+static const LegendEntry inventory_items_legend[] = {
+  { BUTTON_ICON_A, BUTTON_ICON_NONE, "MOVE STACK" },
+  { BUTTON_ICON_B, BUTTON_ICON_NONE, "BACK" }
+};
+
+static const LegendEntry inventory_move_legend[] = {
+  { BUTTON_ICON_C_LEFT, BUTTON_ICON_NONE, "ONE" },
+  { BUTTON_ICON_C_RIGHT, BUTTON_ICON_NONE, "QUICK" },
+  { BUTTON_ICON_C_UP, BUTTON_ICON_NONE, "ALL" },
+  { BUTTON_ICON_C_DOWN, BUTTON_ICON_NONE, "DROP" }
+};
+
+#define INVENTORY_FOOTER_LEFT 12
+#define INVENTORY_FOOTER_RIGHT 307
+#define INVENTORY_OUTPUT_ROW_Y 211
+#define INVENTORY_ITEMS_ROW_Y 192
+#define INVENTORY_MOVE_ROW_Y 210
+
+/* Centred in the footer rather than run from its left edge: the rows are
+   different lengths, and a ragged right margin under a centred panel reads
+   as a mistake. */
+static u32 inventoryLegendX(const LegendEntry *entries, u8 count) {
+  return (INVENTORY_FOOTER_LEFT + INVENTORY_FOOTER_RIGHT -
+    legendWidth(entries, count)) / 2;
 }
 
 static u32 inventoryItemCount(Player *player, u8 item);
@@ -5305,27 +5450,32 @@ static void drawInventory() {
   setHudFillColor(68, 75, 75);
   gDPFillRectangle(dlp++, 198, 165, 303, 166);
 
-  /* Footer changes with focus; button shapes carry controller color even
-     when the small font is softened by a CRT. */
+  /* Footer changes with focus.  Its rows are drawn here and lettered by
+     drawInventoryText; both sides take their x from inventoryLegendX. */
   if (player->inventory_area == INVENTORY_AREA_OUTPUT) {
     setHudFillColor(12, 15, 17);
-    gDPFillRectangle(dlp++, 12, 205, 307, 227);
+    gDPFillRectangle(dlp++, INVENTORY_FOOTER_LEFT, 205,
+      INVENTORY_FOOTER_RIGHT, 227);
     setHudFillColor(69, 75, 74);
     gDPFillRectangle(dlp++, 13, 206, 306, 207);
-    drawInventoryButton(18, 210, 43, 104, 190, FALSE);
-    drawInventoryButton(110, 210, 190, 146, 36, TRUE);
-    drawInventoryButton(240, 210, 51, 145, 65, FALSE);
+    drawLegendIcons(inventory_output_legend,
+      LEGEND_COUNT(inventory_output_legend),
+      inventoryLegendX(inventory_output_legend,
+        LEGEND_COUNT(inventory_output_legend)), INVENTORY_OUTPUT_ROW_Y);
   } else {
     setHudFillColor(12, 15, 17);
-    gDPFillRectangle(dlp++, 12, 184, 307, 227);
+    gDPFillRectangle(dlp++, INVENTORY_FOOTER_LEFT, 184,
+      INVENTORY_FOOTER_RIGHT, 227);
     setHudFillColor(69, 75, 74);
     gDPFillRectangle(dlp++, 13, 185, 306, 186);
-    drawInventoryButton(18, 191, 43, 104, 190, FALSE);
-    drawInventoryButton(115, 191, 51, 145, 65, FALSE);
-    drawInventoryButton(18, 211, 190, 146, 36, TRUE);
-    drawInventoryButton(93, 211, 190, 146, 36, TRUE);
-    drawInventoryButton(178, 211, 190, 146, 36, TRUE);
-    drawInventoryButton(248, 211, 190, 146, 36, TRUE);
+    drawLegendIcons(inventory_items_legend,
+      LEGEND_COUNT(inventory_items_legend),
+      inventoryLegendX(inventory_items_legend,
+        LEGEND_COUNT(inventory_items_legend)), INVENTORY_ITEMS_ROW_Y);
+    drawLegendIcons(inventory_move_legend,
+      LEGEND_COUNT(inventory_move_legend),
+      inventoryLegendX(inventory_move_legend,
+        LEGEND_COUNT(inventory_move_legend)), INVENTORY_MOVE_ROW_Y);
   }
 
   for (row = 0; row < INVENTORY_STORAGE_ROWS + INVENTORY_HOTBAR_ROWS; row++) {
