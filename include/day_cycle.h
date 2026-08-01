@@ -69,6 +69,13 @@ Vector3 dayCycleMoonDirection();
  */
 float dayCycleSunAltitude();
 
+/* How much of the Moon's disc is lit, in the eighths the phase art draws:
+   0 at new through 8 at full.  Anything deciding a rule rather than a
+   brightness -- how many monsters a night is allowed, which of them it sends
+   -- should read this rather than scaling the fraction below back up, so the
+   rule stays whole numbers and cannot land differently on two consoles. */
+u8 dayCycleMoonlitEighths(void);
+
 /* Lit fraction of the Moon's visible disc, 0 at new through 1 at full.  It
    scales moonlight and the shadow the Moon casts, so the sky the player can
    see and the light they are standing in always agree. */

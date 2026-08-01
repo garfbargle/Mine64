@@ -36,6 +36,7 @@ console — no Expansion Pak, no Minecraft assets, terrain generated as you walk
 - Torches, doors, stairs, glass windows
 - Hearts and hunger, fall damage, sprinting, swimming, ledge vaulting
 - Hostile mobs at night that wind up visibly before they strike
+- The Moon phase decides the night: a full Moon is crowded and spider-heavy, a new Moon nearly empty and never a spider
 - Sheep, pigs and chickens that track you, flee, breed and raise young
 - Split-screen co-op for up to four players on one console
 - Three save slots on flashcart SD, checksummed with backup-on-write

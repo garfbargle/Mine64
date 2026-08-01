@@ -171,12 +171,17 @@ float dayCycleSunAltitude() {
   return sinf(angle * M_DTOR);
 }
 
-float dayCycleMoonIllumination() {
+u8 dayCycleMoonlitEighths(void) {
   /* The lit width the phase art actually draws, in eighths of the disc.
-     Reading it from the same table the tiles came from keeps the light and
-     the sprite from drifting apart if the art is ever retuned. */
+     Reading it from the same table the tiles came from keeps the light, the
+     sprite, and the danger the night carries from drifting apart if the art
+     is ever retuned. */
   static const u8 lit_eighths[8] = {8, 6, 4, 2, 0, 2, 4, 6};
-  return lit_eighths[dayCycleMoonPhase()] / 8.f;
+  return lit_eighths[dayCycleMoonPhase()];
+}
+
+float dayCycleMoonIllumination() {
+  return dayCycleMoonlitEighths() / 8.f;
 }
 
 /* 1 / sqrt(1 + ORBIT_TILT^2), so the tilted direction stays a unit vector and

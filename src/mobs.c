@@ -1498,12 +1498,57 @@ static void countMobs(u8 *passives, u8 *hostiles) {
   }
 }
 
+/*
+ * How many monsters a night is allowed, by how much of the Moon is lit.
+ *
+ * MOB_NIGHT_HOSTILE_BUDGET is what the pool can afford; it was also what
+ * every night contained, which made all of them the same night.  Spending
+ * the ceiling against the phase gives the eight-day cycle a shape the sky
+ * has been announcing all along: a full Moon lights the ground and fills it,
+ * a new Moon is dark and nearly empty.  Both are worth having -- one is a
+ * night to barricade, the other is the night to go mining -- and the pool
+ * pays nothing extra, because the ceiling itself never moves.
+ *
+ * Thirds of the budget rather than fixed counts, so retuning
+ * MOB_NIGHT_HOSTILE_BUDGET keeps the shape instead of the numbers, and every
+ * night keeps at least one monster in it.
+ *
+ * The phase turns over at the day boundary and a night sits wholly inside
+ * one (DAY_CYCLE_NIGHT_START..END), so this never shifts under a night that
+ * is already running.
+ */
+static u8 nightHostileBudget(void) {
+  u8 lit = dayCycleMoonlitEighths();
+
+  if (lit >= 6) {
+    return MOB_NIGHT_HOSTILE_BUDGET;
+  }
+  if (lit >= 2) {
+    return (u8) ((MOB_NIGHT_HOSTILE_BUDGET * 2 + 2) / 3);
+  }
+  return (u8) ((MOB_NIGHT_HOSTILE_BUDGET + 2) / 3);
+}
+
+/*
+ * Which monster the night sends, by the same Moon.
+ *
+ * The zombie is the constant half -- it is what night means here.  What the
+ * phase moves is the other half: the spider hunts a lit night, when it can
+ * see and be seen coming, and the slime has the dark ones to itself.  A
+ * player who reads the sky before dusk knows which fight they are walking
+ * into.
+ */
 static u8 randomHostileType(void) {
+  /* Of the four rolls that are not a zombie, how many belong to the spider:
+     three at a full Moon, none at a new one, and one at a half -- which is
+     the flat mix this replaced, so a middling night is unchanged. */
+  u8 spider_share = (u8) ((dayCycleMoonlitEighths() + 1) / 3);
   u8 roll = random(8);
 
-  if (roll < 4) return MOB_ZOMBIE;
-  if (roll < 7) return MOB_SLIME;
-  return MOB_SPIDER;
+  if (roll < 4) {
+    return MOB_ZOMBIE;
+  }
+  return roll < 8 - spider_share ? MOB_SLIME : MOB_SPIDER;
 }
 
 static u8 spawnForBudget(u8 night) {
@@ -1537,9 +1582,13 @@ static u8 spawnForBudget(u8 night) {
 
   countMobs(&passives, &hostiles);
   if (night && !worldModOn(MOD_PEACEFUL) &&
-      hostiles < MOB_NIGHT_HOSTILE_BUDGET) {
+      hostiles < nightHostileBudget()) {
     /* Monsters are not a regional fauna.  Night is the same everywhere, and
-       giving it a biome would only make some ground safe to sleep on. */
+       giving it a biome would only make some ground safe to sleep on.  What
+       does vary is the night itself -- see nightHostileBudget: the Moon is
+       overhead wherever the player stands, so keying the ecology to it
+       changes every night at once rather than carving the map into safe and
+       unsafe ground. */
     type = randomHostileType();
   } else if (passives < passive_budget) {
     type = randomPassiveType((int) floor(anchor->position.x / BLOCK_SIZE),
