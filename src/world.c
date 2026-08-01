@@ -538,9 +538,17 @@ static int isCave(int x, int y, int z, int surface_height) {
     return FALSE;
   }
 
+  /* The chamber field alone rules out most of the underground, so the
+     passage sample -- two more octaves of 3D noise per block -- is only
+     taken where a chamber is actually possible.  Same answer for every
+     block; carveTerrainColumn pays this per underground block, which is
+     the cost the deferred deepen pass exists to spread out. */
   chambers = perlin3d(x + 71, y, z - 191, 0.105f, 3);
+  if (chambers <= 0.68f) {
+    return FALSE;
+  }
   passages = perlin3d(x - 389, y + 53, z + 127, 0.165f, 2);
-  return chambers > 0.68f && passages > 0.58f;
+  return passages > 0.58f;
 }
 
 /*
