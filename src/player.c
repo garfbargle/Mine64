@@ -197,10 +197,6 @@ void resetPlayerInventory(Player *player) {
     addItemToInventory(player, TORCH, 8);
     addItemToInventory(player, PLANKS, 16);
     addItemToInventory(player, APPLE, 3);
-    player->inventory[INVENTORY_HOTBAR_START + /*TESTFIXTURE*/
-      player->selected_hotbar_slot].item = APPLE;
-    player->inventory[INVENTORY_HOTBAR_START +
-      player->selected_hotbar_slot].count = 16;
     refreshHeldItem(player);
   }
 }

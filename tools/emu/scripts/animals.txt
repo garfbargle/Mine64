@@ -1,18 +1,22 @@
-# ANIMALS: the herd comes to the apple, eats it, and raises a calf.
+# ANIMALS: find the herd and watch it.
 #
-# BONUS KIT is switched on because the apples it hands out are the only ones
-# available at spawn, and every interaction worth capturing starts with one in
-# the hand.  CRITTERS is switched off so that whatever walks toward the player
-# is walking toward the apple and not toward the mod.
+# There is no seed entry on the setup card, so which animals land where is not
+# reproducible between runs.  What is reproducible is that the opening herd
+# seeds within twenty-six blocks of the player and draws out to thirty, so a
+# slow turn on the spot from where the world drops you finds some of it.  The
+# camera is tipped down first because an animal is knee-high and a level view
+# puts it under the hotbar.
 #
-# The player never moves.  That is the test: an animal that has to be chased
-# has not been tempted.
+# Feeding cannot be captured from here: the bonus kit's apples land in the
+# pack, not the hotbar, and moving one across is a scripted inventory session
+# rather than a press.  Run this for the models, the gait, and the heads
+# turning to follow the player.
 
 wait 960
 press A 8
 wait 40
 
-# Seven rows below CLASSIC is CRITTERS; two more is BONUS KIT.
+# Nine rows below CLASSIC is BONUS KIT.
 press DDOWN 8
 wait 5
 press DDOWN 8
@@ -26,9 +30,7 @@ wait 5
 press DDOWN 8
 wait 5
 press DDOWN 8
-wait 20
-press A 8
-wait 20
+wait 5
 press DDOWN 8
 wait 5
 press DDOWN 8
@@ -43,48 +45,41 @@ wait 12
 wait 300
 shot spawn
 
+# About twenty-five degrees down: enough to centre a sheep at conversational
+# range without losing the horizon.
 stick 0 -60 5 Z
 wait 20
-# Back off so the whole herd fits in frame, then watch it pair up.
-stick 0 -70 70
-wait 20
-shot backed-off
+shot looking-down
 
-stick 40 0 8
-wait 70
+stick 55 0 10
+wait 55
 shot look-01
-stick 40 0 8
-wait 70
+stick 55 0 10
+wait 55
 shot look-02
-stick 40 0 8
-wait 70
+stick 55 0 10
+wait 55
 shot look-03
-stick 40 0 8
-wait 70
+stick 55 0 10
+wait 55
 shot look-04
-stick 40 0 8
-wait 70
+stick 55 0 10
+wait 55
 shot look-05
-stick 40 0 8
-wait 70
+stick 55 0 10
+wait 55
 shot look-06
-stick 40 0 8
-wait 70
+stick 55 0 10
+wait 55
 shot look-07
-stick 40 0 8
-wait 70
+stick 55 0 10
+wait 55
 shot look-08
-stick 40 0 8
-wait 70
+stick 55 0 10
+wait 55
 shot look-09
-stick 40 0 8
-wait 70
+stick 55 0 10
+wait 55
 shot look-10
-stick 40 0 8
-wait 70
-shot look-11
-stick 40 0 8
-wait 70
-shot look-12
 
 stop

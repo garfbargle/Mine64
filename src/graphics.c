@@ -991,6 +991,31 @@ static Vtx mutton_verts[] = {
   STEVE_VERTEX(-10, -9, -7, 112, 48, 44), STEVE_VERTEX(8, -9, -7, 112, 48, 44)
 };
 
+/* Paler and slighter than the two red meats, so a glance at the ground tells
+   the three of them apart without reading the label. */
+static Vtx raw_chicken_verts[] = {
+  STEVE_VERTEX(-11, 8, 7, 224, 190, 168), STEVE_VERTEX(10, 8, 7, 224, 190, 168),
+  STEVE_VERTEX(7, -8, 6, 224, 190, 168), STEVE_VERTEX(-8, -8, 6, 224, 190, 168),
+  STEVE_VERTEX(10, 8, -7, 176, 141, 122), STEVE_VERTEX(-11, 8, -7, 176, 141, 122),
+  STEVE_VERTEX(-8, -8, -6, 176, 141, 122), STEVE_VERTEX(7, -8, -6, 176, 141, 122)
+};
+
+/* A quill and a vane: two boxes is the fewest that still reads as a feather
+   rather than a white stick. */
+static Vtx feather_quill_verts[] = {
+  STEVE_VERTEX(-2, 14, 2, 232, 230, 222), STEVE_VERTEX(2, 14, 2, 232, 230, 222),
+  STEVE_VERTEX(2, -14, 2, 232, 230, 222), STEVE_VERTEX(-2, -14, 2, 232, 230, 222),
+  STEVE_VERTEX(2, 14, -2, 186, 184, 176), STEVE_VERTEX(-2, 14, -2, 186, 184, 176),
+  STEVE_VERTEX(-2, -14, -2, 186, 184, 176), STEVE_VERTEX(2, -14, -2, 186, 184, 176)
+};
+
+static Vtx feather_vane_verts[] = {
+  STEVE_VERTEX(-7, 11, 1, 248, 247, 242), STEVE_VERTEX(7, 11, 1, 248, 247, 242),
+  STEVE_VERTEX(4, -6, 1, 248, 247, 242), STEVE_VERTEX(-4, -6, 1, 248, 247, 242),
+  STEVE_VERTEX(7, 11, -1, 204, 203, 198), STEVE_VERTEX(-7, 11, -1, 204, 203, 198),
+  STEVE_VERTEX(-4, -6, -1, 204, 203, 198), STEVE_VERTEX(4, -6, -1, 204, 203, 198)
+};
+
 static Vtx pork_verts[] = {
   STEVE_VERTEX(-12, 8, 8, 213, 125, 117), STEVE_VERTEX(11, 8, 8, 213, 125, 117),
   STEVE_VERTEX(9, -9, 7, 195, 100, 98), STEVE_VERTEX(-9, -9, 7, 195, 100, 98),
@@ -3061,9 +3086,11 @@ static void drawChickenMob(u8 mob_num, float hurt, float scale, u8 detailed) {
   Mob *mob = &mobs[mob_num];
   float swing = sinf(mob->walk_time) * 32.f;
   /* Always a little unsettled, and properly beating when the bird is on the
-     move.  MOB_IDLE is the only state whose feet are still. */
-  float beat = sinf(mob->walk_time * 2.f) *
-    (mob->state == MOB_IDLE ? 5.f : 26.f) + 12.f;
+     move.  MOB_IDLE is the only state whose feet are still.  The amplitude
+     doubles as the rest angle so the trough stays clear of zero -- a wing
+     that swings negative folds through the body. */
+  float flap = mob->state == MOB_IDLE ? 4.f : 20.f;
+  float beat = flap + 2.f + sinf(mob->walk_time * 2.f) * flap;
   float peck = mob->state == MOB_IDLE ?
     -42.f + sinf(mob->walk_time * .7f) * 34.f : -6.f;
 
@@ -3235,6 +3262,12 @@ static void drawLooseItemGeometry(u8 item) {
     body = apple_stem_verts;
   } else if (item == RAW_MUTTON || item == RAW_PORK) {
     body = item == RAW_PORK ? pork_verts : mutton_verts;
+  } else if (item == RAW_CHICKEN) {
+    body = raw_chicken_verts;
+  } else if (item == FEATHER) {
+    gSPVertex(dlp++, feather_quill_verts, 8, 0);
+    gSPDisplayList(dlp++, steve_box_display_list);
+    body = feather_vane_verts;
   } else if (item == SLIME_GEL) {
     body = slime_gel_verts;
   } else if (item == TORCH) {
@@ -4264,6 +4297,18 @@ static void drawItemIcon(u8 item, u32 x, u32 y, u32 size) {
     gDPFillRectangle(dlp++, x + 2, y + 4, x + size - 3, y + size - 3);
     setHudFillColor(232, 181, 164);
     gDPFillRectangle(dlp++, x + 4, y + 4, x + size - 5, y + 5);
+  } else if (item == RAW_CHICKEN) {
+    /* The same cut of meat as the two above, several shades lighter: at this
+       size the colour is the only thing telling them apart. */
+    setHudFillColor(214, 176, 152);
+    gDPFillRectangle(dlp++, x + 2, y + 4, x + size - 3, y + size - 3);
+    setHudFillColor(243, 224, 210);
+    gDPFillRectangle(dlp++, x + 4, y + 4, x + size - 5, y + 5);
+  } else if (item == FEATHER) {
+    setHudFillColor(238, 237, 232);
+    gDPFillRectangle(dlp++, x + 3, y + 2, x + size - 3, y + size - 5);
+    setHudFillColor(176, 175, 168);
+    gDPFillRectangle(dlp++, x + size / 2 - 1, y + 2, x + size / 2, y + size - 2);
   } else if (item == SLIME_GEL) {
     setHudFillColor(75, 174, 72);
     gDPFillRectangle(dlp++, x + 3, y + 3, x + size - 3, y + size - 3);
@@ -5002,6 +5047,17 @@ static void drawGameText() {
           setHudTextColor(239, 239, 230);
           drawString(held_name, (SCREEN_WD - name_width) / 2, 190);
         }
+      }
+      /* Holding an apple in front of an animal is the one interaction with no
+         other tell, so the moment it becomes possible the game says so -- and
+         says it about the same creature the button will actually reach, since
+         both read the target updateMobs resolved this frame. */
+      if (mobFeedTarget(player_num) < MAX_MOBS) {
+        setHudTextColor(241, 195, 58);
+        drawChar('A', (SCREEN_WD - hudStringWidth("A FEED")) / 2, bar_y - 36);
+        drawString("FEED",
+          (SCREEN_WD - hudStringWidth("A FEED")) / 2 + hudStringWidth("A "),
+          bar_y - 36);
       }
     }
     for (slot = 0; slot < HOTBAR_SLOT_COUNT; slot++) {
