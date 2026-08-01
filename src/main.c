@@ -405,18 +405,20 @@ static void stepGameplayStreaming(OSTime work_start, u32 budget_usec,
     prev_block_x = player_block_x;
     prev_block_z = player_block_z;
     heading_valid = TRUE;
-    /* A steady walk settles the average near 0.12 blocks a frame and a
-       sprint near 0.18; 0.04 catches a new direction within a second.  The
+    /* A steady walk settles the average near 0.06 blocks a frame and a
+       sprint near 0.09; 0.02 catches a new direction within a second.  The
        lead scales with speed, because the complaint being solved is a
        sprinting player reaching the frontier: the faster they move, the
-       further ahead of them the ring builds first. */
+       further ahead of them the ring builds first.  The bands moved with
+       MOVE_SPEED when the walk was halved -- they classify a gait, not an
+       absolute rate, so they have to stay in proportion to one. */
     worldSetStreamBias(
-      heading_x > .14f ? 5 : (heading_x > .08f ? 3 :
-        (heading_x > .04f ? 2 : (heading_x < -.14f ? -5 :
-        (heading_x < -.08f ? -3 : (heading_x < -.04f ? -2 : 0))))),
-      heading_z > .14f ? 5 : (heading_z > .08f ? 3 :
-        (heading_z > .04f ? 2 : (heading_z < -.14f ? -5 :
-        (heading_z < -.08f ? -3 : (heading_z < -.04f ? -2 : 0))))));
+      heading_x > .07f ? 5 : (heading_x > .04f ? 3 :
+        (heading_x > .02f ? 2 : (heading_x < -.07f ? -5 :
+        (heading_x < -.04f ? -3 : (heading_x < -.02f ? -2 : 0))))),
+      heading_z > .07f ? 5 : (heading_z > .04f ? 3 :
+        (heading_z > .02f ? 2 : (heading_z < -.07f ? -5 :
+        (heading_z < -.04f ? -3 : (heading_z < -.02f ? -2 : 0))))));
   }
   stepWorldStreaming(pcx, pcz, STREAM_TERRAIN_PER_STEP,
     STREAM_DECORATE_PER_STEP);

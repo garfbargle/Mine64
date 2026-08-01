@@ -4,9 +4,8 @@ Where Mine64's 4 MiB goes, in plain terms, and what can be got back.
 
 Measured by parsing the linked ELFs (`mine64.out`, `mine64-audio.out`) directly
 — section headers and symbol tables, no toolchain needed. Figures are from
-2026-08-01; the treemap linked at the bottom shows the same data as it stood
-just before `5f8979d` landed the first fix. Re-measure after anything large
-moves.
+2026-08-01, after `d972dcb`, and the treemap in *Visualising it* is generated
+from the same measurement. Re-measure after anything large moves.
 
 ## The machine
 
@@ -44,13 +43,14 @@ Current state:
 
 ## What every big piece actually does
 
-Static allocation (BSS) is 2.99 MiB — about three quarters of the machine. Nine
-things are 97% of it. In rough plain English, with the symbol name so you can
-find it in the source:
+Static allocation (BSS) is 2.93 MiB — about three quarters of the machine, and
+eight owners hold 97% of it. In rough plain English, with the symbol name so you
+can find it in the source:
 
 ### `mesh_arena` — 1,152 KiB · "the shapes to draw"
 
-**The single biggest thing in the game.** The world is stored as block IDs, but
+**The single biggest thing in the game**, at 38% of BSS. The world is stored as
+block IDs, but
 the graphics chip cannot draw block IDs — it needs a list of triangles with
 positions, colours and texture coordinates. Turning blocks into that list is
 "meshing", it is expensive, and you absolutely do not want to redo it every
@@ -131,7 +131,7 @@ Bookkeeping for `mesh_arena`: which column owns which stretch of it, how long,
 and where its triangles end and its commands begin. Sized for every live column
 plus every staged replacement.
 
-### Thread stacks and debug — 87 KiB
+### Thread stacks and debug — 78 KiB
 
 Working memory for the handful of threads NuSystem and libultra run (graphics,
 audio, controllers, cartridge). Also ~22 KiB of libultra's remote debug monitor
@@ -355,16 +355,16 @@ hardware pass: the FIFO for frame time, the heap for its real size.
 
 ## Visualising it
 
-There is an interactive treemap of this data — one box for the 4 MiB, divided by
-real byte counts, clickable down to individual symbols, with a toggle between
-the two builds:
-
-[ram-report.html](ram-report.html) — a single self-contained page, no build step
-and no server. Open it straight from the working tree:
+[ram-report.html](ram-report.html) is an interactive treemap of this data — one
+box for the 4 MiB, divided by real byte counts, clickable down to individual
+symbols, with a toggle between the two builds. It is a single self-contained
+page: no build step, no server.
 
 ```sh
 open docs/ram-report.html
 ```
 
-The same page is published at
-<https://claude.ai/code/artifact/4f72a0af-89df-4341-9874-ec7c622f267f>.
+This file is the canonical copy and is regenerated from the linked ELFs. A
+snapshot was published to `claude.ai/code/artifact/4f72a0af` earlier in the
+work; it has since drifted and still shows the pre-`5f8979d` figures, so treat
+the repo copy as the truth.

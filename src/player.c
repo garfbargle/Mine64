@@ -25,7 +25,11 @@
 /* Steering while walking wants its own feel from aiming with Z held, so the
    two sensitivities are separate even where they currently agree. */
 #define TURN_DAMPER 22
-#define MOVE_SPEED (1 / 8.f)
+/* Full stick deflection is around 80, so a walk covers 80/16 = 5 units per
+   60 Hz frame -- about 4.7 blocks a second, which is Minecraft's walk.  The
+   old 1/8 was nearly ten blocks a second: faster than a sprint is supposed
+   to be, which left L with nothing to give. */
+#define MOVE_SPEED (1 / 16.f)
 #define SPRINT_MULTIPLIER 1.5f
 #define JUMP_SPEED (BLOCK_SIZE / 4.5)
 #define TERMINAL_SPEED (BLOCK_SIZE / 2)
