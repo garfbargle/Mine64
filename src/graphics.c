@@ -1469,15 +1469,22 @@ static void buildFaceTextureTable(void) {
  */
 #define MESH_LOD_FULL 0
 #define MESH_LOD_SHELL 1
-#define MESH_LOD_PROMOTE_RADIUS 3
-#define MESH_LOD_DEMOTE_RADIUS 5
+/*
+ * Radius 1: full detail is a courtesy bubble around the player's own feet
+ * and everything else is the surface shell.  W/B measurement on hardware
+ * put the settled standing-still frame squarely on the RSP transform of
+ * the full-detail disc -- the radius-3 disc alone held the game near 12-15
+ * fps -- and the chosen trade is explicitly view distance over near
+ * detail: the far ring is what the player asked to keep.
+ */
+#define MESH_LOD_PROMOTE_RADIUS 1
+#define MESH_LOD_DEMOTE_RADIUS 3
 /*
  * Runtime copies of the LOD radii, for the Z + C-left diagnostics preset
- * chord.  The RSP transform of the full-detail near disc is the measured
- * standing-still frame cost, and the right radius is a picture-quality
- * trade that can only be judged on a CRT -- so it is a knob, not a
- * constant.  Columns re-LOD on their own after a change: the periodic
- * needs-mesh scan compares each column's compiled LOD against these.
+ * chord.  The right radius is a picture-quality trade that can only be
+ * judged on a CRT -- so it is a knob, not a constant.  Columns re-LOD on
+ * their own after a change: the periodic needs-mesh scan compares each
+ * column's compiled LOD against these.
  */
 u8 mesh_lod_promote_radius = MESH_LOD_PROMOTE_RADIUS;
 u8 mesh_lod_demote_radius = MESH_LOD_DEMOTE_RADIUS;
@@ -4334,6 +4341,13 @@ static void drawStreamingDiagnostics() {
   drawString("FPS", 60, y);
   drawUnsigned(diag_fps, 84, y);
   y = drawDiagnosticRow("W", diag_worst_frame_usec / 100, y);
+  /* The active LOD/visibility preset, promote radius * 1000 + solo visible
+     cap; Z + C-left cycles it.  Beside the B row the way FPS rides the W
+     row -- a row of its own at the stack's foot sat in CRT overscan, where
+     it read as a knob that never moved. */
+  drawString("E", 60, y);
+  drawUnsigned((u32) mesh_lod_promote_radius * 1000 +
+    solo_max_visible_columns, 72, y);
   y = drawDiagnosticRow("B", diag_worst_gated_usec / 100, y);
   y = drawDiagnosticRow("L", diag_loop_clamps, y);
   y = drawDiagnosticRow("G", diag_position_glitches, y);
@@ -4345,10 +4359,6 @@ static void drawStreamingDiagnostics() {
   /* Fog start (screen depth), 0 when fog is toggled off.  Tune with
      Z + D-pad Left/Right; Z + D-pad Down toggles. */
   y = drawDiagnosticRow("P", fog_enabled ? fog_start : 0, y);
-  /* The active LOD/visibility preset, promote radius * 1000 + solo visible
-     cap: 3120 is the shipped default.  Z + C-left cycles. */
-  y = drawDiagnosticRow("E",
-    (u32) mesh_lod_promote_radius * 1000 + solo_max_visible_columns, y);
   /* Cast-shadow casters drawn this frame, capped at SHADOW_SLOTS.  The pass
      costs eight triangles and some translucent fill per caster, so S is the
      number to watch if the sky work ever shows up in W or B. */

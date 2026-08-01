@@ -15,9 +15,12 @@ unmodified 4 MiB console.
   `(x, z, world_seed)` into a 32×32-column residency window, and released
   again behind the player. Because generation is a pure function, an
   unmodified column costs nothing to evict: it comes back identical.
-* **View distance ~80 blocks**, twice the original fixed world. The near
-  disc renders from baked vertex buffers with no per-quad matrices; the far
-  ring is a surface shell of roughly 20–35 quads per column instead of 170.
+* **View distance ~80 blocks**, twice the original fixed world, and view
+  distance deliberately outranks near detail: full-detail terrain is a
+  small bubble around the player (baked vertex buffers, no per-quad
+  matrices) and everything beyond it is a surface shell of roughly 20–35
+  quads per column instead of 170 — hardware measurement put the RSP cost
+  of a wide full-detail disc at most of the frame.
 * **One 1 MiB mesh arena**, managed as first-fit blocks with an incremental
   relocation defrag that slides a single block per frame. This replaced a
   double-buffered pair plus a stop-the-world compaction pass, and the
@@ -400,10 +403,10 @@ watchdog thread.
 integrity counter ticks, so an absorbed anomaly is never silent.  With the
 overlay up, **Z + D-pad Left/Right** walk the fog start — the `P` row —
 **Z + D-pad Down** toggles fog for an A/B against the bare streaming
-edge, and **Z + C-left** cycles the LOD/visibility presets — the `E` row,
-promote radius × 1000 + solo visible-column cap, 3120 being the shipped
-default; columns re-LOD over a few seconds, so read FPS after `W`/`B`
-settle): `X Z` player block position, `F` frame heartbeat (frozen F = no frames being built), `O`
+edge, and **Z + C-left** cycles the LOD/visibility presets — the `E`
+readout beside the `B` row, promote radius × 1000 + solo visible-column
+cap, 1120 being the shipped default; columns re-LOD over a few seconds,
+so read FPS after `W`/`B` settle): `X Z` player block position, `F` frame heartbeat (frozen F = no frames being built), `O`
 origin rebases, `M`/`V` frame-list peak and overflows, `R D Q A C T`
 streaming state (resident / decorated / queued / arena-free% / allocated mesh
 blocks / terrain-pending), `W`/`B` worst frame gap and worst gated-CPU cost in

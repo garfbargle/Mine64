@@ -1921,15 +1921,18 @@ void updatePlayers() {
         /*
          * Cycle the LOD/visibility presets for on-CRT A/B against the
          * standing-still frame rate, which W/B measurement showed is set by
-         * the RSP transform of the drawn terrain.  Ordered to change one
-         * variable at a time: full-detail radius first, then the solo
-         * visible-column cap, then both at their floor.  The E row shows
-         * promote * 1000 + cap (3120 is the shipped default).  Columns
+         * the RSP transform of the drawn terrain.  View distance is the
+         * thing being optimised *for*, so no preset shrinks it: the shipped
+         * default is the minimal detail bubble at the full 120-column view,
+         * the second raises the cap to effectively uncapped (watch the V
+         * row for shed terrain there), and the rest buy detail radius back
+         * at the default view for comparison.  The E readout beside the B
+         * row shows promote * 1000 + cap (1120 is the default).  Columns
          * re-LOD on their own over a few seconds -- read FPS after W and B
          * settle back down.
          */
-        static const u8 preset_promote[] = {3, 2, 2, 1};
-        static const u8 preset_cap[] = {120, 120, 90, 60};
+        static const u8 preset_promote[] = {1, 1, 2, 3};
+        static const u8 preset_cap[] = {120, 150, 120, 120};
         static u8 preset;
 
         preset = (u8) ((preset + 1) % sizeof preset_promote);
