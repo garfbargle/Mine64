@@ -91,24 +91,54 @@ static const char *world_name_keyboard[] = {
   "456789"
 };
 
-static char *info_text[] = {
-  "Mine64 v0.4",
-  "",
-  "Walk: Stick up / down",
-  "Turn: Stick left / right",
-  "Sprint: Left shoulder",
-  "Look around: Analog stick + Z trigger",
-  "Use / place / eat: A button",
-  "Mine block: Hold B button",
-  "Pickaxe gathers rock / mines faster",
-  "Items: C left / right",
-  "Camera: C up",
-  "Turn or step sideways: Z trigger + C up",
-  "Pack: START or C down",
-  "Jump: Right shoulder",
-  "Save game: D-Pad",
-  "Co-op: Controllers 2-4 press START"
+/*
+ * How to play, as two columns of controls rather than fourteen sentences.
+ *
+ * The prose version had to name every button in words -- "Use / place / eat:
+ * A button" -- which is the screen a first-time player reads *because* they
+ * do not yet know which button is which, explaining the unknown in terms of
+ * itself.  Showing the button removes the translation step, and the halves
+ * split the way the controller does: getting around, and doing things.
+ */
+static const LegendEntry how_to_move_legend[] = {
+  { BUTTON_ICON_STICK, BUTTON_ICON_NONE, "WALK / TURN" },
+  { BUTTON_ICON_STICK, BUTTON_ICON_Z, "LOOK AROUND" },
+  { BUTTON_ICON_Z, BUTTON_ICON_C_UP, "STEP SIDEWAYS" },
+  { BUTTON_ICON_L, BUTTON_ICON_NONE, "SPRINT" },
+  { BUTTON_ICON_R, BUTTON_ICON_NONE, "JUMP" },
+  { BUTTON_ICON_C_UP, BUTTON_ICON_NONE, "CAMERA" }
 };
+
+static const LegendEntry how_to_act_legend[] = {
+  { BUTTON_ICON_A, BUTTON_ICON_NONE, "USE / PLACE / EAT" },
+  { BUTTON_ICON_B, BUTTON_ICON_NONE, "MINE (HOLD)" },
+  { BUTTON_ICON_C_LEFT, BUTTON_ICON_C_RIGHT, "ITEMS" },
+  { BUTTON_ICON_START, BUTTON_ICON_C_DOWN, "PACK" },
+  { BUTTON_ICON_DPAD, BUTTON_ICON_NONE, "SAVE GAME" },
+  { BUTTON_ICON_START, BUTTON_ICON_NONE, "CO-OP P2-P4" }
+};
+
+#define HOW_TO_ROW_PITCH 16
+#define HOW_TO_TOP 60
+#define HOW_TO_COLUMN_GAP 20
+/* The one line here that is a fact about the world rather than a control, so
+   it keeps its words and sits under both columns. */
+#define HOW_TO_NOTE "PICKAXE GATHERS ROCK AND MINES FASTER"
+#define HOW_TO_NOTE_Y 176
+
+static u32 howToMoveX(void) {
+  return (SCREEN_WD -
+    (legendColumnWidth(how_to_move_legend, LEGEND_COUNT(how_to_move_legend)) +
+     HOW_TO_COLUMN_GAP +
+     legendColumnWidth(how_to_act_legend,
+       LEGEND_COUNT(how_to_act_legend)))) / 2;
+}
+
+static u32 howToActX(void) {
+  return howToMoveX() +
+    legendColumnWidth(how_to_move_legend, LEGEND_COUNT(how_to_move_legend)) +
+    HOW_TO_COLUMN_GAP;
+}
 
 static char *generating_text[] = {
   "Generating world..."
@@ -293,44 +323,6 @@ static u8 worldNameKeyColumns(u8 row) {
   return columns;
 }
 
-static void drawMenuButton(u32 x, u32 y, u8 red, u8 green, u8 blue,
-    u8 light_red, u8 light_green, u8 light_blue) {
-  /* Pixel circles read more like N64 controller buttons than a modern round
-     rectangle, while still being crisp on the console's low resolution. */
-  setMenuFillColor(20, 22, 18);
-  gDPFillRectangle(dlp++, x - 4, y - 9, x + 4, y + 9);
-  gDPFillRectangle(dlp++, x - 7, y - 6, x + 7, y + 6);
-  gDPFillRectangle(dlp++, x - 9, y - 3, x + 9, y + 3);
-  setMenuFillColor(red, green, blue);
-  gDPFillRectangle(dlp++, x - 3, y - 7, x + 3, y + 7);
-  gDPFillRectangle(dlp++, x - 6, y - 4, x + 6, y + 4);
-  gDPFillRectangle(dlp++, x - 7, y - 2, x + 7, y + 2);
-  setMenuFillColor(light_red, light_green, light_blue);
-  gDPFillRectangle(dlp++, x - 3, y - 6, x + 3, y - 4);
-  gDPFillRectangle(dlp++, x - 5, y - 3, x - 3, y - 2);
-}
-
-static void drawMenuStick(u32 x, u32 y) {
-  setMenuFillColor(20, 22, 18);
-  gDPFillRectangle(dlp++, x - 7, y - 8, x + 7, y + 3);
-  gDPFillRectangle(dlp++, x - 4, y - 11, x + 4, y + 6);
-  setMenuFillColor(101, 105, 97);
-  gDPFillRectangle(dlp++, x - 5, y - 7, x + 5, y + 1);
-  gDPFillRectangle(dlp++, x - 3, y - 9, x + 3, y + 4);
-  setMenuFillColor(160, 165, 150);
-  gDPFillRectangle(dlp++, x - 3, y - 7, x + 3, y - 5);
-  gDPFillRectangle(dlp++, x - 1, y + 5, x + 1, y + 9);
-}
-
-static void drawStartButton(u32 x, u32 y) {
-  setMenuFillColor(20, 22, 18);
-  gDPFillRectangle(dlp++, x - 28, y - 7, x + 28, y + 7);
-  setMenuFillColor(100, 105, 96);
-  gDPFillRectangle(dlp++, x - 26, y - 5, x + 26, y + 5);
-  setMenuFillColor(151, 156, 141);
-  gDPFillRectangle(dlp++, x - 24, y - 4, x + 24, y - 2);
-}
-
 static void setMenuTextColor(u8 red, u8 green, u8 blue) {
   gDPSetPrimColor(dlp++, 0, 0, red, green, blue, 255);
 }
@@ -357,6 +349,30 @@ static void setMenuTextColor(u8 red, u8 green, u8 blue) {
 #define SETUP_STRIP_TOP 200
 #define SETUP_STRIP_BOTTOM 234
 
+/*
+ * The naming card's two prompt rows.  Z and START used to be words while the
+ * buttons either side of them were pictures, which is the worst of both: the
+ * player had to read half a row and recognise the other half.
+ */
+static const LegendEntry world_naming_edit_legend[] = {
+  { BUTTON_ICON_B, BUTTON_ICON_NONE, "DELETE" },
+  { BUTTON_ICON_A, BUTTON_ICON_NONE, "ADD" },
+  { BUTTON_ICON_Z, BUTTON_ICON_NONE, "BACK" }
+};
+
+static const LegendEntry world_naming_move_legend[] = {
+  { BUTTON_ICON_STICK, BUTTON_ICON_NONE, "KEY" },
+  { BUTTON_ICON_C_LEFT, BUTTON_ICON_C_RIGHT, "CURSOR" },
+  { BUTTON_ICON_START, BUTTON_ICON_NONE, "CREATE" }
+};
+
+#define WORLD_NAMING_EDIT_ROW_Y 181
+#define WORLD_NAMING_MOVE_ROW_Y 198
+
+static u32 centredLegendX(const LegendEntry *entries, u8 count) {
+  return (SCREEN_WD - legendWidth(entries, count)) / 2;
+}
+
 static const LegendEntry world_setup_legend[] = {
   { BUTTON_ICON_A, BUTTON_ICON_NONE, "PICK" },
   { BUTTON_ICON_R, BUTTON_ICON_NONE, "REROLL" },
@@ -367,6 +383,15 @@ static const LegendEntry world_setup_legend[] = {
 #define WORLD_SETUP_LEGEND_COUNT \
   (sizeof (world_setup_legend) / sizeof (LegendEntry))
 #define WORLD_SETUP_LEGEND_Y 215
+
+/* While a world builds, the legend is replaced by what the job is doing --
+   and, if the player is leaning on START to enter the moment it lands, an
+   acknowledgement that the console noticed.  Sits after "BUILDING WORLD". */
+static const LegendEntry world_setup_held_legend[] = {
+  { BUTTON_ICON_START, BUTTON_ICON_NONE, "HELD" }
+};
+
+#define WORLD_SETUP_HELD_X 130
 
 static u32 worldSetupLegendX(void) {
   return (SETUP_STRIP_LEFT + SETUP_STRIP_RIGHT -
@@ -535,6 +560,10 @@ static void drawWorldSetup() {
   if (!worldJobActive()) {
     drawLegendIcons(world_setup_legend, WORLD_SETUP_LEGEND_COUNT,
       worldSetupLegendX(), WORLD_SETUP_LEGEND_Y);
+  } else if (menuActPending()) {
+    drawLegendIcons(world_setup_held_legend,
+      LEGEND_COUNT(world_setup_held_legend), WORLD_SETUP_HELD_X,
+      WORLD_SETUP_LEGEND_Y);
   }
   gDPPipeSync(dlp++);
 
@@ -571,8 +600,13 @@ static void drawWorldSetup() {
 
   if (worldJobActive()) {
     setMenuTextColor(216, 191, 77);
-    drawString(menuActPending() ? "BUILDING WORLD  -  START HELD" :
-      "BUILDING WORLD", SETUP_STRIP_LEFT + 6, 217);
+    drawString("BUILDING WORLD", SETUP_STRIP_LEFT + 6,
+      WORLD_SETUP_LEGEND_Y + LEGEND_LABEL_DROP);
+    if (menuActPending()) {
+      drawLegendLabels(world_setup_held_legend,
+        LEGEND_COUNT(world_setup_held_legend), WORLD_SETUP_HELD_X,
+        WORLD_SETUP_LEGEND_Y);
+    }
   } else {
     setMenuTextColor(150, 155, 142);
     drawLegendLabels(world_setup_legend, WORLD_SETUP_LEGEND_COUNT,
@@ -657,12 +691,14 @@ static void drawWorldNaming() {
       gDPFillRectangle(dlp++, x + 3, y + 3, x + 12, y + 4);
     }
   }
-  drawMenuButton(63, 188, 54, 145, 66, 105, 203, 95);
-  drawMenuButton(167, 188, 175, 48, 41, 232, 87, 71);
-  drawMenuStick(48, 204);
-  drawMenuButton(120, 204, 183, 142, 43, 235, 196, 79);
-  drawMenuButton(140, 204, 183, 142, 43, 235, 196, 79);
-  drawStartButton(244, 204);
+  drawLegendIcons(world_naming_edit_legend,
+    LEGEND_COUNT(world_naming_edit_legend),
+    centredLegendX(world_naming_edit_legend,
+      LEGEND_COUNT(world_naming_edit_legend)), WORLD_NAMING_EDIT_ROW_Y);
+  drawLegendIcons(world_naming_move_legend,
+    LEGEND_COUNT(world_naming_move_legend),
+    centredLegendX(world_naming_move_legend,
+      LEGEND_COUNT(world_naming_move_legend)), WORLD_NAMING_MOVE_ROW_Y);
   gDPPipeSync(dlp++);
 
   beginText();
@@ -680,18 +716,18 @@ static void drawWorldNaming() {
         key_y + row * 16 + 3);
     }
   }
-  drawChar('B', 60, 184);
-  drawString("DELETE", 77, 184);
-  drawChar('A', 164, 184);
-  drawString("ADD", 181, 184);
-  drawString("Z BACK", 216, 184);
-  drawString("KEY", 65, 200);
-  drawChar('C', 117, 200);
-  drawChar('C', 137, 200);
-  drawString("CURSOR", 151, 200);
-  drawString("START", 227, 200);
+  drawLegendLabels(world_naming_edit_legend,
+    LEGEND_COUNT(world_naming_edit_legend),
+    centredLegendX(world_naming_edit_legend,
+      LEGEND_COUNT(world_naming_edit_legend)), WORLD_NAMING_EDIT_ROW_Y);
+  drawLegendLabels(world_naming_move_legend,
+    LEGEND_COUNT(world_naming_move_legend),
+    centredLegendX(world_naming_move_legend,
+      LEGEND_COUNT(world_naming_move_legend)), WORLD_NAMING_MOVE_ROW_Y);
   if (!saving_available) {
-    drawCenteredString(storageStatusText(), 205);
+    /* Below the prompts, not through them: the rows are thirteen pixels tall
+       now rather than eight, and this used to land inside the second one. */
+    drawCenteredString(storageStatusText(), 224);
   }
 }
 
@@ -714,6 +750,36 @@ static void drawWorldJobBar(u32 y) {
   gDPPipeSync(dlp++);
 }
 
+/*
+ * Fills, then text, like every other card here.  The icons cannot simply be
+ * interleaved with their labels: they are fill rectangles and the labels are
+ * textured, and swapping the RDP between them mid-card is the hazard that
+ * locks the console (see menu_setup_display_list).
+ */
+static void drawHowToPlay(void) {
+  gDPPipeSync(dlp++);
+  gDPSetCycleType(dlp++, G_CYC_FILL);
+  gDPSetRenderMode(dlp++, G_RM_NOOP, G_RM_NOOP2);
+  drawLegendColumnIcons(how_to_move_legend,
+    LEGEND_COUNT(how_to_move_legend), howToMoveX(), HOW_TO_TOP,
+    HOW_TO_ROW_PITCH);
+  drawLegendColumnIcons(how_to_act_legend, LEGEND_COUNT(how_to_act_legend),
+    howToActX(), HOW_TO_TOP, HOW_TO_ROW_PITCH);
+  gDPPipeSync(dlp++);
+
+  beginText();
+  drawMenuTitle();
+  setMenuTextColor(226, 231, 219);
+  drawLegendColumnLabels(how_to_move_legend,
+    LEGEND_COUNT(how_to_move_legend), howToMoveX(), HOW_TO_TOP,
+    HOW_TO_ROW_PITCH);
+  drawLegendColumnLabels(how_to_act_legend, LEGEND_COUNT(how_to_act_legend),
+    howToActX(), HOW_TO_TOP, HOW_TO_ROW_PITCH);
+  setMenuTextColor(163, 169, 155);
+  drawCenteredString(HOW_TO_NOTE, HOW_TO_NOTE_Y);
+  setMenuTextColor(255, 255, 255);
+}
+
 void drawMenu() {
   u32 i, j, x, center;
   char chr;
@@ -730,9 +796,8 @@ void drawMenu() {
       y_start = 170;
       break;
     case INFO:
-      text = info_text;
-      n_lines = sizeof(info_text) / sizeof(char *);
-      break;
+      drawHowToPlay();
+      return;
     case GENERATING:
       text = generating_text;
       n_lines = sizeof(generating_text) / sizeof(char *);

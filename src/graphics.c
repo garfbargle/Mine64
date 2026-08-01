@@ -4811,6 +4811,90 @@ void drawLegendIcons(const LegendEntry *entries, u8 count, u32 x, u32 y) {
   drawButtonIcons(icons, placed);
 }
 
+/* The width of one entry's icons, without its label: what a column has to
+   indent every label by if their left edges are to line up. */
+static u32 legendIconCellWidth(const LegendEntry *entry) {
+  u32 width = buttonIconWidth(entry->icon);
+
+  if (entry->icon2 != BUTTON_ICON_NONE) {
+    width += LEGEND_PAIR_GAP + buttonIconWidth(entry->icon2);
+  }
+  return width;
+}
+
+u32 legendColumnIconWidth(const LegendEntry *entries, u8 count) {
+  u32 widest = 0;
+  u8 i;
+
+  for (i = 0; i < count; i++) {
+    u32 width = legendIconCellWidth(&entries[i]);
+
+    if (width > widest) {
+      widest = width;
+    }
+  }
+  return widest;
+}
+
+u32 legendColumnWidth(const LegendEntry *entries, u8 count) {
+  u32 indent = legendColumnIconWidth(entries, count) + LEGEND_ICON_GAP;
+  u32 widest = 0;
+  u8 i;
+
+  for (i = 0; i < count; i++) {
+    u32 width = hudStringWidth(entries[i].label);
+
+    if (width > widest) {
+      widest = width;
+    }
+  }
+  return indent + widest;
+}
+
+/*
+ * A column's icons.  Each entry's icons are right-aligned within the shared
+ * indent, so a one-button row and a two-button row both finish at the same
+ * place and the labels start there.
+ */
+void drawLegendColumnIcons(const LegendEntry *entries, u8 count, u32 x, u32 y,
+    u32 pitch) {
+  ButtonPlacement icons[LEGEND_MAX_ICONS];
+  u32 indent = legendColumnIconWidth(entries, count);
+  u8 placed = 0;
+  u8 i;
+
+  for (i = 0; i < count && placed < LEGEND_MAX_ICONS; i++) {
+    u32 slot = x + indent - legendIconCellWidth(&entries[i]);
+    u32 row = y + i * pitch;
+    u8 pair;
+
+    for (pair = 0; pair < 2 && placed < LEGEND_MAX_ICONS; pair++) {
+      ButtonIconId id = pair == 0 ? entries[i].icon : entries[i].icon2;
+
+      if (id == BUTTON_ICON_NONE) {
+        continue;
+      }
+      icons[placed].style = button_icons[id];
+      icons[placed].x = slot;
+      icons[placed].y = row + (LEGEND_ROW_HEIGHT - buttonIconHeight(id)) / 2;
+      placed++;
+      slot += buttonIconWidth(id) + LEGEND_PAIR_GAP;
+    }
+  }
+  drawButtonIcons(icons, placed);
+}
+
+void drawLegendColumnLabels(const LegendEntry *entries, u8 count, u32 x, u32 y,
+    u32 pitch) {
+  u32 label_x = x + legendColumnIconWidth(entries, count) + LEGEND_ICON_GAP;
+  u8 i;
+
+  for (i = 0; i < count; i++) {
+    drawString(entries[i].label, label_x,
+      y + i * pitch + LEGEND_LABEL_DROP);
+  }
+}
+
 /* Text phase, walking the same entries by the same arithmetic. */
 void drawLegendLabels(const LegendEntry *entries, u8 count, u32 x, u32 y) {
   u8 i;

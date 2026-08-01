@@ -237,9 +237,10 @@ typedef struct {
 #define LEGEND_ENTRY_GAP 11
 /* Centres an 8px glyph box against a 13px button. */
 #define LEGEND_LABEL_DROP 2
-/* Icons drawn in one grouped pass; rows longer than this are truncated
-   rather than split, because no legend in the game is close to it. */
-#define LEGEND_MAX_ICONS 12
+/* Icons drawn in one grouped pass.  Sized for the longest legend in the game
+   -- the how-to column, thirteen controls of which four are pairs -- with
+   room over; anything longer is truncated rather than split. */
+#define LEGEND_MAX_ICONS 24
 
 #define LEGEND_COUNT(table) ((u8) (sizeof (table) / sizeof (LegendEntry)))
 
@@ -247,6 +248,22 @@ u32 legendEntryWidth(const LegendEntry *entry);
 u32 legendWidth(const LegendEntry *entries, u8 count);
 void drawLegendIcons(const LegendEntry *entries, u8 count, u32 x, u32 y);
 void drawLegendLabels(const LegendEntry *entries, u8 count, u32 x, u32 y);
+
+/*
+ * The same entries stacked instead of strung out: one control per line, every
+ * label starting at the same x.  A row wants the icons packed tight against
+ * their words; a column wants the words in a straight edge, or a list of
+ * thirteen controls reads as thirteen unrelated fragments.
+ *
+ * legendColumnIconWidth is that shared indent -- the widest icon cell in the
+ * table -- so a caller can centre the whole block.
+ */
+u32 legendColumnIconWidth(const LegendEntry *entries, u8 count);
+u32 legendColumnWidth(const LegendEntry *entries, u8 count);
+void drawLegendColumnIcons(const LegendEntry *entries, u8 count, u32 x, u32 y,
+  u32 pitch);
+void drawLegendColumnLabels(const LegendEntry *entries, u8 count, u32 x, u32 y,
+  u32 pitch);
 void draw(int can_reclaim_mesh_arena);
 /* Frames that exceeded the command budget and had to shed terrain or be
    dropped.  Non-zero means the frame list was overflowing. */

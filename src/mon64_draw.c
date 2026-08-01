@@ -592,6 +592,39 @@ static u8 bagItemCount(u8 player_num, u8 item) {
   return total > 99 ? 99 : (u8) total;
 }
 
+/*
+ * The battle's three prompts.  Each is drawn twice -- icon here in the fills,
+ * word in drawBattleText -- from the same table at the same coordinates.
+ */
+static const LegendEntry battle_continue_legend[] = {
+  { BUTTON_ICON_A, BUTTON_ICON_NONE, "CONTINUE" }
+};
+
+static const LegendEntry battle_back_legend[] = {
+  { BUTTON_ICON_B, BUTTON_ICON_NONE, "BACK" }
+};
+
+#define BATTLE_PROMPT_Y 208
+#define BATTLE_BAG_PROMPT_X 246
+#define BATTLE_BAG_PROMPT_Y 214
+
+/*
+ * Whether the message being typed out has finished, which is when pressing A
+ * starts to mean something.  drawBattleText discovers this as a side effect of
+ * the reveal loop it is already running; the fills phase has no such loop, so
+ * the question is asked directly here and both phases call it.
+ */
+static u8 battleMessageComplete(void) {
+  const char *line = mon_battle.message[mon_battle.message_head];
+  u32 revealed = mon_battle.message_reveal / 4u;
+  u32 index = 0;
+
+  while (line[index] && index < revealed) {
+    index++;
+  }
+  return mon_battle.message_count > 0 && line[index] == 0;
+}
+
 static void drawBattleFills(void) {
   u8 phase = mon_battle.phase;
   u8 side = mon_battle.acting_side;
@@ -705,6 +738,18 @@ static void drawBattleFills(void) {
     default:
       break;
   }
+
+  if ((phase == MON_PHASE_MESSAGE || phase == MON_PHASE_CATCH) &&
+      battleMessageComplete()) {
+    drawLegendIcons(battle_continue_legend,
+      LEGEND_COUNT(battle_continue_legend), BATTLE_TEXT_X, BATTLE_PROMPT_Y);
+  } else if (phase == MON_PHASE_MOVE) {
+    drawLegendIcons(battle_back_legend, LEGEND_COUNT(battle_back_legend),
+      MOVE_INFO_X, BATTLE_PROMPT_Y);
+  } else if (phase == MON_PHASE_BAG) {
+    drawLegendIcons(battle_back_legend, LEGEND_COUNT(battle_back_legend),
+      BATTLE_BAG_PROMPT_X, BATTLE_BAG_PROMPT_Y);
+  }
   gDPPipeSync(dlp++);
 }
 
@@ -751,9 +796,11 @@ static void drawBattleText(void) {
         x += charWidth(line[index]);
         index++;
       }
-      if (mon_battle.message_count > 0 && line[index] == 0) {
+      if (battleMessageComplete()) {
         textColor(150, 155, 142);
-        drawString("A CONTINUE", BATTLE_TEXT_X, 210);
+        drawLegendLabels(battle_continue_legend,
+          LEGEND_COUNT(battle_continue_legend), BATTLE_TEXT_X,
+          BATTLE_PROMPT_Y);
       }
       break;
     }
@@ -807,7 +854,8 @@ static void drawBattleText(void) {
         }
       }
       textColor(150, 155, 142);
-      drawString("B BACK", MOVE_INFO_X, 210);
+      drawLegendLabels(battle_back_legend, LEGEND_COUNT(battle_back_legend),
+        MOVE_INFO_X, BATTLE_PROMPT_Y);
       break;
     }
 
@@ -852,7 +900,8 @@ static void drawBattleText(void) {
           170, row_y);
       }
       textColor(150, 155, 142);
-      drawString("B BACK", 246, 216);
+      drawLegendLabels(battle_back_legend, LEGEND_COUNT(battle_back_legend),
+        BATTLE_BAG_PROMPT_X, BATTLE_BAG_PROMPT_Y);
       break;
     }
 
