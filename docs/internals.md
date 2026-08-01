@@ -196,6 +196,18 @@ Biomes made it obvious — a desert became a forest between sessions.
   version actually had.
 * Player and world data are checksummed; writes go through a temporary file
   plus a backup so an interrupted cartridge write recovers the previous world.
+* **A load must reset every pool it only partly refills.** The file carries the
+  frozen 96 tree records, not the whole live pool, so `beginLoadGame` calls
+  `initTrees` and `initHome` the way `beginWorldGeneration` does. Without it the
+  records past the saved 96 were whatever RAM held — on a cold boot, bss, where
+  `base_y` is 0 rather than `TREE_INACTIVE_Y`, so each read as a live tree at
+  (0, 0) and `treesValid` failed on the duplicate root. The menu previews the
+  highlighted slot as it comes up, so the first boot after the first save was
+  enough to condemn it. Saving was never the broken half.
+* A file that fails validation is renamed to `.bad`, not deleted. Freeing the
+  final name is what the fallback world's first transactional rename needs;
+  destroying the bytes was never part of it, and it is what turned the bug
+  above into lost worlds rather than a bad load. One `.bad` is kept per slot.
 * **Save paths must be legal 8.3 short names.** `ffconf.h` sets `FF_USE_LFN` to
   0, so FatFs rejects a longer basename or extension with `FR_INVALID_NAME`
   before touching the card. Several past naming schemes overran this and saving
