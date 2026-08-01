@@ -190,6 +190,7 @@ static int clampHeight(int height) {
 #define HASH_SALT_TREE 0x9E3779B9UL
 #define HASH_SALT_TREE_HEIGHT 0x7F4A7C15UL
 #define HASH_SALT_TREE_CANOPY 0x2545F491UL
+#define HASH_SALT_TREE_SPECIES 0x85EBCA6BUL
 #define HASH_SALT_WAYSTONE 0x165667B1UL
 #define HASH_SALT_WAYSTONE_HEIGHT 0x27D4EB2FUL
 #define HASH_SALT_STRUCTURE_KIND 0xA24BAED5UL
@@ -466,50 +467,213 @@ static int isCave(int x, int y, int z, int surface_height) {
   return chambers > 0.68f && passages > 0.58f;
 }
 
-/* One canopy corner's draw.  The corner index rides in the hash's y slot, so a
+/*
+ * The climate field.
+ *
+ * Hoisted above the tree code because both halves of the world's character
+ * read it now: the biome section further down turns it into a surface
+ * palette, and the species table just below turns it into which tree grows
+ * on that palette.  One definition is what keeps those two from drifting --
+ * a jungle canopy standing over plains soil would be the exact failure.
+ *
+ * Widening it from 0.025 to 0.006 turned its ~40-block patches into
+ * ~170-block regions, which is the scale a biome has to be for walking out of
+ * one to mean anything.  Measured over an 800x800 block area the field spans
+ * 0.14 to 0.87 about a mean of 0.505, which is where the cuts below come from.
+ */
+static float climateAt(int x, int z) {
+  return perlin2d(x + 883, z + 521, 0.006f, 3);
+}
+
+/* The bands that field is cut into: roughly 14% desert, 59% plains, 21%
+   forest and 6% jungle.  Jungle is deliberately the rare one -- an emergent
+   canopy should be a find, and its stands are also the heaviest thing the
+   160-record tree pool is ever asked to hold. */
+#define CLIMATE_DESERT_MAX 0.32f
+#define CLIMATE_FOREST_MIN 0.62f
+#define CLIMATE_JUNGLE_MIN 0.76f
+
+/*
+ * Tree species.
+ *
+ * A species is derived and never stored, exactly like the biome it belongs
+ * to.  It cannot ask biomeAt, because decoration runs without the height
+ * patch that function's slope test reads -- and it does not need to.  The
+ * surface block the trunk is about to root in already carries the half of the
+ * classification that came from height and slope: stone and cobblestone are
+ * highland and scree and nothing else.  climateAt is a standalone noise
+ * sample that settles the rest.  Between them they name the biome with no
+ * patch at all, which is what lets this stay in the decoration pass.
+ */
+#define TREE_SPECIES_PLAINS  0
+#define TREE_SPECIES_FOREST  1
+#define TREE_SPECIES_JUNGLE  2
+#define TREE_SPECIES_CONIFER 3
+#define TREE_SPECIES_DEAD    4
+#define TREE_SPECIES_CACTUS  5
+#define TREE_SPECIES_COUNT   6
+#define TREE_SPECIES_NONE    255
+
+/*
+ * One species' shape.
+ *
+ * canopy is the 5x5 plan of the crown, counted in leaf layers above the
+ * topmost log: a cell holding v places v + 2 of them, so -2 leaves the cell
+ * bare and 2 fills all four layers the record's leaf mask can own.  Reaching
+ * past 2 would place blocks treeAddLeaf refuses to record, and the tree would
+ * leave that unowned slab hanging when it fell.
+ */
+typedef struct {
+  u8 min_height;   /* trunk logs before the height hash */
+  u8 height_range; /* how many trunk heights the hash picks between; never 0 */
+  u8 trunk;        /* the block the trunk is built from */
+  s8 canopy[25];
+} TreeSpecies;
+
+static const TreeSpecies tree_species[TREE_SPECIES_COUNT] = {
+  /* Plains: open-grown, so it spreads rather than climbs -- a short trunk
+     under a broad round crown that keeps a thin skirt out to the corners. */
+  {3, 2, WOOD, {
+    -2,-1,-1,-1,-2,
+    -1, 1, 2, 1,-1,
+    -1, 2, 2, 2,-1,
+    -1, 1, 2, 1,-1,
+    -2,-1,-1,-1,-2}},
+  /* Forest: the same tree grown in competition.  Taller, and the corners are
+     cut back to a diamond, which is what reads as crowded from inside. */
+  {4, 3, WOOD, {
+    -2,-2,-1,-2,-2,
+    -2, 1, 2, 1,-2,
+    -1, 2, 2, 2,-1,
+    -2, 1, 2, 1,-2,
+    -2,-2,-1,-2,-2}},
+  /* Jungle: bare for most of its length with a compact crown perched on top.
+     That silhouette is the whole point of the species, and its trunk range is
+     what needed the eight-log ceiling in trees.c. */
+  {6, 3, WOOD, {
+    -2,-2,-2,-2,-2,
+    -2,-1, 1,-1,-2,
+    -2, 1, 2, 1,-2,
+    -2,-1, 1,-1,-2,
+    -2,-2,-2,-2,-2}},
+  /* Conifer: a spire.  A crown anchored at the top log and tapering upward is
+     precisely what a heightmap already draws, so the cone costs no new
+     machinery -- only a different set of numbers. */
+  {4, 3, WOOD, {
+    -2,-1,-1,-1,-2,
+    -1,-1, 0,-1,-1,
+    -1, 0, 2, 0,-1,
+    -1,-1, 0,-1,-1,
+    -2,-1,-1,-1,-2}},
+  /* Desert snag: trunk and nothing else.  A branch would have to be a
+     horizontal log, and trunk_mask indexes one vertical stack, so the record
+     could not own it -- it would hang in the air once the trunk fell. */
+  {3, 3, WOOD, {
+    -2,-2,-2,-2,-2,
+    -2,-2,-2,-2,-2,
+    -2,-2,-2,-2,-2,
+    -2,-2,-2,-2,-2,
+    -2,-2,-2,-2,-2}},
+  /* Cactus: a short green column.  With all sixteen IDs spoken for, LEAVES is
+     the only green there is.  spawnTree gives it no record, so it is mined
+     block by block rather than felled, and costs the pool nothing. */
+  {2, 2, LEAVES, {
+    -2,-2,-2,-2,-2,
+    -2,-2,-2,-2,-2,
+    -2,-2,-2,-2,-2,
+    -2,-2,-2,-2,-2,
+    -2,-2,-2,-2,-2}}
+};
+
+/*
+ * Which species roots on this block.
+ *
+ * Climate still gets a say over sand because of shorelines: columnProfile
+ * forces SAND at the waterline in every biome, so without the band check a
+ * beach inside a forest would grow desert snags along its whole length.
+ */
+static u8 treeSpeciesFor(u8 surface, int tx, int tz) {
+  float climate;
+
+  if (surface == STONE || surface == COBBLESTONE) {
+    return TREE_SPECIES_CONIFER;
+  }
+  climate = climateAt(tx, tz);
+  if (surface == SAND) {
+    if (climate >= CLIMATE_DESERT_MAX) {
+      return TREE_SPECIES_NONE;
+    }
+    return coordinateHash(tx, 1, tz, HASH_SALT_TREE_SPECIES) % 5u < 2u ?
+      TREE_SPECIES_CACTUS : TREE_SPECIES_DEAD;
+  }
+  if (climate > CLIMATE_JUNGLE_MIN) {
+    return TREE_SPECIES_JUNGLE;
+  }
+  return climate > CLIMATE_FOREST_MIN ? TREE_SPECIES_FOREST :
+    TREE_SPECIES_PLAINS;
+}
+
+/* One canopy cell's draw.  The cell index rides in the hash's y slot, so a
    single salt yields eight independent values for one tree. */
 static int canopyDraw(int tx, int corner, int tz) {
   return (int) (coordinateHash(tx, corner, tz, HASH_SALT_TREE_CANOPY) % 3u);
 }
 
-static void generateLeafHeights(int *heights, int tx, int tz) {
+static void generateLeafHeights(int *heights, const TreeSpecies *species,
+    int tx, int tz) {
+  /* The four outer corners and the four inner diagonals -- the cells whose
+     draw the eye actually reads as the crown's outline. */
+  static const u8 jitter_cells[8] = {0, 4, 20, 24, 6, 8, 16, 18};
   int i;
+
   for (i = 0; i < 25; i++) {
-    heights[i] = 0;
+    heights[i] = species->canopy[i];
   }
-
-  heights[2 * 5 + 2] = 2;
-  heights[1 * 5 + 2] = 2;
-  heights[3 * 5 + 2] = 2;
-  heights[2 * 5 + 1] = 2;
-  heights[2 * 5 + 3] = 2;
-
-  heights[1 * 5 + 1] = canopyDraw(tx, 0, tz);
-  heights[1 * 5 + 3] = canopyDraw(tx, 1, tz);
-  heights[3 * 5 + 1] = canopyDraw(tx, 2, tz);
-  heights[3 * 5 + 3] = canopyDraw(tx, 3, tz);
-
-  heights[0 * 5 + 0] = -canopyDraw(tx, 4, tz);
-  heights[0 * 5 + 4] = -canopyDraw(tx, 5, tz);
-  heights[4 * 5 + 0] = -canopyDraw(tx, 6, tz);
-  heights[4 * 5 + 4] = -canopyDraw(tx, 7, tz);
+  /* The draw only ever subtracts.  A species' plan is therefore its upper
+     bound, and no roll can push a cell past the four layers its leaf mask is
+     able to own. */
+  for (i = 0; i < 8; i++) {
+    heights[jitter_cells[i]] -= canopyDraw(tx, (int) i, tz);
+  }
 }
 
-static void spawnTree(int tx, int ty, int tz) {
+static void spawnTree(int tx, int ty, int tz, u8 surface) {
+  const TreeSpecies *species;
+  u8 species_index = treeSpeciesFor(surface, tx, tz);
   int height;
   int x, y, z;
   u8 tree_index;
   int leaf_heightmap[25];
 
-  blockSet(tx, ty, tz, DIRT);
+  if (species_index == TREE_SPECIES_NONE) {
+    return;
+  }
+  species = &tree_species[species_index];
+  height = species->min_height +
+    (int) (coordinateHash(tx, 0, tz, HASH_SALT_TREE_HEIGHT) %
+      (u32) species->height_range);
 
-  height = 3 + (int) (coordinateHash(tx, 0, tz, HASH_SALT_TREE_HEIGHT) % 3u);
-  tree_index = createTree(tx, tz, ty, height);
-  for (y = ty + 1; y < min(ty + height + 1, MAX_Y); y++) {
-    blockSet(tx, y, tz, WOOD);
+  /* Grass becomes the dirt a trunk stands in.  Sand and stone are already
+     what their species roots in, and keep their own surface. */
+  if (surface == GRASS) {
+    blockSet(tx, ty, tz, DIRT);
   }
 
-  generateLeafHeights(leaf_heightmap, tx, tz);
+  /* A cactus is not a tree: no record, so it neither falls when cut nor
+     spends one of the 160 slots the real trees are competing over. */
+  if (species_index == TREE_SPECIES_CACTUS) {
+    for (y = ty + 1; y < min(ty + height + 1, MAX_Y); y++) {
+      blockSet(tx, y, tz, species->trunk);
+    }
+    return;
+  }
+
+  tree_index = createTree(tx, tz, ty, height);
+  for (y = ty + 1; y < min(ty + height + 1, MAX_Y); y++) {
+    blockSet(tx, y, tz, species->trunk);
+  }
+
+  generateLeafHeights(leaf_heightmap, species, tx, tz);
 
   /* No world-edge clamp: past the canopy's reach the only boundary that
      matters is residency, and blockGet/blockSet already answer for that -- a
@@ -527,14 +691,26 @@ static void spawnTree(int tx, int ty, int tz) {
   }
 }
 
+/*
+ * The top-down scan hands the surface block it landed on to spawnTree rather
+ * than merely deciding whether to call it: that block is half of the species
+ * classification, and it has already been paid for here.
+ *
+ * Four surfaces now admit a tree where only grass used to.  The scan takes
+ * the first non-air block, so this reads the true surface and not a stone
+ * shelf under soil; the pristine-terrain ordering holds because
+ * worldAdvanceColumnDecoration replays player edits after this stage, never
+ * before.
+ */
 void trySpawnTree(int tx, int tz) {
   u8 block;
   int ty;
 
   for (ty = MAX_Y - 1; ty >= 0; ty--) {
     block = blockGet(tx, ty, tz);
-    if (block == GRASS) {
-      spawnTree(tx, ty, tz);
+    if (block == GRASS || block == SAND || block == STONE ||
+        block == COBBLESTONE) {
+      spawnTree(tx, ty, tz, block);
       return;
     } else if (block != AIR) {
       return;
@@ -558,7 +734,9 @@ u8 tryPlantTree(int x, int y, int z) {
       return FALSE;
     }
   }
-  spawnTree(x, y - 1, z);
+  /* A sapling still demands grass, so the species is whatever the local
+     climate grows there -- plains, forest or jungle, never a snag. */
+  spawnTree(x, y - 1, z, GRASS);
   return TRUE;
 }
 
@@ -1109,17 +1287,40 @@ static void stampWaystonesColumn(int cx, int cz) {
 }
 
 /*
- * TRUE when a tree roots at this column.  The perlin field sets the local
- * density and the hash decides whether this particular column draws one.
+ * How thick a stand is, by climate band.
  *
- * Biomes deliberately do not appear here.  trySpawnTree plants only on GRASS,
- * so desert, highland and scree refuse trees on their own -- for free, and
- * without this stage needing a height patch it does not have.  Forest and
- * plains share a palette and are separated by this field's own variation,
- * which is why the biome does not scale it either.
+ * This used to be flat, and could afford to be: every biome but plains and
+ * forest refused trees on its own because trySpawnTree only ever planted on
+ * grass.  Now that sand and stone admit their own species, the bands have to
+ * be told apart here or a desert would carry a plains forest's worth of
+ * snags.  Climate alone is enough -- it is the axis desert, forest and jungle
+ * are cut on, and unlike biomeAt it needs no height patch.
+ *
+ * Jungle is capped at the densest the record pool can absorb rather than the
+ * densest that would look right: the decorated ring holds 160 trees, and a
+ * solidly jungle ring at this scale lands just under that.  Past it the
+ * blocks still generate, but createTree hands back TREE_NONE and those trees
+ * cannot be felled.
+ */
+static float treeDensityScale(float climate) {
+  if (climate < CLIMATE_DESERT_MAX) {
+    return 0.4f;
+  }
+  if (climate > CLIMATE_JUNGLE_MIN) {
+    return 1.8f;
+  }
+  return climate > CLIMATE_FOREST_MIN ? 1.3f : 1.f;
+}
+
+/*
+ * TRUE when a tree roots at this column.  The perlin field sets the local
+ * density, the climate band scales it, and the hash decides whether this
+ * particular column draws one.  Which species that tree is remains
+ * spawnTree's business; this stage only decides how many.
  */
 static u8 treeSeededAt(int x, int z) {
-  float density = perlin2d(x, z, 0.02f, 2) * 8.f - 2.f;
+  float density = (perlin2d(x, z, 0.02f, 2) * 8.f - 2.f) *
+    treeDensityScale(climateAt(x, z));
 
   return (float) (coordinateHash(x, 0, z, HASH_SALT_TREE) % 1000u) < density &&
     !structureExcludesTreeAt(x, z);
@@ -1168,7 +1369,8 @@ static int world_gen_z;
 #define BIOME_DESERT   2
 #define BIOME_HIGHLAND 3
 #define BIOME_SCREE    4
-#define BIOME_COUNT    5
+#define BIOME_JUNGLE   5
+#define BIOME_COUNT    6
 
 typedef struct {
   u8 surface;    /* the one exposed top block */
@@ -1181,44 +1383,43 @@ static const BiomePalette biome_palettes[BIOME_COUNT] = {
   {GRASS,       DIRT,  5},  /* forest: deeper soil under the trees */
   {SAND,        SAND,  4},  /* desert                            */
   {STONE,       STONE, 3},  /* highland: bare rock               */
-  {COBBLESTONE, STONE, 2}   /* scree: weathered, broken rock     */
+  {COBBLESTONE, STONE, 2},  /* scree: weathered, broken rock     */
+  /* Jungle shares the forest palette outright.  It is the one biome the
+     ground does not announce -- what tells you where you are is the canopy
+     overhead, which is the point of having species at all. */
+  {GRASS,       DIRT,  6}
 };
 
 /*
- * The climate field.  This is the sample that used to be called `biome` and
- * fed only terrainDirtDepth.  Widening it from 0.025 to 0.006 turns its
- * ~40-block patches into ~170-block regions, which is the scale a biome has
- * to be for walking out of one to mean anything.  Measured over a 800x800
- * block area the field spans 0.14 to 0.87 about a mean of 0.505, which is
- * where the thresholds below come from.
+ * The climate field itself lives above the tree code, along with the
+ * CLIMATE_* cuts this function applies: the species table needs it there and
+ * both must read the same field.  What it governs here is unchanged -- soil
+ * depth, and how far sand climbs a dry bank.
  *
- * Widening it also broadens what it already governed -- soil depth, and how
- * far sand climbs a dry bank -- which is the intended trade: those were
- * per-patch details and are now per-region ones.
- */
-static float climateAt(int x, int z) {
-  return perlin2d(x + 883, z + 521, 0.006f, 3);
-}
-
-/*
+ * Note the asymmetry with trees.  Jungle and forest are one palette, so on
+ * the ground they are the same biome; only the canopy tells them apart.
+ *
  * Bare rock outranks climate: a slope too steep or a summit too high holds no
  * soil whatever the weather, which is the rule the old `exposed_stone` test
  * encoded and this keeps.  Climate then splits that rock into clean stone and
  * weathered scree, and splits the ground that does hold soil into desert,
- * plains and forest.
+ * plains, forest and jungle.
  *
- * The cuts fall at roughly 14% desert, 59% plains and 27% forest, so plains
- * stays the broad and mostly level route through the world that terrainHeight
- * is shaped to provide.
+ * The cuts fall at roughly 14% desert, 59% plains, 21% forest and 6% jungle,
+ * so plains stays the broad and mostly level route through the world that
+ * terrainHeight is shaped to provide.
  */
 static u8 biomeAt(int height, float slope, float climate) {
   if (height > 21 || slope >= 5.f) {
     return climate < 0.45f ? BIOME_SCREE : BIOME_HIGHLAND;
   }
-  if (climate < 0.32f) {
+  if (climate < CLIMATE_DESERT_MAX) {
     return BIOME_DESERT;
   }
-  return climate > 0.62f ? BIOME_FOREST : BIOME_PLAINS;
+  if (climate > CLIMATE_JUNGLE_MIN) {
+    return BIOME_JUNGLE;
+  }
+  return climate > CLIMATE_FOREST_MIN ? BIOME_FOREST : BIOME_PLAINS;
 }
 
 /*

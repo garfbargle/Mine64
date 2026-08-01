@@ -6,7 +6,11 @@
 #include "items.h"
 
 #define TREE_NONE 255
-#define TREE_TRUNK_PARTS 5
+/* Eight is the whole of trunk_mask, and raising the ceiling to it is what a
+   jungle tree needs: at five logs the tall species could not clear its own
+   canopy.  The record grows by nothing -- the mask was already a u8 with
+   three bits spare -- so the save layout is byte-identical either way. */
+#define TREE_TRUNK_PARTS 8
 #define TREE_LEAF_LAYERS 4
 #define TREE_LEAF_BITS (25 * TREE_LEAF_LAYERS)
 #define TREE_DEBRIS_PARTS (TREE_TRUNK_PARTS + TREE_LEAF_BITS)
@@ -45,6 +49,13 @@ typedef char TreeRootHashMustExceedPool[
 ];
 typedef char TreeRootWindowMustFitStoredCoordinates[
   TREE_ROOT_SPAN <= 256 ? 1 : -1
+];
+/* rebuildTreeLookup no longer range-checks trunk_mask, because at eight parts
+   every bit of the u8 names a real log.  Should the ceiling ever come back
+   down, this fails the build rather than letting an unchecked high bit
+   through as a phantom trunk. */
+typedef char TreeTrunkMustFillItsMask[
+  TREE_TRUNK_PARTS == 8 ? 1 : -1
 ];
 
 /* A zero value marks an empty slot; live values are tree index + 1.  Separate
@@ -683,7 +694,7 @@ u8 rebuildTreeLookup() {
       continue;
     }
     if (tree->x >= MAX_X || tree->z >= MAX_Z || tree->base_y >= MAX_Y ||
-        tree->canopy_y >= MAX_Y || tree->trunk_mask & ~0x1F ||
+        tree->canopy_y >= MAX_Y ||
         tree->state > TREE_STATE_DEBRIS || tree->fall_direction > 3 ||
         tree->fall_progress != tree->fall_progress || tree->fall_progress < 0 ||
         tree->fall_progress > 1 || tree->debris_cursor > TREE_DEBRIS_PARTS ||
