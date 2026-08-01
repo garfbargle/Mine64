@@ -600,6 +600,10 @@ static Mtx steve_translate[NUM_DISPLAY_LISTS][MAX_PLAYERS][STEVE_PART_COUNT];
 static Mtx steve_rotate[NUM_DISPLAY_LISTS][MAX_PLAYERS][STEVE_PART_COUNT];
 static Mtx first_person_sword_translate[NUM_DISPLAY_LISTS][MAX_PLAYERS];
 static Mtx first_person_sword_rotate[NUM_DISPLAY_LISTS][MAX_PLAYERS];
+/* The held tool shares the arm's translation -- the hand is the origin of both
+   -- but not its rotation, so the blade can sit across the fist and lead the
+   strike instead of running straight out along the forearm. */
+static Mtx first_person_tool_rotate[NUM_DISPLAY_LISTS][MAX_PLAYERS];
 
 #define MOB_BODY 0
 #define MOB_HEAD 1
@@ -2546,6 +2550,15 @@ static void drawSteve(u8 player_num) {
 #define FP_SWING_FORWARD 45.f
 #define FP_SWING_INWARD 6.f
 #define FP_SWING_RISE 4.f
+/* A blade that shares the forearm's rotation grows straight out along it, and
+   a sword that continues the arm in one line reads as a pole.  Breaking it at
+   the wrist -- lifted off the arm's axis, turned so its flat faces the player
+   -- is what makes it read as held.  The slash is a roll, in the plane of the
+   screen: sweeping the blade in depth instead would foreshorten it away to
+   nothing at the very moment the strike lands. */
+#define FP_TOOL_PITCH 40.f
+#define FP_TOOL_YAW -30.f
+#define FP_TOOL_SLASH 45.f
 
 /* 0 while the arm rests, 1 at the furthest reach of a strike. */
 static float firstPersonReach(Player *player) {
@@ -2589,6 +2602,8 @@ static void drawFirstPersonHand(u8 player_num) {
     FP_ELBOW_Z - FP_SWING_FORWARD * reach - FP_ARM_LENGTH * pitch_sin);
   guRotateRPY(&first_person_sword_rotate[dl_no][player_num], pitch, 0.f,
     FP_ARM_ROLL);
+  guRotateRPY(&first_person_tool_rotate[dl_no][player_num],
+    pitch + FP_TOOL_PITCH, FP_TOOL_YAW, FP_ARM_ROLL + FP_TOOL_SLASH * reach);
   gSPClearGeometryMode(dlp++, G_CULL_BACK);
   gSPMatrix(dlp++, OS_K0_TO_PHYSICAL(&first_person_sword_translate[dl_no][player_num]),
     G_MTX_MODELVIEW | G_MTX_LOAD | G_MTX_NOPUSH);
@@ -2597,6 +2612,12 @@ static void drawFirstPersonHand(u8 player_num) {
   gSPVertex(dlp++, first_person_arm_verts, 8, 0);
   gSPDisplayList(dlp++, steve_box_display_list);
   if (itemIsTool(item)) {
+    /* The hand is the origin of the tool as well, so only the rotation has to
+       be swapped -- the arm's translation still lands the hilt in the fist. */
+    gSPMatrix(dlp++, OS_K0_TO_PHYSICAL(&first_person_sword_translate[dl_no][player_num]),
+      G_MTX_MODELVIEW | G_MTX_LOAD | G_MTX_NOPUSH);
+    gSPMatrix(dlp++, OS_K0_TO_PHYSICAL(&first_person_tool_rotate[dl_no][player_num]),
+      G_MTX_MODELVIEW | G_MTX_MUL | G_MTX_NOPUSH);
     drawToolGeometry(item);
   }
   gSPSetGeometryMode(dlp++, G_CULL_BACK);
