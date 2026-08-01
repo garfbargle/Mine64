@@ -2484,12 +2484,6 @@ void updatePlayers() {
     return;
   }
 
-  if (current_screen == LOADING_PREVIEW) {
-    /* The flyover is deliberately non-interactive; do not let a held menu
-       button select another world while the current one is becoming ready. */
-    return;
-  }
-
   if (current_screen != GAME) {
     down_pressed = cont_data[0].stick_y < -50;
     up_pressed = cont_data[0].stick_y > 50;

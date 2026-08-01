@@ -5,11 +5,6 @@
 
 enum Screen {
   MENU,
-  INFO,
-  GENERATING,
-  LOADING,
-  /* The world data is ready; keep it on screen briefly for the flyover. */
-  LOADING_PREVIEW,
   /* Choosing what a new world is made of, with that world orbiting beside the
      card.  Everything on it is locked once the world is created. */
   WORLD_SETUP,
@@ -21,21 +16,16 @@ enum Screen {
 extern enum Screen current_screen;
 
 /*
- * The screens that show the orbiting preview instead of a world being played.
+ * The front-end screens: a card over a world that is orbiting behind it rather
+ * than being played.  They get the cinematic lens, a flat backdrop rather than
+ * a sky, no HUD, and whatever mesh the last build published.
+ *
  * The renderer and the camera each ask this in several places, and every one
  * of them used to be its own list of comparisons -- which is how a new card
  * gets drawn with a gameplay lens, no backdrop, or the inventory panel on top
  * of it.  A front-end screen is added here and nowhere else.
  */
 static __inline__ __attribute__((unused)) u8 screenShowsPreview(
-    enum Screen screen) {
-  return screen == LOADING_PREVIEW || screen == MENU ||
-    screen == WORLD_SETUP || screen == WORLD_NAMING;
-}
-
-/* Of those, the ones with a card over the world: they get a flat backdrop
-   rather than a sky, and their mesh is whatever the last build published. */
-static __inline__ __attribute__((unused)) u8 screenIsWorldPicker(
     enum Screen screen) {
   return screen == MENU || screen == WORLD_SETUP || screen == WORLD_NAMING;
 }

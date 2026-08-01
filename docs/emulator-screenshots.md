@@ -223,8 +223,14 @@ None of these are fixed:
   correctly. It appears in a different wrong colour on hardware, which is the
   usual signature of a combiner or TLUT state the two rasterisers resolve
   differently.
-- `03-world-naming`: "NO CART SAVE DEVICE" is drawn through the `KEY` legend and
-  collides with the START button. Three strings share that bottom strip.
-- The INFO screen is unreachable. `src/menu.c` renders the full controls list
-  and `menuAct` handles leaving it, but nothing anywhere assigns
-  `current_screen = INFO`, so the help screen cannot be opened.
+Fixed since:
+
+- "NO CART SAVE DEVICE" no longer collides with the naming card's `KEY` legend.
+  The prompt rows grew from eight pixels to thirteen and the status line moved
+  below them, to y=224 — outside the card entirely. Re-captured and clear.
+- The INFO screen was unreachable: `src/menu.c` rendered the full controls list
+  and `menuAct` handled leaving it, but nothing anywhere assigned
+  `current_screen = INFO`. It has been deleted rather than given a door, along
+  with the three other screen states nothing assigned (`GENERATING`, `LOADING`,
+  `LOADING_PREVIEW`) and the column-legend layout API in `graphics.c` that only
+  the help screen used.

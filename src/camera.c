@@ -29,12 +29,10 @@
 #define THIRD_PERSON_SHOULDER_OFFSET 18.f
 #define THIRD_PERSON_SAMPLES 12
 #define THIRD_PERSON_AVATAR_MIN_DISTANCE 40.f
-/* The scenic orbit runs on wall-clock seconds, not on rendered frames.  These
-   were per-frame constants tuned when the preview drew around 20 fps, so every
+/* The scenic orbit runs on wall-clock seconds, not on rendered frames.  This
+   was a per-frame constant tuned when the preview drew around 20 fps, so every
    scheduling win since then spun the camera up by the same factor.  Seconds
-   keep the reveal looking identical whatever the frame rate does next. */
-#define LOADING_PREVIEW_SECONDS 9.f
-#define LOADING_ORBIT_DEGREES_PER_SECOND 12.4f
+   keep the carousel looking identical whatever the frame rate does next. */
 #define MENU_ORBIT_DEGREES_PER_SECOND 5.6f
 /* One rendered frame can be arbitrarily long -- a mesh build behind the menu,
    or the gap either side of a world load -- and the orbit must not teleport
@@ -481,7 +479,7 @@ void updateCameraMatrices(u8 player_num) {
     playerCameraPosition(player_num), TRUE);
 }
 
-void beginLoadingPreview() {
+void resetPreviewOrbit() {
   loading_preview_elapsed = 0.f;
   /* The world build that precedes the reveal renders nothing, so its whole
      duration would otherwise arrive as the first frame's delta. */
@@ -510,17 +508,12 @@ void updateLoadingCamera() {
   float low_orbit;
   Vector3 camera_position;
 
+  /* The cards may stay open for minutes, so the orbit is a calm continuous
+     carousel.  A steady rate rather than an eased one: easing from a crawl
+     made the terrain read as a tick-tock slideshow on displays where the
+     render cadence is not perfectly even. */
   loading_preview_elapsed += loadingPreviewDelta();
-  if (current_screen == LOADING_PREVIEW) {
-    /* A steady camera gives the eye enough motion to blend individual N64
-       frames. Easing from a crawl made the terrain read as a tick-tock
-       slideshow on displays where the render cadence is not perfectly even. */
-    angle = loading_preview_elapsed * LOADING_ORBIT_DEGREES_PER_SECOND;
-  } else {
-    /* The world picker may remain open for minutes, so keep its orbit a
-       calm, continuous carousel rather than reusing the loading reveal. */
-    angle = loading_preview_elapsed * MENU_ORBIT_DEGREES_PER_SECOND;
-  }
+  angle = loading_preview_elapsed * MENU_ORBIT_DEGREES_PER_SECOND;
   low_orbit = sinf(angle * .5f * M_DTOR);
 
   /* Keep the orbit over the terrain and close in.  The wide lens sees more
@@ -551,17 +544,6 @@ void updateLoadingCamera() {
   updateVisibleColumnsFor(0, &loading_camera, camera_position,
     CAMERA_VIEW_LOADING);
   updateCameraMatricesFor(0, &loading_camera, camera_position, FALSE);
-}
-
-u8 loadingPreviewFinished() {
-  return loading_preview_elapsed >= LOADING_PREVIEW_SECONDS;
-}
-
-u8 loadingPreviewProgress() {
-  if (loading_preview_elapsed >= LOADING_PREVIEW_SECONDS) {
-    return 100;
-  }
-  return (u8) (loading_preview_elapsed * 100.f / LOADING_PREVIEW_SECONDS);
 }
 
 static u8 cameraProjectionMode() {

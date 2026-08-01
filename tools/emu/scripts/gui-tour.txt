@@ -11,6 +11,10 @@ shot world-select       # "choose a world" over the finished flyover
 
 press START 8
 wait 60
+shot world-setup        # CREATE WORLD card: terrain shape, extras, seed
+
+press START 8
+wait 60
 shot world-naming       # CREATE WORLD block-letter keyboard
 
 press START 8

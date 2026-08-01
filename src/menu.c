@@ -78,6 +78,10 @@ static u8 setup_row;
 #define WORLD_COMMIT_SHOWN 2
 #define WORLD_COMMIT_DONE 3
 static u8 world_commit_stage;
+/* The last commit attempt reached the cart and was refused.  Latched rather
+   than timed: there is no world until a write succeeds, so the card has to go
+   on saying so for as long as the player is standing on it. */
+static u8 world_commit_failed;
 
 static char world_name_edit[WORLD_NAME_LENGTH + 1];
 static u8 world_name_cursor;
@@ -89,63 +93,6 @@ static const char *world_name_keyboard[] = {
   "KLMNOPQRST",
   "UVWXYZ0123",
   "456789"
-};
-
-/*
- * How to play, as two columns of controls rather than fourteen sentences.
- *
- * The prose version had to name every button in words -- "Use / place / eat:
- * A button" -- which is the screen a first-time player reads *because* they
- * do not yet know which button is which, explaining the unknown in terms of
- * itself.  Showing the button removes the translation step, and the halves
- * split the way the controller does: getting around, and doing things.
- */
-static const LegendEntry how_to_move_legend[] = {
-  { BUTTON_ICON_STICK, BUTTON_ICON_NONE, "WALK / TURN" },
-  { BUTTON_ICON_STICK, BUTTON_ICON_Z, "LOOK AROUND" },
-  { BUTTON_ICON_Z, BUTTON_ICON_C_UP, "STEP SIDEWAYS" },
-  { BUTTON_ICON_L, BUTTON_ICON_NONE, "SPRINT" },
-  { BUTTON_ICON_R, BUTTON_ICON_NONE, "JUMP" },
-  { BUTTON_ICON_C_UP, BUTTON_ICON_NONE, "CAMERA" }
-};
-
-static const LegendEntry how_to_act_legend[] = {
-  { BUTTON_ICON_A, BUTTON_ICON_NONE, "USE / PLACE / EAT" },
-  { BUTTON_ICON_B, BUTTON_ICON_NONE, "MINE (HOLD)" },
-  { BUTTON_ICON_C_LEFT, BUTTON_ICON_C_RIGHT, "ITEMS" },
-  { BUTTON_ICON_START, BUTTON_ICON_C_DOWN, "PACK" },
-  { BUTTON_ICON_DPAD, BUTTON_ICON_NONE, "SAVE GAME" },
-  { BUTTON_ICON_START, BUTTON_ICON_NONE, "CO-OP P2-P4" }
-};
-
-#define HOW_TO_ROW_PITCH 16
-#define HOW_TO_TOP 60
-#define HOW_TO_COLUMN_GAP 20
-/* The one line here that is a fact about the world rather than a control, so
-   it keeps its words and sits under both columns. */
-#define HOW_TO_NOTE "PICKAXE GATHERS ROCK AND MINES FASTER"
-#define HOW_TO_NOTE_Y 176
-
-static u32 howToMoveX(void) {
-  return (SCREEN_WD -
-    (legendColumnWidth(how_to_move_legend, LEGEND_COUNT(how_to_move_legend)) +
-     HOW_TO_COLUMN_GAP +
-     legendColumnWidth(how_to_act_legend,
-       LEGEND_COUNT(how_to_act_legend)))) / 2;
-}
-
-static u32 howToActX(void) {
-  return howToMoveX() +
-    legendColumnWidth(how_to_move_legend, LEGEND_COUNT(how_to_move_legend)) +
-    HOW_TO_COLUMN_GAP;
-}
-
-static char *generating_text[] = {
-  "Generating world..."
-};
-
-static char *loading_text[] = {
-  "Loading world..."
 };
 
 static char *saved_text[] = {
@@ -538,13 +485,20 @@ static void drawWorldSetup() {
         SETUP_STRIP_LEFT + 6 + width, 232);
     }
   }
-  if (!worldJobActive()) {
-    drawLegendIcons(world_setup_legend, WORLD_SETUP_LEGEND_COUNT,
-      worldSetupLegendX(), WORLD_SETUP_LEGEND_Y);
-  } else if (menuActPending()) {
+  /*
+   * A latched press outranks the legend: the buttons it lists are exactly the
+   * ones that have just stopped responding, and the two share the strip so
+   * only one of them can be shown.  Keyed on the press rather than on the
+   * build, because the settle window before a build starts swallows presses
+   * too and used to draw the full legend over them.
+   */
+  if (menuActPending()) {
     drawLegendIcons(world_setup_held_legend,
       LEGEND_COUNT(world_setup_held_legend), WORLD_SETUP_HELD_X,
       WORLD_SETUP_LEGEND_Y);
+  } else if (!worldJobActive()) {
+    drawLegendIcons(world_setup_legend, WORLD_SETUP_LEGEND_COUNT,
+      worldSetupLegendX(), WORLD_SETUP_LEGEND_Y);
   }
   gDPPipeSync(dlp++);
 
@@ -583,12 +537,14 @@ static void drawWorldSetup() {
     setMenuTextColor(216, 191, 77);
     drawString("BUILDING WORLD", SETUP_STRIP_LEFT + 6,
       WORLD_SETUP_LEGEND_Y + LEGEND_LABEL_DROP);
-    if (menuActPending()) {
-      drawLegendLabels(world_setup_held_legend,
-        LEGEND_COUNT(world_setup_held_legend), WORLD_SETUP_HELD_X,
-        WORLD_SETUP_LEGEND_Y);
-    }
-  } else {
+  }
+  /* Mirrors the icon pass above, arm for arm. */
+  if (menuActPending()) {
+    setMenuTextColor(216, 191, 77);
+    drawLegendLabels(world_setup_held_legend,
+      LEGEND_COUNT(world_setup_held_legend), WORLD_SETUP_HELD_X,
+      WORLD_SETUP_LEGEND_Y);
+  } else if (!worldJobActive()) {
     setMenuTextColor(150, 155, 142);
     drawLegendLabels(world_setup_legend, WORLD_SETUP_LEGEND_COUNT,
       worldSetupLegendX(), WORLD_SETUP_LEGEND_Y);
@@ -705,9 +661,16 @@ static void drawWorldNaming() {
     LEGEND_COUNT(world_naming_move_legend),
     centredLegendX(world_naming_move_legend,
       LEGEND_COUNT(world_naming_move_legend)), WORLD_NAMING_MOVE_ROW_Y);
-  if (!saving_available) {
-    /* Below the prompts, not through them: the rows are thirteen pixels tall
-       now rather than eight, and this used to land inside the second one. */
+  /* Below the prompts, not through them: the rows are thirteen pixels tall
+     now rather than eight, and this used to land inside the second one.  The
+     refusal outranks the device status, because a cart that reports itself
+     present and then will not take the write is the case where the status
+     line alone tells the player nothing has gone wrong. */
+  if (world_commit_failed) {
+    setMenuTextColor(236, 106, 96);
+    drawCenteredString("CART REFUSED THE WRITE - START RETRIES", 224);
+    setMenuTextColor(255, 255, 255);
+  } else if (!saving_available) {
     drawCenteredString(storageStatusText(), 224);
   }
 }
@@ -731,36 +694,6 @@ static void drawWorldJobBar(u32 y) {
   gDPPipeSync(dlp++);
 }
 
-/*
- * Fills, then text, like every other card here.  The icons cannot simply be
- * interleaved with their labels: they are fill rectangles and the labels are
- * textured, and swapping the RDP between them mid-card is the hazard that
- * locks the console (see menu_setup_display_list).
- */
-static void drawHowToPlay(void) {
-  gDPPipeSync(dlp++);
-  gDPSetCycleType(dlp++, G_CYC_FILL);
-  gDPSetRenderMode(dlp++, G_RM_NOOP, G_RM_NOOP2);
-  drawLegendColumnIcons(how_to_move_legend,
-    LEGEND_COUNT(how_to_move_legend), howToMoveX(), HOW_TO_TOP,
-    HOW_TO_ROW_PITCH);
-  drawLegendColumnIcons(how_to_act_legend, LEGEND_COUNT(how_to_act_legend),
-    howToActX(), HOW_TO_TOP, HOW_TO_ROW_PITCH);
-  gDPPipeSync(dlp++);
-
-  beginText();
-  drawMenuTitle();
-  setMenuTextColor(226, 231, 219);
-  drawLegendColumnLabels(how_to_move_legend,
-    LEGEND_COUNT(how_to_move_legend), howToMoveX(), HOW_TO_TOP,
-    HOW_TO_ROW_PITCH);
-  drawLegendColumnLabels(how_to_act_legend, LEGEND_COUNT(how_to_act_legend),
-    howToActX(), HOW_TO_TOP, HOW_TO_ROW_PITCH);
-  setMenuTextColor(163, 169, 155);
-  drawCenteredString(HOW_TO_NOTE, HOW_TO_NOTE_Y);
-  setMenuTextColor(255, 255, 255);
-}
-
 void drawMenu() {
   u32 i, j, x, center;
   char chr;
@@ -775,24 +708,6 @@ void drawMenu() {
       text = menu_text;
       n_lines = sizeof(menu_text) / sizeof(char *);
       y_start = 170;
-      break;
-    case INFO:
-      drawHowToPlay();
-      return;
-    case GENERATING:
-      text = generating_text;
-      n_lines = sizeof(generating_text) / sizeof(char *);
-      y_start = SCREEN_HT / 3;
-      break;
-    case LOADING:
-      text = loading_text;
-      n_lines = sizeof(loading_text) / sizeof(char *);
-      y_start = SCREEN_HT / 3;
-      break;
-    case LOADING_PREVIEW:
-      text = loading_text;
-      n_lines = sizeof(loading_text) / sizeof(char *);
-      y_start = 18;
       break;
     case WORLD_SETUP:
       drawWorldSetup();
@@ -817,7 +732,14 @@ void drawMenu() {
         beginText();
         drawCenteredString("CREATING WORLD", 124);
         drawCenteredString(world_names[selected_option], 140);
-        if (worldJobActive()) {
+        /*
+         * WORLD_COMMIT_DONE keeps the bar rather than falling back to the
+         * words: the write finishes inside a gated callback that then draws
+         * this frame, so the handover to gameplay is one frame away and a
+         * full bar replaced by "SAVING TO CART" for exactly that frame reads
+         * as a stutter at the moment the player is watching hardest.
+         */
+        if (worldJobActive() || world_commit_stage == WORLD_COMMIT_DONE) {
           drawWorldJobBar(158);
         } else if (saving_available) {
           drawCenteredString("SAVING TO CART", 158);
@@ -885,9 +807,7 @@ void drawMenu() {
       drawMenuTitle();
       continue;
     }
-    if (current_screen == WORLD_NAMING && !saving_available && i == 5) {
-      text_line = storageStatusText();
-    } else if (current_screen == MENU && i >= option_lines[0]) {
+    if (current_screen == MENU && i >= option_lines[0]) {
       u8 world = i - option_lines[0];
       text_line = files_present[world] ? world_names[world] : "New World";
     } else {
@@ -931,14 +851,10 @@ void drawMenu() {
     drawChar('>', SCREEN_WD / 2 - 40 - charWidth('>'), option_y);
     drawChar('<', SCREEN_WD / 2 + 40, option_y);
     if (worldJobActive()) {
+      /* The bar occupies the status line's own row, so the two are drawn
+         alternately rather than together. */
       drawWorldJobBar(147);
       beginText();
-      if (menuActPending()) {
-        /* The player has already committed to this slot.  Saying so is the
-           difference between a console that is working and one that has
-           stopped listening. */
-        drawCenteredString("ENTERING WHEN READY", 132);
-      }
     } else if (world_incomplete_message) {
       drawCenteredString("TERRAIN TOO DETAILED TO DRAW", 148);
     } else if (frame_overflows > 0) {
@@ -948,6 +864,18 @@ void drawMenu() {
          slot that is the setup card's current choice, which is how the
          feature announces itself before anyone opens the card. */
       drawCenteredString(worldTerrainName(), 148);
+    }
+    /*
+     * The player has already committed to this slot.  Saying so is the
+     * difference between a console that is working and one that has stopped
+     * listening -- which is why this sits outside the branch above rather
+     * than inside its first arm: a press latched during the settle window
+     * before a build has even started finds no bar there to imply it, and
+     * that is exactly the dead-controller half-second the latch exists to
+     * remove.
+     */
+    if (menuActPending()) {
+      drawCenteredString("ENTERING WHEN READY", 132);
     }
   }
 }
@@ -1014,8 +942,6 @@ void menuAct() {
     }
     menu_act_pending = FALSE;
     beginWorldNaming();
-  } else if (current_screen == INFO) {
-    current_screen = MENU;
   }
 }
 
@@ -1025,12 +951,12 @@ void menuBack() {
     current_screen = MENU;
   } else if (current_screen == WORLD_NAMING) {
     /* Only until the world is committed; after that there is a file on the
-       cart and nothing to go back to. */
+       cart and nothing to go back to.  A commit that *failed* left the stage
+       idle precisely so this way out still exists. */
     if (world_commit_stage == WORLD_COMMIT_IDLE) {
+      world_commit_failed = FALSE;
       current_screen = WORLD_SETUP;
     }
-  } else if (current_screen == INFO) {
-    current_screen = MENU;
   }
 }
 
@@ -1125,16 +1051,34 @@ u8 menuCommitReady() {
  * opposite things from it: a commit is the last step of creating a world and
  * moves the player into it, while an in-game save is an interruption that
  * should say so briefly and leave everything as it was.
+ *
+ * They differ again on failure.  An in-game save that fails has still left the
+ * player in a world they can keep playing, so it posts a message and gives up
+ * on the cart; a commit that fails has produced no world at all, so it stays
+ * on the card and offers the write again.
  */
 void menuSaveFinished(u8 ok) {
   if (world_commit_stage == WORLD_COMMIT_SHOWN) {
+    if (!ok) {
+      /*
+       * There is no world.  The write is what creates the file, stores the
+       * name and sets files_present, so a refused one leaves the slot exactly
+       * as empty as it was -- and entering anyway would hand the player a
+       * world that cannot survive the power switch, behind a message that
+       * scrolls off the gameplay screen in two seconds.  Drop back to idle so
+       * the card comes up again with START able to retry and Z able to leave.
+       *
+       * saving_available is deliberately *not* cleared the way an in-game
+       * failure clears it: the retry this leaves open is the whole point.
+       */
+      world_commit_stage = WORLD_COMMIT_IDLE;
+      world_commit_failed = TRUE;
+      return;
+    }
     /* The name belongs to the terrain that has been orbiting since the setup
        card, so there is nothing left to build: the world is already meshed
        and the player drops into the shot they were looking at. */
     world_commit_stage = WORLD_COMMIT_DONE;
-    if (!ok) {
-      save_failed_message = 120;
-    }
     menu_game_requested = TRUE;
     return;
   }
@@ -1162,6 +1106,7 @@ void beginWorldNaming() {
   world_name_cursor = worldNameLength();
   world_name_key_row = 0;
   world_name_key_column = 0;
+  world_commit_failed = FALSE;
   current_screen = WORLD_NAMING;
 }
 
@@ -1244,6 +1189,7 @@ void confirmWorldName() {
   if (world_commit_stage != WORLD_COMMIT_IDLE) {
     return;
   }
+  world_commit_failed = FALSE;
   setWorldName(selected_option, world_name_edit);
   game_file_num = selected_option + 1;
   /* The mask is final now, and the write below is what puts the pack on the

@@ -4332,13 +4332,10 @@ void drawWorld() {
     buildGroundShadows();
   }
 
-  if (screenIsWorldPicker(current_screen)) {
-    /* Black background while the first world loads. */
+  if (cinematic) {
+    /* A flat backdrop rather than a sky: every front-end screen has a card
+       over the world, and the cards are read against this. */
     clearBuffers(GPACK_RGBA5551(0, 0, 0, 1));
-  } else if (cinematic) {
-    /* A brighter blue keeps the distant water legible while the warm
-       terrain light provides depth in the foreground. */
-    clearBuffers(GPACK_RGBA5551(48, 123, 211, 1));
   } else {
     /* A single time-varying clear is much cheaper than the former banded
      * gradient while retaining a daylight/nightfall sky behind the terrain.
@@ -4531,30 +4528,6 @@ void drawWireframes() {
 }
 
 static void setHudFillColor(u8 r, u8 g, u8 b);
-
-static void drawLoadingOverlay() {
-  u32 progress = loadingPreviewProgress();
-  u32 filled = progress * 224 / 100;
-  u32 pulse = (progress / 8) % 3;
-
-  /* A compact framed status deck preserves nearly all of the flyover while
-     making the handoff feel intentional on a CRT. */
-  gDPPipeSync(dlp++);
-  gDPSetCycleType(dlp++, G_CYC_FILL);
-  gDPSetRenderMode(dlp++, G_RM_NOOP, G_RM_NOOP2);
-  setHudFillColor(9, 16, 30);
-  gDPFillRectangle(dlp++, 0, SCREEN_HT - 36, SCREEN_WD - 1, SCREEN_HT - 1);
-  setHudFillColor(71, 160, 196);
-  gDPFillRectangle(dlp++, 47, SCREEN_HT - 20, 272, SCREEN_HT - 14);
-  setHudFillColor(13, 35, 53);
-  gDPFillRectangle(dlp++, 49, SCREEN_HT - 18, 270, SCREEN_HT - 16);
-  if (filled > 0) {
-    setHudFillColor(100 + pulse * 24, 215, 192);
-    gDPFillRectangle(dlp++, 49, SCREEN_HT - 18, 48 + filled,
-      SCREEN_HT - 16);
-  }
-  gDPPipeSync(dlp++);
-}
 
 static void drawCrosshair(u32 x, u32 y, Player *player) {
   u8 red = 255;
@@ -5458,90 +5431,6 @@ void drawCheckMarks(const CheckMarkPlacement *list, u8 count) {
       }
       drawHudSpans(spans, spans_count, x, y, HUD_SPAN_NO_CLIP);
     }
-  }
-}
-
-/* The width of one entry's icons, without its label: what a column has to
-   indent every label by if their left edges are to line up. */
-static u32 legendIconCellWidth(const LegendEntry *entry) {
-  u32 width = buttonIconWidth(entry->icon);
-
-  if (entry->icon2 != BUTTON_ICON_NONE) {
-    width += LEGEND_PAIR_GAP + buttonIconWidth(entry->icon2);
-  }
-  return width;
-}
-
-u32 legendColumnIconWidth(const LegendEntry *entries, u8 count) {
-  u32 widest = 0;
-  u8 i;
-
-  for (i = 0; i < count; i++) {
-    u32 width = legendIconCellWidth(&entries[i]);
-
-    if (width > widest) {
-      widest = width;
-    }
-  }
-  return widest;
-}
-
-u32 legendColumnWidth(const LegendEntry *entries, u8 count) {
-  u32 indent = legendColumnIconWidth(entries, count) + LEGEND_ICON_GAP;
-  u32 widest = 0;
-  u8 i;
-
-  for (i = 0; i < count; i++) {
-    u32 width = hudStringWidth(entries[i].label);
-
-    if (width > widest) {
-      widest = width;
-    }
-  }
-  return indent + widest;
-}
-
-/*
- * A column's icons.  Each entry's icons are right-aligned within the shared
- * indent, so a one-button row and a two-button row both finish at the same
- * place and the labels start there.
- */
-void drawLegendColumnIcons(const LegendEntry *entries, u8 count, u32 x, u32 y,
-    u32 pitch) {
-  ButtonPlacement icons[LEGEND_MAX_ICONS];
-  u32 indent = legendColumnIconWidth(entries, count);
-  u8 placed = 0;
-  u8 i;
-
-  for (i = 0; i < count && placed < LEGEND_MAX_ICONS; i++) {
-    u32 slot = x + indent - legendIconCellWidth(&entries[i]);
-    u32 row = y + i * pitch;
-    u8 pair;
-
-    for (pair = 0; pair < 2 && placed < LEGEND_MAX_ICONS; pair++) {
-      ButtonIconId id = pair == 0 ? entries[i].icon : entries[i].icon2;
-
-      if (id == BUTTON_ICON_NONE) {
-        continue;
-      }
-      icons[placed].style = button_icons[id];
-      icons[placed].x = slot;
-      icons[placed].y = row + (LEGEND_ROW_HEIGHT - buttonIconHeight(id)) / 2;
-      placed++;
-      slot += buttonIconWidth(id) + LEGEND_PAIR_GAP;
-    }
-  }
-  drawButtonIcons(icons, placed);
-}
-
-void drawLegendColumnLabels(const LegendEntry *entries, u8 count, u32 x, u32 y,
-    u32 pitch) {
-  u32 label_x = x + legendColumnIconWidth(entries, count) + LEGEND_ICON_GAP;
-  u8 i;
-
-  for (i = 0; i < count; i++) {
-    drawString(entries[i].label, label_x,
-      y + i * pitch + LEGEND_LABEL_DROP);
   }
 }
 
@@ -6946,12 +6835,7 @@ static void drawGameText() {
 void drawHUD() {
   u8 player_num;
 
-  if (current_screen != GAME && current_screen != INVENTORY &&
-      !screenShowsPreview(current_screen)) {
-    clearBuffers(GPACK_RGBA5551(0, 0, 0, 1));
-  } else if (current_screen == LOADING_PREVIEW) {
-    drawLoadingOverlay();
-  } else if (screenIsWorldPicker(current_screen)) {
+  if (screenShowsPreview(current_screen)) {
     /* The carousel has its own text overlay; never let the inventory panel
        fall through on top of its world preview.  Every other branch here ends
        by draining the pipe before drawMenu reconfigures the RDP for text --
@@ -7142,11 +7026,7 @@ void draw(int can_reclaim_mesh_arena) {
     processColumnDisplayListUpdates(can_reclaim_mesh_arena);
     drawWorld();
     drawWireframes();
-  } else if (current_screen == LOADING_PREVIEW) {
-    updateLoadingCamera();
-    processColumnDisplayListUpdates(can_reclaim_mesh_arena);
-    drawWorld();
-  } else if (screenIsWorldPicker(current_screen)) {
+  } else if (screenShowsPreview(current_screen)) {
     /* Keep orbiting the mesh that is already resident.  A requested preview
        has not touched the arena yet -- callbackGfx rebuilds it only with no
        task in flight -- so the previous slot stays on screen right up to the

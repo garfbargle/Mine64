@@ -39,10 +39,13 @@ void updateCameraMatrices(u8 player_num);
 void loadCameraProjection();
 void loadCameraMatrices(u8 player_num);
 
-/* A title-card camera used while a freshly prepared world is coming online. */
-void beginLoadingPreview();
+/*
+ * The front end's camera: a slow carousel around the world standing behind
+ * the cards.  resetPreviewOrbit puts it back at its starting angle, which the
+ * job driver does whenever a build publishes a new world, so each one is
+ * revealed from the same bearing as the last.
+ */
+void resetPreviewOrbit();
 void updateLoadingCamera();
-u8 loadingPreviewFinished();
-u8 loadingPreviewProgress();
 
 #endif /* CAMERA_H */

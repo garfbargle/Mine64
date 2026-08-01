@@ -50,9 +50,29 @@
    screen in under two seconds without any single frame paying for it. */
 #define WORLD_LOAD_SLABS_PER_STEP 1
 /* Writing a slab is the same 1792 bytes as reading one, so it gets the same
-   budget.  A whole world reaches the cart in a shade under two seconds, and
-   no single frame pays for more than three and a half sector writes. */
+   budget: no single frame of gameplay pays for more than three and a half
+   sector writes. */
 #define WORLD_SAVE_SLABS_PER_STEP 1
+/*
+ * Committing a named world is the same write with none of the same
+ * constraints, and the budget above was quietly costing it four seconds.
+ *
+ * That budget was sized on the assumption of a 60 Hz callback -- "MAX_X slabs
+ * at 60 Hz puts a whole save on screen in under two seconds".  It is exactly
+ * wrong on the one screen that matters most: a step only runs behind the
+ * no-task-in-flight gate, and the naming card is drawing the orbiting world
+ * behind it at something nearer 20 Hz, so 112 slabs at one apiece is 112
+ * *rendered frames*.  Nothing else on that screen wants the callback -- no
+ * physics, no streaming, no input beyond a keyboard the commit has already
+ * made inert -- so the only thing the small budget buys is a smoother orbit
+ * behind a card the player is waiting to leave.
+ *
+ * Eight slabs is 14 KB of cart traffic per callback and puts the whole commit
+ * inside ~14 frames.  This is the tuning knob if the write turns out to be
+ * slower per byte than the read: raising it trades orbit smoothness for a
+ * shorter wait, and the bar simply advances in larger steps.
+ */
+#define WORLD_COMMIT_SLABS_PER_STEP 8
 
 /*
  * How the progress bar is divided between a job's two halves.
@@ -300,8 +320,12 @@ void requestWorldSave(void) {
 
 static void stepWorldJob() {
   if (world_job_stage == WORLD_JOB_SAVE) {
+    /* menuCommitReady stays true for the whole of a commit -- the stage only
+       leaves SHOWN when menuSaveFinished is called -- so it doubles as "this
+       write is the front end's, not gameplay's" without a second flag. */
     diagPaintPhase(DIAG_PHASE_SAVE);
-    applySaveStatus(stepSaveGame(WORLD_SAVE_SLABS_PER_STEP));
+    applySaveStatus(stepSaveGame(menuCommitReady() ?
+      WORLD_COMMIT_SLABS_PER_STEP : WORLD_SAVE_SLABS_PER_STEP));
     return;
   }
 
@@ -327,7 +351,7 @@ static void stepWorldJob() {
     }
     world_incomplete_message = !worldMeshBuildComplete();
     world_job_stage = WORLD_JOB_IDLE;
-    beginLoadingPreview();
+    resetPreviewOrbit();
     menuPreviewLoaded();
   }
 }
@@ -456,10 +480,6 @@ void callbackGfx(int pendingGfx) {
       (u32) OS_CYCLES_TO_USEC(callback_time - last_callback_time));
   }
   last_callback_time = callback_time;
-
-  if (current_screen == LOADING_PREVIEW && loadingPreviewFinished()) {
-    current_screen = GAME;
-  }
 
   /* The pack is a true pause on a single-stick console.  Letting the clock
      advance while AI and the player are frozen could turn a daylight menu
