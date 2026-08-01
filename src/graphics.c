@@ -941,8 +941,13 @@ static Vtx slime_gel_verts[] = {
  * The body remains six cheap boxes.  Steve's identity comes from this
  * single 24-vertex face sheet: eyes, a squared-off hairline, sideburns and a
  * mouth all share the existing head transform and one display-list call.
+ *
+ * Not static, because 64MON's trainers wear it too (see mon64_draw.c).  An
+ * NPC who is meant to read as another player should be the player's face
+ * rather than an imitation of it, and one shared array is also the only way
+ * a later change to that face reaches both.
  */
-static Vtx steve_face_verts[] = {
+Vtx steve_face_verts[] = {
   /* Eyes. */
   STEVE_VERTEX(-11, 8, -17, 55, 125, 210), STEVE_VERTEX(-5, 8, -17, 55, 125, 210),
   STEVE_VERTEX(-5, 2, -17, 55, 125, 210), STEVE_VERTEX(-11, 2, -17, 55, 125, 210),
@@ -1198,7 +1203,7 @@ static Gfx mob_double_box_display_list[] = {
   gsSPEndDisplayList()
 };
 
-static Gfx steve_face_display_list[] = {
+Gfx steve_face_display_list[] = {
   gsSP2Triangles(0, 1, 2, 0, 0, 2, 3, 0),
   gsSP2Triangles(4, 5, 6, 0, 4, 6, 7, 0),
   gsSP2Triangles(8, 9, 10, 0, 8, 10, 11, 0),

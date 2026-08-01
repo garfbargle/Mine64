@@ -68,13 +68,17 @@ IDENTITY = rpy(0, 0, 0)
 
 # ---------------------------------------------------------------- geometry
 
+# `static` is optional: a model array shared with another translation unit --
+# the face sheet the player and 64MON's trainers both wear -- is still a model
+# array, and a preview that stopped seeing it would quietly draw a faceless
+# head instead of saying anything.
 _VTX_ARRAY = re.compile(
-    r"static\s+Vtx\s+(\w+)\[\]\s*=\s*\{(.*?)\}", re.S)
+    r"(?:static\s+)?Vtx\s+(\w+)\[\]\s*=\s*\{(.*?)\}", re.S)
 _DEFINE_FN = re.compile(r"^#define\s+(\w+)\(([^)]*)\)\s*(.*)$", re.M)
 _DEFINE_ALIAS = re.compile(r"^#define\s+(\w+)\s+(\w+)\s*$", re.M)
 _STEVE_VERTEX = re.compile(r"STEVE_VERTEX\(([^)]*)\)")
 _GFX_ARRAY = re.compile(
-    r"^static\s+Gfx\s+(\w+)\[\]\s*=\s*\{(.*?)\};", re.M | re.S)
+    r"^(?:static\s+)?Gfx\s+(\w+)\[\]\s*=\s*\{(.*?)\};", re.M | re.S)
 _TRIANGLES = re.compile(r"gsSP(2?)Triangles?\(([^)]*)\)")
 _STRUCT = re.compile(
     r"^static\s+const\s+(\w+)\s+(\w+)\s*=\s*\{(.*?)\};", re.M | re.S)

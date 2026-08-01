@@ -72,6 +72,15 @@ coordinate and world seed they were spawned from, so the same trainer is the
 same fight every time without a byte being written down. They pick their moves
 by what those moves would actually do; wild creatures roll.
 
+A trainer is drawn as a person, not as a creature: `mon_trainer_rig` is
+Steve's own measurements written in the rig table's format, and its head wears
+the same 24-vertex face sheet the player's does. Twice the height of anything
+else roaming and wearing one of four seed-chosen looks, a trainer is
+recognisable across a field — which it has to be, because walking up to one
+starts a three-creature fight rather than a catch. Before this the trainer was
+drawn from the species it happened to spawn beside, and the HUD badge reading
+TRAINER was the only thing that said otherwise.
+
 **Player versus player** is **Z + A** while facing another local player. Each
 side's commands come from that side's controller, and the battle takes the
 whole screen.

@@ -174,6 +174,52 @@ const MonRig mon_rigs[MON_RIG_COUNT] = {
 };
 
 /*
+ * The trainer, who is not a creature.
+ *
+ * A trainer used to be drawn from the species they were spawned beside, so
+ * the one entity in the world that is supposed to be another person looked
+ * exactly like the animals -- the HUD badge saying TRAINER was the only thing
+ * that distinguished them, which is not something the player should have to
+ * read to know what they are walking toward.
+ *
+ * The measurements are drawSteve's own, taken from makeStevePose: legs 0..44
+ * above the feet, torso 44..88, head 88..120, arms hung at +-25.  So it is
+ * the player's body in the creature rig's format, which costs one table
+ * instead of a second humanoid draw path, and it stands twice the height of
+ * anything else roaming -- a silhouette the player can read across a field.
+ * The head wears the real face sheet; see mon64_draw.c.
+ */
+const MonRig mon_trainer_rig = {
+  6, 120, {
+    {  0,  66,  0, 18, 22,  9, MON_TONE_PRIMARY,   MON_ROLE_BODY,  1},
+    {  0, 104,  0, 16, 16, 16, MON_TONE_ACCENT,    MON_ROLE_HEAD,  1},
+    /* Arms and legs are crossed between the A and B halves of the gait, so a
+       walking trainer swings opposite arm to leg like a person rather than
+       hopping like a rabbit. */
+    {-25,  66,  0,  7, 22,  7, MON_TONE_ACCENT,    MON_ROLE_ARM_B, 1},
+    { 25,  66,  0,  7, 22,  7, MON_TONE_ACCENT,    MON_ROLE_ARM_A, 1},
+    {-10,  22,  0,  8, 22,  8, MON_TONE_SECONDARY, MON_ROLE_LEG_A, 1},
+    { 10,  22,  0,  8, 22,  8, MON_TONE_SECONDARY, MON_ROLE_LEG_B, 1}
+  }
+};
+
+/*
+ * Four trainers to meet, chosen by the seed their roamer was spawned with --
+ * the same seed their team comes from, so a trainer who is the same fight
+ * twice is also the same person twice, still without a byte being stored.
+ *
+ * Shirt, trousers and skin, in the tone slots the rig's boxes select.  These
+ * are the lit values: buildBox darkens the far face itself, exactly as it
+ * does for a species palette.
+ */
+const MonLook mon_trainer_looks[MON_TRAINER_LOOKS] = {
+  {{ 64, 150, 198}, { 61,  82, 174}, {205, 145,  98}},  /* the player's own */
+  {{198,  78,  70}, { 72,  66,  62}, {232, 186, 148}},
+  {{ 96, 168,  96}, { 96,  74,  52}, {170, 118,  82}},
+  {{224, 196,  88}, { 74,  86, 104}, {138,  94,  66}}
+};
+
+/*
  * Moves.  Eight characters each, because four of them have to fit a two-wide
  * grid on a 320-pixel screen, and every effect is a single sentence the log
  * can actually print.

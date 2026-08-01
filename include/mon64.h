@@ -161,6 +161,17 @@ typedef struct {
   MonPart parts[MON_MAX_PARTS];
 } MonRig;
 
+/*
+ * Three colours in the slots a rig's tones select.  A species carries its own
+ * (see below); anything drawn from a rig without being a species -- so far,
+ * the trainer -- carries one of these instead.
+ */
+typedef struct {
+  u8 primary[3];
+  u8 secondary[3];
+  u8 accent[3];
+} MonLook;
+
 typedef struct {
   /* Nine characters is what the battle panel can show beside a level. */
   const char *name;
@@ -371,6 +382,16 @@ typedef struct {
 extern const MonSpecies mon_species[MON_SPECIES_COUNT];
 extern const MonMove mon_moves[MON_MOVE_COUNT];
 extern const MonRig mon_rigs[MON_RIG_COUNT];
+/*
+ * The trainer's body, which belongs to no species and so is not in the rig
+ * table: nothing that spawns wild may ever pick it.  Authored at drawSteve's
+ * measurements and drawn unscaled, because the face sheet its head wears is
+ * authored for a head of exactly that size.
+ */
+extern const MonRig mon_trainer_rig;
+#define MON_TRAINER_HEAD_PART 1
+#define MON_TRAINER_LOOKS 4
+extern const MonLook mon_trainer_looks[MON_TRAINER_LOOKS];
 /* Effectiveness as quarters: 8 is double, 4 is neutral, 2 is halved. */
 extern const u8 mon_type_chart[MON_TYPE_COUNT][MON_TYPE_COUNT];
 /* Panel and swatch colour for each type, plus the plain column. */

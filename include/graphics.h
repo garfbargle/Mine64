@@ -153,6 +153,12 @@ void graphicsMarkColumnDirty(int cx, int cz);
 u8 graphicsColumnNeedsMesh(int cx, int cz);
 /* TRUE only when the mesh is missing outright -- the urgency signal. */
 u8 graphicsColumnMissingMesh(int cx, int cz);
+/* The player's face: 24 vertices and six quads authored for a 32-unit head
+   box at the head part's own origin, drawn with whatever matrices that head
+   is already bound to.  Shared with 64MON's trainers, who are other players
+   and so wear the same face rather than a copy of it. */
+extern Vtx steve_face_verts[];
+extern Gfx steve_face_display_list[];
 void drawWorld();
 void drawWireframes();
 void drawHUD();
