@@ -34,10 +34,6 @@ void detailsEvictGeneratedColumn(int cx, int cz) {
   (void) cx; (void) cz;
 }
 
-void worldApplyEditsToColumn(int cx, int cz) {
-  (void) cx; (void) cz;
-}
-
 void detailsApplyColumn(int cx, int cz) {
   (void) cx; (void) cz;
 }
