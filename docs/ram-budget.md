@@ -131,8 +131,10 @@ plus every staged replacement.
 ### Thread stacks and debug — 87 KiB
 
 Working memory for the handful of threads NuSystem and libultra run (graphics,
-audio, controllers, cartridge). Also, unexpectedly, libultra's remote debug
-monitor and thread profiler — in a **release** build.
+audio, controllers, cartridge). Also ~22 KiB of libultra's remote debug monitor
+and thread profiler, in a **release** build — welded to the exception handler by
+this SDK's libultra and not removable from here; see *What looks wasteful but
+isn't*.
 
 ### Everything else — ~123 KiB
 
@@ -146,25 +148,60 @@ not a memory problem.
 
 ## What we should absolutely do
 
-Both of these are things the game is paying for and getting nothing back.
+All three were built and run before being written down here. See *Verified how*
+at the end of this section for what that test did and did not cover.
 
 ### 1. Stop linking five microcodes we never run — 29 KiB, both builds
 
 "Microcode" is the program the RSP runs. The SDK ships several variants for
-different tradeoffs, and the spec files link **six** of them. `src/graphics.c`
-holds the only `nuGfxTaskStart` call in the entire tree, and it always asks for
-F3DEX2. The other five sit in RAM for the whole run and never execute.
+different tradeoffs, and the spec files link **six** of them.
 
-The catch: they cannot simply be dropped from `spec`, because NuSystem's
-`nuGfxInit_ex2` holds a static table naming all six. Removing them means adding
-ten one-word stub symbols in a game source file so the table still links. The
-entries for unused slots are never dereferenced.
+This is a leftover from a change that was worth making. The world, the targeting
+wireframe and the HUD used to be three separate RSP tasks on three microcodes —
+F3DEX for the world, L3DEX for lines, S2DEX for sprites — and commit `7f48b6c`
+collapsed them into one F3DEX2 task. That was the right call and it stays. What
+it left behind is five microcodes with no caller: `src/graphics.c` now holds the
+only `nuGfxTaskStart` in the tree and always passes `NU_GFX_UCODE_F3DEX`, index
+0. `nuGfxInitEX2`'s own one-off RDP-state task uses the same index.
 
-This is the cheapest 29 KiB in the project, it applies to both builds, and it
-fails loudly at link time if it is wrong. On its own it takes `make` from 35.7
-KiB of headroom to about 65 KiB, which clears the warning.
+They cannot simply be dropped from `spec`, because `nuGfxInitEX2` builds a
+static table naming all six and hands it to `nuGfxSetUcode`. But that table is
+only ever *indexed* — an entry is dereferenced by a task that asks for it, and
+nothing asks for 1–5. So ten one-word stubs (`src/ucode_stubs.c`) keep the table
+resolving while the real bodies leave the ROM.
 
-### 2. Stop reserving 320 KiB of audio heap we don't use — ~224 KiB, audio build
+**Measured:** `make` went from 35 KiB free to 64 KiB, and the headroom warning
+stopped. The five stubs are 8 bytes each; `gspF3DEX2_fifoTextStart` is still its
+full 5,008 bytes.
+
+### 2. Supply our own RDP FIFO — 64 KiB, both builds
+
+*This was originally filed under "could consider", on the assumption it needed
+an SDK rebuild. It does not.*
+
+`nuRDPOutputBuf` is the ring the RSP writes RDP commands into and the RDP
+drains, and NuSystem sizes it at 128 KiB. It turns out to be the **only** symbol
+in its archive member (`nurdpoutput.o` inside `libnusys.a`), so defining it in
+game code resolves nusys's reference against ours and the member is never pulled
+in. No SDK rebuild, no patched container.
+
+One trap, and it is the dangerous kind: `nuGfxInit` calls
+`nuGfxSetUcodeFifo(nuRDPOutputBuf, NU_GFX_RDP_OUTPUTBUFF_SIZE)` — it passes the
+SDK's compile-time constant, not `sizeof`. A smaller array on its own would
+leave the RSP believing it still had 128 KiB to write into, which is a buffer
+overrun into whatever follows. `initGraphics` must re-register the real size
+immediately after `nuGfxInit` (`mine64SetRDPFifo` in `src/rdp_fifo.c`).
+
+With the fifo microcode a short FIFO costs throughput, not correctness: the RSP
+stalls until the RDP catches up. That is the real question here — Mine64 has no
+frame rate to spare, and **the emulator cannot answer it**, because HLE graphics
+plugins do not model FIFO pressure. Watch `W` and `B` on hardware before and
+after.
+
+**Measured:** `nuRDPOutputBuf` is 65,536 bytes in the linked image, down from
+131,072. `make` reached 128 KiB free.
+
+### 3. Stop reserving 320 KiB of audio heap we don't use — ~224 KiB, audio build
 
 This is the whole reason `make audio` is broken.
 
@@ -188,36 +225,34 @@ Do it in this order:
 4. Update `AUDIO_HEAP_SIZE` in `tools/check_ram.py` so the guard checks the new
    ceiling.
 
-Items 1 and 2 together leave the audio build about 57 KiB over. It needs one
-more thing from the list below to actually ship.
+**Measured:** with a 96 KiB heap, and with items 1 and 2 also in, `make audio`
+links and passes the guard for the first time — but with only **2 KiB free**.
+That is not shippable margin. Audio needs one more source of 30–60 KiB, or a
+heap sized from a real `nuAuHeapGetUsed()` reading rather than from the SDK
+formula, before it can be on by default.
+
+### Verified how
+
+All three changes were applied together in a throwaway worktree at the same
+commit and built in `mine64-nusys-build:local`, then both ROMs were run through
+`tools/emu/run.sh tools/emu/scripts/gui-tour.txt`. Title, world select, world
+naming, HUD, inventory, crafting, walking and camera all render correctly on
+both.
+
+The baseline and patched screenshots differ, and that is expected: the world
+seed is `(u32) osGetTime()` at the moment the menu opens (`src/menu.c`), so
+changing the code layout changes the cycle count at that instant and therefore
+the world. Re-running the *same* ROM is byte-identical, which is what makes that
+inference safe.
+
+**What the emulator did not test:** FIFO pressure (HLE plugins do not model it),
+audio output, and RDP timing generally. Items 1 and 3 are structural and the
+emulator run is good evidence. Item 2 is a performance change and only hardware
+can sign it off — check `W`/`B` before and after.
 
 ## What we could consider
 
 None of these are free. They cost either performance or a chunk of work.
-
-### Halve the RDP conveyor belt — 64 KiB, both builds
-
-`nuRDPOutputBuf` is 128 KiB because the SDK says so. The size is compiled into
-`nusys.o`, so calling `nuGfxSetUcodeFifo` with a smaller span reclaims nothing —
-the array is still linked. Getting it back means rebuilding libnusys inside the
-project's Docker image with a smaller `NU_GFX_RDP_OUTPUTBUFF_SIZE`.
-
-The good news: with the fifo microcode, a short belt costs throughput, not
-correctness — the RSP waits when it fills up rather than corrupting anything. So
-this is a frame-rate question, and Mine64 does not have frame rate to spare.
-Worth it if the audio build needs the last 57 KiB and nothing else can find it.
-
-### Find out why rmon is in a release build — ~22 KiB, both builds
-
-`rmonIOStack` (16 KiB), `rmonRdbReadBuf`, `__osThprofHeap` and friends are
-libultra's remote debug monitor and thread profiler. They are present in
-`mine64.out`, which links plain `-lultra`, not `-lultra_d`. On the original SDK
-these belong to the debug library only.
-
-This is unverified — it may be that this SDK's libultra always pulls them in via
-the boot path, in which case there is nothing to do without rebuilding it.
-Cheap to check, and if it is a choice rather than a requirement, it is free.
-Start at the libultra build in `docker/N64SDK.Dockerfile`.
 
 ### Narrow the index — up to 64 KiB, both builds
 
@@ -254,6 +289,26 @@ would use it, and the price is frame time rather than memory. `world.h` records
 that radius 12 was measurably choppy on hardware and 10 was the compromise, so
 this headroom is bounded by the frame budget, not by RDRAM.
 
+**libultra's debug monitor cannot be dropped, and is not the debugger we
+want anyway — ~22 KiB.** `rmonIOStack` (16 KiB), `__osThprofHeap` and `thprof`
+are libultra's remote debug monitor and thread profiler. They are in a release
+build linked against plain `-lultra`, which looks like a mistake.
+
+It is not something the game can switch off. In this SDK's libultra,
+`threadprofile.o` is pulled in by **`exceptasm.o`** (the exception handler) and
+**`createthread.o`** (`osCreateThread`), and `rmonsio.o` — which drags in the
+rest of the rmon cluster including that 16 KiB stack — is pulled in by
+`exceptasm.o` as well. Both of those are on every link. Making it optional means
+rebuilding libultra without the hooks, which is a lot of risk for 22 KiB.
+
+It is also worth being clear about what it *is*: rmon is Nintendo's host-side
+remote debugger, driven over the RDB/SI cable from a development host. It is not
+reachable over SummerCart64 and it is not what captures Mine64's freezes — the
+freeze-forensics rig does that, it is Mine64's own code, and it is already
+toggleable (**Z + D-pad Up**, plus the watchdog phase square). There is no
+capability here worth putting behind a flag; there is just 22 KiB the SDK will
+not give back.
+
 **The Z buffer gap is fully used.** The program starts at `0x80025C00`, which is
 exactly where the Z buffer ends. Nothing is wasted between them.
 
@@ -261,10 +316,16 @@ exactly where the Z buffer ends. Nothing is wasted between them.
 
 ## Where this leaves each build
 
-| | now | after must-do | after must-do + FIFO |
+Measured, not projected — every column is a real build in the container.
+
+| | today | + microcodes | + microcodes, FIFO, heap |
 |---|---|---|---|
-| `make` | 35.7 KiB free ⚠ | ~65 KiB free | ~129 KiB free |
-| `make audio` | 310 KiB over ✗ | ~57 KiB over ✗ | ~7 KiB free |
+| `make` | 35 KiB free ⚠ | 64 KiB free ✓ | **128 KiB free** ✓ |
+| `make audio` | 310 KiB over ✗ | 281 KiB over ✗ | **2 KiB free** ⚠ |
+
+The default build goes from tripping the headroom warning to having four times
+the margin the guard asks for. The audio build stops failing, but 2 KiB is not
+margin — treat it as proof the path exists, not as a shipping configuration.
 
 ## How to measure it yourself
 
