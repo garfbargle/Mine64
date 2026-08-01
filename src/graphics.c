@@ -3427,6 +3427,11 @@ static void drawOtherPlayers(u8 viewer_num) {
      keeps its face and eye quads reliable from every camera angle. */
   gSPClearGeometryMode(dlp++, G_CULL_BACK);
   for (player_num = 0; player_num < active_player_count; player_num++) {
+    /* A body on its death screen is not standing in the world for anyone
+       else to see; it reappears where the respawn puts it. */
+    if (players[player_num].dead) {
+      continue;
+    }
     if (players[player_num].active &&
         (player_num != viewer_num ||
          (players[viewer_num].camera_mode == CAMERA_THIRD_PERSON &&
@@ -3849,6 +3854,11 @@ static void buildGroundShadows(void) {
   }
 
   for (i = 0; i < active_player_count && shadow_count < SHADOW_SLOTS; i++) {
+    /* No body, no shadow: a dead player's blob would be the one thing left
+       of them on the ground. */
+    if (players[i].dead) {
+      continue;
+    }
     addGroundShadow(players[i].position, BLOCK_SIZE * .9f, BLOCK_SIZE * .42f,
       strength);
   }
@@ -3949,6 +3959,16 @@ void drawWorld() {
   }
 
   for (player_num = 0; player_num < viewer_count; player_num++) {
+    /*
+     * A dead player's viewport is about to be painted black by the HUD, so
+     * there is nothing to be gained by drawing a world underneath it -- and
+     * in split screen the frame the survivors are sharing is worth more than
+     * a camera nobody is looking through.  Skipping is safe because each
+     * iteration re-selects its own viewport, scissor and setup list.
+     */
+    if (!cinematic && players[player_num].dead) {
+      continue;
+    }
     if (viewer_count > 1) {
       selectPlayerViewport(player_num);
     } else {
@@ -5075,6 +5095,120 @@ void drawLegendLabels(const LegendEntry *entries, u8 count, u32 x, u32 y) {
   }
 }
 
+/*
+ * The death screen.
+ *
+ * One player's, drawn inside that player's viewport and measured from it, so
+ * in split screen a death blacks out a quarter of the television while the
+ * other three keep playing.  Solo it simply takes the screen.
+ *
+ * Black rather than a dimmed view of the world, because the world under a
+ * dead player is not being drawn at all (see drawWorld): the frame beneath
+ * this rectangle is whatever the rotating framebuffer last held, so the fill
+ * has to cover the viewport completely.
+ *
+ * Like every other panel in the HUD it is drawn from both phases -- the fill
+ * and the button icon here, the words in drawDeathText -- off one layout, so
+ * the two halves cannot drift apart.
+ */
+static void setHudTextColor(u8 red, u8 green, u8 blue);
+
+static const LegendEntry death_legend[] = {
+  { BUTTON_ICON_A, BUTTON_ICON_NONE, "RESPAWN" }
+};
+
+#define DEATH_TITLE "YOU DIED"
+#define DEATH_TITLE_SCALE 2
+/* Gap between the bottom of the title and the rule under it, and between the
+   rule and the prompt row. */
+#define DEATH_RULE_DROP 6
+#define DEATH_PROMPT_DROP 18
+
+typedef struct {
+  u32 x;
+  u32 y;
+  u32 width;
+  u32 height;
+  u32 title_x;
+  u32 title_y;
+  u32 title_width;
+  u32 prompt_x;
+  u32 prompt_y;
+} DeathLayout;
+
+static void deathLayout(u8 player_num, DeathLayout *out) {
+  u32 prompt_width = legendWidth(death_legend, LEGEND_COUNT(death_legend));
+
+  out->x = playerViewportX(player_num);
+  out->y = playerViewportY(player_num);
+  out->width = playerViewportWidth();
+  out->height = playerViewportHeight();
+  out->title_width = hudStringWidth(DEATH_TITLE) * DEATH_TITLE_SCALE;
+  /* The title sits above the middle rather than on it: with the prompt below
+     the rule, the pair reads as centred even though neither line is. */
+  out->title_y = out->y + out->height / 2 - 8 * DEATH_TITLE_SCALE - DEATH_RULE_DROP;
+  out->title_x = out->x + (out->width - out->title_width) / 2;
+  out->prompt_y = out->title_y + 8 * DEATH_TITLE_SCALE + DEATH_PROMPT_DROP;
+  out->prompt_x = out->x + (out->width - prompt_width) / 2;
+}
+
+/* The screen holds its own button back for a beat (PLAYER_RESPAWN_DELAY), and
+   showing nothing to press during it is what makes the pause read as part of
+   dying rather than as a press the game dropped. */
+static u8 deathPromptVisible(const Player *player) {
+  return player->death_time >= PLAYER_RESPAWN_DELAY;
+}
+
+/* Fills phase. */
+static void drawDeathScreen(u8 player_num) {
+  DeathLayout layout;
+
+  deathLayout(player_num, &layout);
+  gDPPipeSync(dlp++);
+  gDPSetCycleType(dlp++, G_CYC_FILL);
+  gDPSetRenderMode(dlp++, G_RM_NOOP, G_RM_NOOP2);
+  setHudFillColor(0, 0, 0);
+  gDPFillRectangle(dlp++, layout.x, layout.y,
+    layout.x + layout.width - 1, layout.y + layout.height - 1);
+  /* A dark rule under the title, the width of the words above it.  Two
+     pixels, because one is a field on an interlaced set and flickers. */
+  gDPPipeSync(dlp++);
+  setHudFillColor(104, 26, 22);
+  gDPFillRectangle(dlp++, layout.title_x,
+    layout.title_y + 8 * DEATH_TITLE_SCALE + DEATH_RULE_DROP,
+    layout.title_x + layout.title_width - 1,
+    layout.title_y + 8 * DEATH_TITLE_SCALE + DEATH_RULE_DROP + 1);
+  if (deathPromptVisible(&players[player_num])) {
+    gDPPipeSync(dlp++);
+    drawLegendIcons(death_legend, LEGEND_COUNT(death_legend),
+      layout.prompt_x, layout.prompt_y);
+  }
+  gDPPipeSync(dlp++);
+}
+
+/* Text phase. */
+static void drawDeathText(u8 player_num) {
+  DeathLayout layout;
+
+  deathLayout(player_num, &layout);
+  setHudTextColor(222, 68, 58);
+  drawLargeString(DEATH_TITLE, layout.title_x, layout.title_y,
+    DEATH_TITLE_SCALE);
+  /* The HUD's own P label went out with the rest of this viewport's overlay,
+     and a black quarter of the screen with no name on it is the one that
+     leaves everyone else wondering whose it is. */
+  if (active_player_count > 1) {
+    setHudTextColor(148, 148, 142);
+    drawChar('P', layout.x + 5, layout.y + 5);
+    drawChar('1' + player_num, layout.x + 12, layout.y + 5);
+  }
+  if (deathPromptVisible(&players[player_num])) {
+    setHudTextColor(226, 226, 218);
+    drawLegendLabels(death_legend, LEGEND_COUNT(death_legend),
+      layout.prompt_x, layout.prompt_y);
+  }
+}
+
 static void drawObjectivePanel(Player *player) {
   u8 expanded = player->objective_time > 0;
   u32 left = expanded ? 174 : 190;
@@ -6126,6 +6260,10 @@ static void drawGameText() {
       INVENTORY_HOTBAR_START + players[player_num].selected_hotbar_slot];
     u8 slot;
 
+    if (players[player_num].dead) {
+      drawDeathText(player_num);
+      continue;
+    }
     if (usesFourPlayerLayout()) {
       bar_width = HOTBAR_SLOT_COUNT * 14;
       bar_x = x_offset + (playerViewportWidth() - bar_width) / 2;
@@ -6235,6 +6373,13 @@ void drawHUD() {
         !mon64BattleActive(); player_num++) {
       u32 crosshair_x = playerViewportX(player_num) + playerViewportWidth() / 2;
       u32 crosshair_y = playerViewportY(player_num) + playerViewportHeight() / 2;
+
+      /* Everything below describes something a dead player cannot do, and it
+         would be drawn over a black rectangle saying as much. */
+      if (players[player_num].dead) {
+        drawDeathScreen(player_num);
+        continue;
+      }
       drawCrosshair(crosshair_x, crosshair_y, &players[player_num]);
       drawBreakProgress(crosshair_x, crosshair_y, &players[player_num]);
       drawHotbar(player_num);
@@ -6286,6 +6431,9 @@ void drawHUD() {
       mon64DrawBattleInterface();
     } else {
       for (player_num = 0; player_num < active_player_count; player_num++) {
+        if (players[player_num].dead) {
+          continue;
+        }
         mon64DrawPrompt(player_num,
           playerViewportX(player_num) + playerViewportWidth() / 2,
           playerViewportY(player_num) + playerViewportHeight() - 34);

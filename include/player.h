@@ -34,6 +34,10 @@
 #define PLAYER_MAX_HUNGER 20
 #define PLAYER_ATTACK_DURATION 12.f
 #define PLAYER_VAULT_DURATION 18.f
+/* Frames the death screen ignores its own button for.  Long enough that the
+   A press that was already being mashed at the moment of death cannot spend
+   the screen before the player has read it. */
+#define PLAYER_RESPAWN_DELAY 40.f
 #define PLAYER_OBJECTIVE_COUNT 8
 #define CRAFT_RECIPE_COUNT 17
 #define POCKET_RECIPE_COUNT 4
@@ -86,6 +90,12 @@ typedef struct {
   Vector3 knockback_velocity;
   float attack_time;
   float hurt_time;
+  /* Death is a state the player sits in rather than an instant teleport: the
+     body stops where it fell and that player's own viewport goes black until
+     they ask for a new life.  Transient like the rest of combat, so no save
+     ever loads a corpse.  death_time is how long they have been dead. */
+  u8 dead;
+  float death_time;
   float objective_time;
   /* Hunger is deliberately cheap state: one visible byte plus two transient
      accumulators.  The accumulator lets tiny per-frame movement costs remain
@@ -126,6 +136,17 @@ typedef struct {
   float break_progress;
   float break_time;
 } Player;
+
+/*
+ * A dead player still owns their slot, their inventory and their quarter of
+ * the screen, so `active` stays true and every per-player loop keeps its
+ * shape.  What changes is that nothing in the world may see them: this is
+ * the question mobs, creatures and the renderer ask about a body before
+ * chasing, hurting or drawing it.
+ */
+static __inline__ __attribute__((unused)) u8 playerAlive(const Player *player) {
+  return player->active && !player->dead;
+}
 
 extern Player players[MAX_PLAYERS];
 extern u8 active_player_count;

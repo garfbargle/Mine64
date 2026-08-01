@@ -603,6 +603,8 @@ static void spawnPlayer(Player *player, int x, int z) {
   player->hurt_time = 0;
   player->objective_stage = 0;
   player->objective_time = 420.f;
+  player->dead = FALSE;
+  player->death_time = 0;
   player->health = PLAYER_MAX_HEALTH;
   player->hunger = PLAYER_MAX_HUNGER;
   player->hunger_progress = 0;
@@ -626,6 +628,37 @@ static void spawnPlayer(Player *player, int x, int z) {
   }
 
   player->position.y = (MAX_Y + EYE_HEIGHT) * BLOCK_SIZE;
+}
+
+/*
+ * Dying.  The body stays exactly where it fell -- it is only the respawn that
+ * moves anyone -- and from here until the player asks for a new life the
+ * world cannot see them: no mob targets them, no creature challenges them,
+ * nothing damages them, and their own viewport draws the death screen instead
+ * of a camera.  Every one of those is one player's, which is what makes this
+ * work in split screen: the other three are still playing while this one
+ * reads a black screen.
+ *
+ * Callers keep their own sound.  There is no note here that is right for
+ * being shot off a ledge, mauled by a spider and drowned alike.
+ */
+static void killPlayer(Player *player) {
+  if (player->dead) {
+    return;
+  }
+  player->health = 0;
+  player->dead = TRUE;
+  player->death_time = 0;
+  /* Nothing half-finished survives the death: a swing, a mined block and the
+     block being aimed at are all things the corpse must not still be doing
+     when the renderer and the mobs come looking. */
+  player->breaking = FALSE;
+  player->break_progress = 0;
+  player->target_present = FALSE;
+  player->knockback_velocity = (Vector3) {0, 0, 0};
+  player->y_velocity = 0;
+  player->attack_time = 0;
+  player->hurt_time = 0;
 }
 
 /* Death returns an avatar to its join spawn without consuming its hard-won
@@ -661,6 +694,9 @@ static void respawnPlayer(Player *player, int x, int z) {
   player->survival_time = SURVIVAL_TICK_FRAMES;
   player->breaking = FALSE;
   player->break_progress = 0;
+  player->target_present = FALSE;
+  player->dead = FALSE;
+  player->death_time = 0;
 }
 
 void damagePlayer(u8 player_num, u8 damage, Vector3 source) {
@@ -673,7 +709,7 @@ void damagePlayer(u8 player_num, u8 damage, Vector3 source) {
     return;
   }
   player = &players[player_num];
-  if (!player->active || player->hurt_time > 0) {
+  if (!playerAlive(player) || player->hurt_time > 0) {
     return;
   }
   player->health = player->health > damage ? player->health - damage : 0;
@@ -688,8 +724,7 @@ void damagePlayer(u8 player_num, u8 damage, Vector3 source) {
   player->y_velocity = max(player->y_velocity, 4.f);
   playSound(SOUND_PUNCH);
   if (player->health == 0) {
-    respawnPlayer(player, START_X + player_num * 3,
-      START_Z + (player_num & 1 ? 0 : 3));
+    killPlayer(player);
   }
 }
 
@@ -912,9 +947,7 @@ static void landPlayer(Player *player) {
       player->hurt_time = PLAYER_ATTACK_DURATION;
       playSound(SOUND_PUNCH);
       if (player->health == 0) {
-        u8 player_num = player - players;
-        respawnPlayer(player, START_X + player_num * 3,
-          START_Z + (player_num & 1 ? 0 : 3));
+        killPlayer(player);
       }
     }
   }
@@ -1207,7 +1240,7 @@ static Player *swordTarget(u8 attacker_num) {
     float horizontal_distance;
     float facing;
 
-    if (player_num == attacker_num || !candidate->active) {
+    if (player_num == attacker_num || !playerAlive(candidate)) {
       continue;
     }
     dx = candidate->position.x - attacker->position.x;
@@ -1259,9 +1292,7 @@ static u8 swingSword(u8 attacker_num) {
   playSound(SOUND_PUNCH);
 
   if (target->health == 0) {
-    u8 target_num = target - players;
-    respawnPlayer(target, START_X + target_num * 3,
-      START_Z + (target_num & 1 ? 0 : 3));
+    killPlayer(target);
   }
   return TRUE;
 }
@@ -1650,6 +1681,23 @@ static u8 updatePlayer(u8 player_num, float delta, float look_delta) {
   }
 
   /*
+   * Dead is a held frame.  No physics, no reach, no camera and no world edits
+   * -- the body waits exactly where it fell -- and the pad speaks one word
+   * only.  Returning FALSE rather than TRUE is what keeps the other three
+   * players moving through their own half of a split screen while this one
+   * sits on a black rectangle.
+   */
+  if (player->dead) {
+    player->death_time += delta;
+    if (player->death_time >= PLAYER_RESPAWN_DELAY &&
+        (cont->trigger & A_BUTTON)) {
+      respawnPlayer(player, START_X + player_num * 3,
+        START_Z + (player_num & 1 ? 0 : 3));
+    }
+    return FALSE;
+  }
+
+  /*
    * Position sanity, before anything derives state from it.  Run 5 faulted
    * converting a position-derived value inside the origin rebase, and a NaN
    * or runaway float here is the only way that value goes insane: NaN
@@ -1688,8 +1736,7 @@ static u8 updatePlayer(u8 player_num, float delta, float look_delta) {
    * never breach y = 0, so no legitimate position is anywhere near this.
    */
   if (player->position.y < VOID_FALL_DEPTH) {
-    respawnPlayer(player, START_X + player_num * 3,
-      START_Z + (player_num & 1 ? 0 : 3));
+    killPlayer(player);
     playSound(SOUND_PUNCH);
     return FALSE;
   }
@@ -2056,6 +2103,10 @@ void updatePlayers() {
   diag_player_step = DIAG_STEP_OBJECTIVES;
   if (current_screen == GAME) {
     for (i = 0; i < active_player_count; i++) {
+      /* An objective is something to go and do; a corpse is not doing it. */
+      if (players[i].dead) {
+        continue;
+      }
       updatePlayerObjective(&players[i], delta);
     }
   }
@@ -2234,6 +2285,12 @@ void updatePlayers() {
     return;
   }
   for (i = 0; i < active_player_count; i++) {
+    /* The death screen owns the whole pad while it is up: opening the pack
+       from behind it would leave the inventory drawn over a dead viewport
+       with no way back but respawning. */
+    if (players[i].dead) {
+      continue;
+    }
     if (cont_data[i].trigger & START_BUTTON) {
       openInventory(i);
       return;

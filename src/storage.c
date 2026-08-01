@@ -605,6 +605,10 @@ static void restorePlayerState(Player *player, Vector3 position, float pitch,
   player->y_velocity = 0;
   player->fall_distance = 0;
   player->active = TRUE;
+  /* A save never records a death, and this is the function that says what a
+     loaded player is: alive, here, at full health. */
+  player->dead = FALSE;
+  player->death_time = 0;
   player->target_present = FALSE;
   player->breaking = FALSE;
   player->break_progress = 0;

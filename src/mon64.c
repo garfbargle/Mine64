@@ -754,6 +754,11 @@ static void updateRoamer(MonRoamer *roamer, float delta) {
     roamer->active = FALSE;
     return;
   }
+  /* A body on its death screen keeps the creature loaded but is not someone
+     to notice, turn toward or walk up to.  Same trade as the mobs make. */
+  if (nearest->dead) {
+    nearest_distance = 1.0e18f;
+  }
 
   roamer->decision_time -= delta;
   if (roamer->decision_time <= 0) {
@@ -1168,7 +1173,7 @@ static u8 findPlayerTarget(u8 player_num) {
     float dx;
     float dz;
 
-    if (index == player_num || !players[index].active) {
+    if (index == player_num || !playerAlive(&players[index])) {
       continue;
     }
     dx = players[index].position.x - player->position.x;
@@ -2147,8 +2152,8 @@ void mon64Update(float delta) {
   /* Refresh what each player could act on, once, so the prompt the HUD draws
      and the creature the A button takes are the same creature. */
   for (index = 0; index < MAX_PLAYERS; index++) {
-    roamer_target[index] = index < active_player_count && players[index].active ?
-      findRoamerTarget(index) : MON_NONE;
+    roamer_target[index] = index < active_player_count &&
+      playerAlive(&players[index]) ? findRoamerTarget(index) : MON_NONE;
   }
 
   /* An aggressive creature that has closed the distance starts the fight
@@ -2164,7 +2169,9 @@ void mon64Update(float delta) {
     for (player_num = 0; player_num < active_player_count; player_num++) {
       float dx;
       float dz;
-      if (!players[player_num].active ||
+      /* Never start a fight with a player who is on their death screen: the
+         battle takes the whole console, and they cannot even see it. */
+      if (!playerAlive(&players[player_num]) ||
           monPartyLead(player_num) == MON_NONE) {
         continue;
       }

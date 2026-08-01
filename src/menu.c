@@ -237,7 +237,7 @@ static void drawLargeChar(char chr, u32 x, u32 y, u8 scale) {
     (1 << 10) / scale, (1 << 10) / scale);
 }
 
-static void drawLargeString(const char *text, u32 x, u32 y, u8 scale) {
+void drawLargeString(const char *text, u32 x, u32 y, u8 scale) {
   while (*text) {
     if (*text != ' ') {
       drawLargeChar(*text, x, y, scale);
@@ -478,10 +478,11 @@ static void drawWorldSetup() {
   setMenuFillColor(42, 27, 17);
   gDPFillRectangle(dlp++, SETUP_PANEL_LEFT + 4, 29, SETUP_PANEL_RIGHT - 4, 30);
 
+  /* The row highlights first, then every switch in one grouped pass: a
+     switch is a sprite now, and interleaving it with the highlight rectangles
+     would put a fill-colour change between each pair. */
   for (index = 0; index < WORLD_MOD_COUNT; index++) {
-    const WorldMod *mod = &world_mod_table[index];
     u32 row_y = setupRowY(index);
-    u8 dim = !worldModAvailable(mod->bit);
 
     if (index == setup_row) {
       /* A gold edge around the row rather than a gold fill behind it -- see

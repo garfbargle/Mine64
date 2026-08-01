@@ -51,6 +51,10 @@ void drawMenu();
 void beginText();
 void drawChar(char chr, u32 x, u32 y);
 void drawString(const char *text, u32 x, u32 y);
+/* The same font at a whole-integer scale, for the rare line that has to carry
+   a screen on its own -- the menu title, the word for having died.  A glyph is
+   8x8 before scaling and charWidth(c) * scale wide after it. */
+void drawLargeString(const char *text, u32 x, u32 y, u8 scale);
 u32 charWidth(char chr);
 void menuDown();
 void menuUp();

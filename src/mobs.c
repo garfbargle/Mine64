@@ -554,8 +554,10 @@ static Player *windupTarget(Mob *mob, float *distance_squared,
   float dx;
   float dz;
 
+  /* A target that died mid-windup is no longer there to be hit; the swing
+     completes against nothing and the mob goes back to chasing. */
   if (mob->target_player >= active_player_count ||
-      !players[mob->target_player].active) {
+      !playerAlive(&players[mob->target_player])) {
     *distance_squared = 999999999.f;
     *vertical_distance = 999999.f;
     return NULL;
@@ -877,8 +879,9 @@ static Vector3 keepPlayerSpacing(Mob *mob, Vector3 motion, float delta) {
     float distance_squared;
     float distance;
 
-    /* A player on a roof is not someone to stand clear of. */
-    if (!player->active ||
+    /* A player on a roof is not someone to stand clear of, and neither is
+       a body waiting on its death screen. */
+    if (!playerAlive(player) ||
         mobVerticalDistance(mob, player) >= BLOCK_SIZE * 1.5f) {
       continue;
     }
@@ -1100,6 +1103,18 @@ void updateMobs(float delta) {
       mob->active = FALSE;
       mob_respawn_time = min(mob_respawn_time, 20.f);
       continue;
+    }
+    /*
+     * A body on its death screen still counts for the distance that keeps
+     * this mob loaded -- the world around a dying player should not empty
+     * itself -- but it is nobody to chase, tempt, follow or watch.  Pushing
+     * the distances out of every range below is what says so, in one place,
+     * rather than in each of the eight behaviours that read them.
+     */
+    if (nearest->dead) {
+      nearest = NULL;
+      player_distance = 999999999.f;
+      vertical_distance = 999999.f;
     }
 
     mob->hurt_time = max(0, mob->hurt_time - delta);
