@@ -201,6 +201,24 @@ void resetPlayerInventory(Player *player) {
   }
 }
 
+/*
+ * Hand out the starting inventory the setup card's switches finally describe.
+ *
+ * Spawning is what normally reads them, and for a new world that happened
+ * while the preview was generated -- before the card was even open.  A terrain
+ * shape flipped afterwards costs a rebuild and so spawns the players again,
+ * but BONUS KIT deliberately does not, which used to leave the pack exactly as
+ * empty as it was before the switch was touched.  Committing the world is the
+ * point where the mask stops moving, so the kit is settled here.
+ */
+void resetStartingInventories(void) {
+  u8 player_num;
+
+  for (player_num = 0; player_num < active_player_count; player_num++) {
+    resetPlayerInventory(&players[player_num]);
+  }
+}
+
 static void selectHotbarSlot(Player *player, u8 slot) {
   player->selected_hotbar_slot = slot;
   player->inventory_cursor = INVENTORY_HOTBAR_START + slot;

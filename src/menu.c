@@ -1193,6 +1193,9 @@ void confirmWorldName() {
   }
   setWorldName(selected_option, world_name_edit);
   game_file_num = selected_option + 1;
+  /* The mask is final now, and the write below is what puts the pack on the
+     cart, so the starting items have to be in it before the save runs. */
+  resetStartingInventories();
   /* Announce only.  drawMenu puts the card up and the job driver starts the
      write once that frame has been shown; see WORLD_COMMIT_*. */
   world_commit_stage = WORLD_COMMIT_REQUESTED;

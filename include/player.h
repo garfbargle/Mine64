@@ -120,6 +120,7 @@ void initPlayers();
 void updatePlayers();
 void updateTargetBlock(u8 player_num);
 void resetPlayerInventory(Player *player);
+void resetStartingInventories(void);
 u8 addItemToInventory(Player *player, u8 item, u8 count);
 u8 playerRecipeCount(Player *player);
 u8 recipeCraftableCount(Player *player, u8 recipe);

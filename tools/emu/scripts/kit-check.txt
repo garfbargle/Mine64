@@ -1,0 +1,51 @@
+# BONUS KIT: switch it on in the setup card, create the world, open the pack.
+#
+# The kit is the one mod whose whole effect lands at spawn, so the only proof
+# it worked is the pack at the moment the world is entered.  Nothing here
+# touches terrain: the run is the create-world flow with a single extra press.
+
+wait 960
+shot picker-ready       # CLASSIC preview finished and orbiting
+
+press A 8
+wait 40
+shot setup              # the card, cursor on CLASSIC
+
+# Down to BONUS KIT: nine rows past CLASSIC.
+press DDOWN 8
+wait 5
+press DDOWN 8
+wait 5
+press DDOWN 8
+wait 5
+press DDOWN 8
+wait 5
+press DDOWN 8
+wait 5
+press DDOWN 8
+wait 5
+press DDOWN 8
+wait 5
+press DDOWN 8
+wait 5
+press DDOWN 8
+wait 20
+shot kit-row            # cursor on BONUS KIT, its blurb under the card
+
+press A 8
+wait 20
+shot kit-on             # box checked; no rebuild, so no bar
+
+press START 8
+wait 60
+shot naming
+
+press START 8
+wait 300
+shot game               # dropped into the world
+
+press CDOWN 8
+wait 40
+shot pack               # STORAGE and HOTBAR: the kit or nothing
+
+stop
