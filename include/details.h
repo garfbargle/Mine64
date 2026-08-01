@@ -19,6 +19,8 @@ enum DetailKind {
   DETAIL_WINDOW,
   DETAIL_FENCE,
   DETAIL_FENCE_GATE,
+  DETAIL_LADDER,
+  DETAIL_BED,
   DETAIL_KIND_COUNT
 };
 
@@ -87,6 +89,15 @@ u8 detailRemove(int x, int y, int z, u8 *drop_item);
 u8 detailToggle(int x, int y, int z);
 u8 detailIsCustomAt(int x, int y, int z);
 u8 detailIsStairAt(int x, int y, int z);
+/* TRUE when a ladder occupies this cell.  A ladder is not solid, so the
+   player stands inside its cell and climbs from there, exactly as swimming
+   asks whether the body is inside water rather than beside it. */
+u8 detailIsLadderAt(int x, int y, int z);
+/* TRUE when a bed occupies this cell.  Like a ladder it is not solid: a
+   bedroll is something to stand in and lie down on, not a block to bump
+   into, and a full cell of collision over a knee-high mattress would be an
+   invisible wall in the middle of a bedroom. */
+u8 detailIsBedAt(int x, int y, int z);
 u8 worldCellSolid(int x, int y, int z);
 u8 detailLightAt(Vector3 position);
 void detailsApplyColumn(int cx, int cz);

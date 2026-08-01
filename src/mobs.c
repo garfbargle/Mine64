@@ -158,6 +158,7 @@
 #define SPECIAL_SHOCKWAVE_TARGETS 4
 
 Mob mobs[MAX_MOBS];
+LivestockRecord livestock[MAX_LIVESTOCK];
 MobSpecialEffect mob_special_effects[MAX_PLAYERS];
 
 static float mob_respawn_time;
@@ -426,6 +427,7 @@ static u8 spawnMob(Mob *mob, u8 type, Player *anchor) {
     mob->active = TRUE;
     mob->ground_y = ground_y;
     mob->target_player = 0;
+    mob->owner = MOB_NO_OWNER;
     return TRUE;
   }
   return FALSE;
@@ -437,6 +439,10 @@ void initMobs() {
   mob_respawn_time = MOB_RESPAWN_DELAY;
   for (index = 0; index < MAX_MOBS; index++) {
     mobs[index].active = FALSE;
+    mobs[index].owner = MOB_NO_OWNER;
+  }
+  for (index = 0; index < MAX_LIVESTOCK; index++) {
+    livestock[index].active = FALSE;
   }
   for (index = 0; index < MAX_PLAYERS; index++) {
     special_cooldowns[index] = 0;
@@ -557,9 +563,10 @@ static void spiderChaseDirection(Mob *mob, Player *target,
   chaseDirection(mob, target, distance_squared);
 }
 
+/* The clock owns the definition now, so a bed and a zombie cannot disagree
+   about whether the night is over.  See DAY_CYCLE_NIGHT_START. */
 static u8 worldIsNight() {
-  u32 time = dayCycleTimeOfDay();
-  return time >= 13000 && time <= 23000;
+  return dayCycleIsNight();
 }
 
 static float mobChaseDistance(u8 type) {
@@ -741,6 +748,28 @@ static u8 breedMobs(Mob *first, Mob *second) {
   calf->state = MOB_IDLE;
   calf->active = TRUE;
   calf->target_player = 0;
+  /*
+   * A calf inherits the pen, so a penned herd stays a herd rather than
+   * filling with wild animals the roster will not keep.
+   *
+   * Unless the herd is already at its cap, in which case it is born an
+   * ordinary animal.  The roster is what makes ownership mean anything, and
+   * an owner the roster has no room to record would be a promise the game
+   * silently breaks the first time the player walks away.
+   */
+  {
+    u8 inherited = first->owner != MOB_NO_OWNER ? first->owner : second->owner;
+
+    /* Cleared before the count, not after: the calf's slot is already active
+       by this point, so leaving the inherited owner on it would make it count
+       itself against the cap and reject the fourth animal of a herd of
+       three. */
+    calf->owner = MOB_NO_OWNER;
+    if (inherited != MOB_NO_OWNER &&
+        mobOwnedCount(inherited) < MAX_LIVESTOCK) {
+      calf->owner = inherited;
+    }
+  }
   playSound(SOUND_PICKUP);
   return TRUE;
 }
@@ -831,6 +860,358 @@ static void updateFeedTargets(void) {
   }
 }
 
+/*
+ * Taming and the livestock roster.
+ *
+ * The follow range is deliberately short of MOB_DESPAWN_DISTANCE: an animal
+ * that heeled from anywhere could never be left anywhere, which would make a
+ * pen pointless.  Inside it a tamed animal comes when called; outside it the
+ * animal stays where it was put, and the fence does the rest.
+ *
+ * The restore range sits well inside the despawn range so the two cannot
+ * chatter -- a record materialises at 26 blocks and is only written back at
+ * 34, leaving eight blocks of hysteresis for a player pacing a fence line.
+ */
+#define MOB_TAME_FOLLOW_RANGE (BLOCK_SIZE * 20.f)
+#define MOB_TAME_HEEL_SPACING (BLOCK_SIZE * 2.2f)
+#define MOB_TAME_FOLLOW_SPEED 1.05f
+#define MOB_LIVESTOCK_RESTORE_RANGE (BLOCK_SIZE * 26.f)
+
+/* Comfortably outside a monster's own chase range, so a player cannot sleep
+   through something that is already on its way to them. */
+#define MOB_SLEEP_SAFE_RANGE (BLOCK_SIZE * 16.f)
+
+u8 mobOwnedCount(u8 player_num) {
+  u8 count = 0;
+  u8 index;
+
+  for (index = 0; index < MAX_MOBS; index++) {
+    if (mobs[index].active && mobs[index].owner == player_num) {
+      count++;
+    }
+  }
+  for (index = 0; index < MAX_LIVESTOCK; index++) {
+    if (livestock[index].active && livestock[index].owner == player_num) {
+      count++;
+    }
+  }
+  return count;
+}
+
+/*
+ * Fold a tamed animal out of the pool and into the roster.
+ *
+ * Called instead of the plain deactivation every other mob gets at the
+ * despawn boundary.  If the roster is somehow full the animal is simply
+ * released -- losing the tame is bad, but leaking a pool slot that the AI and
+ * matrix budget is sized around is worse.
+ */
+static void storeLivestock(Mob *mob) {
+  u8 index;
+
+  for (index = 0; index < MAX_LIVESTOCK; index++) {
+    LivestockRecord *record = &livestock[index];
+
+    if (record->active) {
+      continue;
+    }
+    record->x = (s32) floor(mob->position.x / BLOCK_SIZE);
+    record->z = (s32) floor(mob->position.z / BLOCK_SIZE);
+    /* The block it was standing on, not the block it was standing in: that is
+       what the restore search is looking for, and the mob already caches it. */
+    record->y = (u8) max(0, min(MAX_Y - 1, mob->ground_y));
+    record->type = mob->type;
+    record->owner = mob->owner;
+    record->baby_seconds = (u8) min(255.f, mob->baby_time / 60.f);
+    record->active = TRUE;
+    return;
+  }
+}
+
+/*
+ * Ground a stored animal can be put back down on.
+ *
+ * Deliberately not mobSpawnGroundAt.  That is a *spawn* search, and it holds
+ * grazers to grass -- right for inventing a sheep in a meadow, wrong for
+ * returning one the player penned.  A barn with a plank floor, or a pen whose
+ * grass has been trampled to dirt, would refuse its own livestock forever and
+ * the herd would simply never come home.
+ *
+ * The stored height is tried first, so an animal penned on a platform does
+ * not reappear in the field underneath it; the full-column sweep is the
+ * fallback for ground the player has since dug out from under them.
+ */
+static u8 livestockCanStandAt(int x, int y, int z) {
+  u8 ground;
+
+  if ((u32) y >= (u32) (MAX_Y - 2)) {
+    return FALSE;
+  }
+  ground = blockGet(x, y, z);
+  if (!BLOCK_IS_SOLID(ground) || ground == LEAVES) {
+    return FALSE;
+  }
+  return blockGet(x, y + 1, z) == AIR && blockGet(x, y + 2, z) == AIR;
+}
+
+static u8 livestockGroundAt(const LivestockRecord *record, int *ground_y) {
+  int x = record->x;
+  int z = record->z;
+  int stored = record->y;
+  int offset;
+  int y;
+
+  if (!windowColumnResident(x >> CHUNK_SHIFT, z >> CHUNK_SHIFT)) {
+    return FALSE;
+  }
+  for (offset = 0; offset <= 3; offset++) {
+    y = stored - offset;
+    if (y >= 0 && livestockCanStandAt(x, y, z)) {
+      *ground_y = y;
+      return TRUE;
+    }
+    y = stored + offset;
+    if (offset > 0 && livestockCanStandAt(x, y, z)) {
+      *ground_y = y;
+      return TRUE;
+    }
+  }
+  for (y = MAX_Y - 3; y >= 0; y--) {
+    if (livestockCanStandAt(x, y, z)) {
+      *ground_y = y;
+      return TRUE;
+    }
+  }
+  return FALSE;
+}
+
+/*
+ * Bring one roster animal back, if a player has walked into range of where it
+ * was left.
+ *
+ * At most one a call, on the same rhythm as an ambient spawn: this runs from
+ * the graphics callback like everything else here, and a player returning to
+ * a full pen should see it fill over a second rather than pay for four ground
+ * searches in a single frame.
+ *
+ * A record whose column is not resident yet simply waits.  mobSpawnGroundAt
+ * reads blockGet, which answers BLOCK_NOT_RESIDENT out there, so the search
+ * fails harmlessly and the animal arrives once the terrain does.
+ */
+static u8 restoreLivestock(void) {
+  u8 index;
+
+  for (index = 0; index < MAX_LIVESTOCK; index++) {
+    LivestockRecord *record = &livestock[index];
+    Player *owner;
+    float dx;
+    float dz;
+    int ground_y;
+    u8 slot;
+
+    if (!record->active || record->owner >= MAX_PLAYERS) {
+      continue;
+    }
+    owner = &players[record->owner];
+    if (!owner->active) {
+      continue;
+    }
+    dx = (record->x + .5f) * BLOCK_SIZE - owner->position.x;
+    dz = (record->z + .5f) * BLOCK_SIZE - owner->position.z;
+    if (dx * dx + dz * dz >
+        MOB_LIVESTOCK_RESTORE_RANGE * MOB_LIVESTOCK_RESTORE_RANGE) {
+      continue;
+    }
+    if (!livestockGroundAt(record, &ground_y)) {
+      continue;
+    }
+    for (slot = 0; slot < MAX_MOBS; slot++) {
+      Mob *mob = &mobs[slot];
+
+      if (mob->active) {
+        continue;
+      }
+      mob->position = (Vector3) {(record->x + .5f) * BLOCK_SIZE,
+        (ground_y + 1) * BLOCK_SIZE, (record->z + .5f) * BLOCK_SIZE};
+      mob->knockback_velocity = (Vector3) {0, 0, 0};
+      mob->yaw = random(360);
+      mob->goal_yaw = mob->yaw;
+      mob->walk_time = 0;
+      mob->gait = 0;
+      mob->decision_time = MOB_DECISION_MIN;
+      mob->state_time = 0;
+      mob->hurt_time = 0;
+      mob->attack_time = 0;
+      mob->head_yaw = 0;
+      mob->love_time = 0;
+      /* Back on its cooldown, so returning to a pen is not a way to reset
+         one by walking out of range and back. */
+      mob->breed_time = MOB_BREED_COOLDOWN;
+      mob->baby_time = record->baby_seconds * 60.f;
+      mob->type = record->type;
+      mob->health = mobMaxHealth(record->type);
+      mob->state = MOB_IDLE;
+      mob->active = TRUE;
+      mob->ground_y = (s8) ground_y;
+      mob->target_player = 0;
+      mob->owner = record->owner;
+      record->active = FALSE;
+      return TRUE;
+    }
+    /*
+     * No free slot.  That is the common case on the walk home at night, when
+     * five wild passives and three monsters fill the pool exactly, and
+     * without this the player would arrive at their own pen to find it empty
+     * until sunrise.
+     *
+     * A wild animal standing in a slot that belongs to one the player owns is
+     * the wrong way round, so the most distant untamed farm animal gives its
+     * up.  The ambient pool refills itself within seconds; a herd does not
+     * refill at all.  Freeing it is all this does -- the next call is what
+     * materialises the record, which keeps the work per call bounded.
+     *
+     * When nothing is evictable (a pool saturated by monsters) the record
+     * simply waits, and dawn's retreat frees the slots.
+     */
+    {
+      u8 evict = MAX_MOBS;
+      float farthest = -1.f;
+
+      for (slot = 0; slot < MAX_MOBS; slot++) {
+        Mob *candidate = &mobs[slot];
+        float ex;
+        float ez;
+        float distance_squared;
+
+        if (!candidate->active || MOB_IS_TAMED(candidate) ||
+            !mobTypeIsFarmAnimal(candidate->type)) {
+          continue;
+        }
+        ex = candidate->position.x - owner->position.x;
+        ez = candidate->position.z - owner->position.z;
+        distance_squared = ex * ex + ez * ez;
+        if (distance_squared > farthest) {
+          farthest = distance_squared;
+          evict = slot;
+        }
+      }
+      if (evict < MAX_MOBS) {
+        mobs[evict].active = FALSE;
+      }
+    }
+    return FALSE;
+  }
+  return FALSE;
+}
+
+/*
+ * Aim a tamed animal at the player who owns it.
+ *
+ * Deliberately the owner and not `nearest`.  On a split screen an animal that
+ * trailed whoever happened to be closest would belong to nobody, and two
+ * players standing together would tow each other's herds apart.
+ */
+static u8 followOwner(Mob *mob, Player **attention, float *speed) {
+  Player *owner;
+  float dx;
+  float dz;
+  float distance_squared;
+
+  if (!MOB_IS_TAMED(mob) || mob->owner >= MAX_PLAYERS) {
+    return FALSE;
+  }
+  owner = &players[mob->owner];
+  if (!owner->active || owner->dead) {
+    return FALSE;
+  }
+  dx = owner->position.x - mob->position.x;
+  dz = owner->position.z - mob->position.z;
+  distance_squared = dx * dx + dz * dz;
+  if (distance_squared >
+      MOB_TAME_FOLLOW_RANGE * MOB_TAME_FOLLOW_RANGE) {
+    return FALSE;
+  }
+  *attention = owner;
+  /* Alongside, not underfoot -- the same rule a calf follows its mother by. */
+  if (distance_squared <
+      MOB_TAME_HEEL_SPACING * MOB_TAME_HEEL_SPACING) {
+    *speed = 0;
+    return TRUE;
+  }
+  faceDirection(mob, (Vector3) {dx, 0, dz});
+  *speed = MOB_TAME_FOLLOW_SPEED;
+  return TRUE;
+}
+
+/*
+ * The one place the taming conditions live.
+ *
+ * tameMob acts on them and the HUD prompt reads them, so the button and the
+ * word above it can never disagree about whether A is about to tame or to
+ * feed.
+ */
+static Mob *tameCandidate(u8 player_num) {
+  Mob *mob;
+
+  if (player_num >= active_player_count || !players[player_num].active ||
+      feed_targets[player_num] >= MAX_MOBS) {
+    return NULL;
+  }
+  mob = &mobs[feed_targets[player_num]];
+  /* Somebody else's animal, a calf, or a full herd: feeding takes over. */
+  if (MOB_IS_TAMED(mob) || MOB_IS_BABY(mob) ||
+      mobOwnedCount(player_num) >= MAX_LIVESTOCK) {
+    return NULL;
+  }
+  return mob;
+}
+
+u8 mobFeedIsTame(u8 player_num) {
+  return tameCandidate(player_num) != NULL;
+}
+
+u8 tameMob(u8 player_num) {
+  Mob *mob = tameCandidate(player_num);
+
+  if (mob == NULL) {
+    return FALSE;
+  }
+  mob->owner = player_num;
+  /* Being claimed settles an animal that was mid-panic, the way a feed does. */
+  if (mob->state == MOB_FLEE) {
+    mob->state = MOB_IDLE;
+    mob->state_time = 0;
+    mob->decision_time = MOB_DECISION_MIN;
+  }
+  return TRUE;
+}
+
+u8 mobHostileNear(u8 player_num) {
+  Player *player;
+  u8 index;
+
+  if (player_num >= MAX_PLAYERS || !players[player_num].active) {
+    return FALSE;
+  }
+  player = &players[player_num];
+  for (index = 0; index < MAX_MOBS; index++) {
+    Mob *mob = &mobs[index];
+    float dx;
+    float dz;
+
+    if (!mob->active || !mobTypeIsHostile(mob->type) ||
+        mob->state == MOB_RETREAT) {
+      continue;
+    }
+    dx = mob->position.x - player->position.x;
+    dz = mob->position.z - player->position.z;
+    if (dx * dx + dz * dz < MOB_SLEEP_SAFE_RANGE * MOB_SLEEP_SAFE_RANGE) {
+      return TRUE;
+    }
+  }
+  return FALSE;
+}
+
 u8 mobFeedTarget(u8 player_num) {
   return player_num < MAX_PLAYERS ? feed_targets[player_num] : MAX_MOBS;
 }
@@ -851,6 +1232,25 @@ u8 feedMob(u8 player_num) {
     return FALSE;
   }
   mob = &mobs[feed_targets[player_num]];
+
+  /*
+   * The first apple an untamed adult accepts claims it; every apple after
+   * that breeds, which is what feeding has always done.  One button and one
+   * item, and the order they are discovered in is the order they are needed:
+   * an animal that follows you home is worth more than a calf you have no
+   * way to move.  A full herd falls straight through to breeding.
+   */
+  if (tameMob(player_num)) {
+    ItemStack *offered = &player->inventory[INVENTORY_HOTBAR_START +
+      player->selected_hotbar_slot];
+
+    offered->count--;
+    if (offered->count == 0) {
+      offered->item = AIR;
+    }
+    playSound(SOUND_PICKUP);
+    return TRUE;
+  }
 
   if (MOB_IS_BABY(mob)) {
     /* An apple is worth a visible slice of the wait, so a player who wants a
@@ -1163,6 +1563,9 @@ void updateMobs(float delta) {
   }
 
   updateFeedTargets();
+  /* Before the pool walk, so an animal that comes back this frame is
+     simulated this frame rather than standing still for one. */
+  restoreLivestock();
 
   for (index = 0; index < MAX_MOBS; index++) {
     Mob *mob = &mobs[index];
@@ -1185,6 +1588,12 @@ void updateMobs(float delta) {
       mobVerticalDistance(mob, nearest);
     if (nearest == NULL ||
         player_distance > MOB_DESPAWN_DISTANCE * MOB_DESPAWN_DISTANCE) {
+      /* An animal somebody owns is written down rather than deleted.  This is
+         the whole difference between a herd and a coincidence: without it, a
+         penned flock evaporates the moment its owner goes mining. */
+      if (MOB_IS_TAMED(mob)) {
+        storeLivestock(mob);
+      }
       mob->active = FALSE;
       mob_respawn_time = min(mob_respawn_time, 20.f);
       continue;
@@ -1277,6 +1686,12 @@ void updateMobs(float delta) {
       chaseDirection(mob, nearest, player_distance);
       speed = player_distance < MOB_TEMPT_SPACING * MOB_TEMPT_SPACING ?
         0.f : MOB_TEMPT_SPEED;
+    } else if (mob->state != MOB_FLEE &&
+        followOwner(mob, &attention, &speed)) {
+      /* Behind love and temptation on purpose -- both are things the player
+         just deliberately did -- but ahead of the CRITTERS curiosity below,
+         which is about any player rather than this animal's own. */
+      mob->state = speed > 0 ? MOB_CHASE : MOB_IDLE;
     } else if (worldModOn(MOD_CRITTERS) && !mobTypeIsHostile(mob->type) &&
         mob->state != MOB_FLEE &&
         vertical_distance < BLOCK_SIZE * 2.f &&

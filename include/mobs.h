@@ -106,7 +106,49 @@ typedef struct {
   /* Wind-ups lock one local player so split-screen movement cannot redirect a
      telegraphed strike to somebody else on its final frame. */
   u8 target_player;
+  /* Which player this animal belongs to, or MOB_NO_OWNER.  A tamed animal
+     follows its owner and, crucially, is remembered rather than deleted when
+     it falls out of the simulated radius -- see the livestock roster. */
+  u8 owner;
 } Mob;
+
+#define MOB_NO_OWNER MAX_PLAYERS
+#define MOB_IS_TAMED(mob) ((mob)->owner != MOB_NO_OWNER)
+
+/*
+ * The livestock roster: tamed animals that are not currently simulated.
+ *
+ * The mob pool is ambient.  Anything more than MOB_DESPAWN_DISTANCE from a
+ * player is deactivated outright, which is exactly right for the sheep that
+ * wander past and exactly wrong for the sheep a player walked home, penned
+ * and named theirs -- go mining and the pen would be empty on the way back.
+ *
+ * So a tamed animal that leaves the radius is not destroyed, it is written
+ * down: species, owner, where it was standing, and whether it was a calf.
+ * Coming back within range materialises it into a pool slot again.  This is
+ * the same bargain villagers and trees already make with this world -- the
+ * entity is transient, the record is what persists -- and it costs about a
+ * hundred bytes rather than a second entity system.
+ *
+ * The roster length is also the herd cap, deliberately.  Livestock competes
+ * with wild animals for the same eight slots, so an uncapped herd would be a
+ * way to empty the world of everything else.
+ */
+#define MAX_LIVESTOCK 4
+
+typedef struct {
+  s32 x;
+  s32 z;
+  u8 y;
+  u8 type;
+  u8 owner;
+  /* Remaining calf time, quantised to whole seconds so the record stays
+     small; a calf put down and picked up again keeps growing. */
+  u8 baby_seconds;
+  u8 active;
+} LivestockRecord;
+
+extern LivestockRecord livestock[MAX_LIVESTOCK];
 
 /* A tiny transient event lets the renderer sell each move without owning any
    combat rules.  `time` counts down from MOB_SPECIAL_EFFECT_DURATION and
@@ -137,6 +179,36 @@ u8 mobFeedTarget(u8 player_num);
    not on its breeding cooldown starts looking for a mate.  Returns TRUE only
    when an apple was actually consumed. */
 u8 feedMob(u8 player_num);
+
+/*
+ * TRUE when a hostile is close enough to this player to make lying down a bad
+ * idea.  Sleeping is the one action that takes the night away wholesale, so it
+ * is the one action that has to check whether the night is currently standing
+ * next to the bed.  Scans only the fixed pool.
+ */
+u8 mobHostileNear(u8 player_num);
+
+/*
+ * Take ownership of the animal this player's apple is offered to.
+ *
+ * The first apple an untamed adult accepts tames it; every apple after that
+ * breeds, which is what feeding already did.  One button, one item, and the
+ * order the player discovers them in is the order they need them: an animal
+ * that follows you home is worth more than a calf you cannot move.
+ *
+ * FALSE when there was nothing to tame, when the herd is already at
+ * MAX_LIVESTOCK, or when the animal is somebody else's.
+ */
+u8 tameMob(u8 player_num);
+
+/* TRUE when A on the current feed target would claim it rather than feed it,
+   so the prompt can name the action the button is actually about to take. */
+u8 mobFeedIsTame(u8 player_num);
+
+/* How many animals this player owns, counting both the simulated ones and the
+   ones currently folded into the roster.  The HUD uses it for the herd
+   readout, and taming uses it as the cap. */
+u8 mobOwnedCount(u8 player_num);
 
 /* Returns TRUE only when an in-range mob received a punch or tool hit.
    Swords retain their higher damage, but an empty hand can always fight. */

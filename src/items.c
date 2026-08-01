@@ -34,7 +34,7 @@ const char *itemName(u8 item) {
     "Stone Axe", "Apple", "Raw Mutton", "Raw Pork", "Slime Gel",
     "Iron Sword", "Iron Pickaxe", "Iron Axe", "Torch", "Wood Stairs",
     "Stone Stairs", "Wood Door", "Lattice Window", "Raw Chicken",
-    "Feather", "Fence", "Fence Gate"
+    "Feather", "Fence", "Fence Gate", "Ladder", "Bed"
   };
 
   if (item <= CRAFTING_TABLE) {
@@ -66,7 +66,7 @@ u8 itemIsTool(u8 item) {
    reinterpret every existing world's inventory. */
 u8 itemIsDetail(u8 item) {
   return (item >= TORCH && item <= GLASS_WINDOW) ||
-    (item >= FENCE && item <= FENCE_GATE);
+    (item >= FENCE && item <= BED);
 }
 
 u8 rollLeafDrop(u8 *item) {

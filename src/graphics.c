@@ -739,6 +739,26 @@ DETAIL_BOX(fence_gate_rail_lo_verts, -18, 24, -4, 18, 42, 4,
   151, 99, 48, 92, 57, 29);
 DETAIL_BOX(fence_gate_rail_hi_verts, -18, 58, -4, 18, 76, 4,
   151, 99, 48, 92, 57, 29);
+/*
+ * A ladder hangs flat on the wall behind it, so every box sits at the back of
+ * the cell.  Orientation 0 is the -z wall; detailPlace derives the rest from
+ * whichever neighbour is actually solid rather than from where the player was
+ * standing, so a ladder cannot be hung facing into open air.
+ *
+ * Five boxes -- two rails and three rungs -- which is what a window and a
+ * fence already cost.  Rungs are the whole reason a ladder reads as climbable
+ * rather than as a plank, so they are the last thing to cut.
+ */
+DETAIL_BOX(ladder_rail_left_verts, -13, 0, -32, -8, 64, -27,
+  168, 120, 62, 104, 72, 36);
+DETAIL_BOX(ladder_rail_right_verts, 8, 0, -32, 13, 64, -27,
+  168, 120, 62, 104, 72, 36);
+DETAIL_BOX(ladder_rung_low_verts, -10, 10, -30, 10, 15, -24,
+  186, 138, 76, 118, 84, 44);
+DETAIL_BOX(ladder_rung_mid_verts, -10, 30, -30, 10, 35, -24,
+  186, 138, 76, 118, 84, 44);
+DETAIL_BOX(ladder_rung_high_verts, -10, 50, -30, 10, 55, -24,
+  186, 138, 76, 118, 84, 44);
 /* Dropped and held forms.  The loose-item path has no scale matrix -- it
    draws these at world size, the way the torch's own stick is -- so a pickup
    needs its own compact token rather than the block-and-a-half post. */
@@ -750,6 +770,29 @@ DETAIL_BOX(fence_gate_item_left_verts, -17, 0, -3, -11, 30, 3,
   158, 104, 51, 96, 60, 31);
 DETAIL_BOX(fence_gate_item_right_verts, 11, 0, -3, 17, 30, 3,
   158, 104, 51, 96, 60, 31);
+DETAIL_BOX(ladder_item_left_verts, -10, 0, -3, -6, 32, 3,
+  168, 120, 62, 104, 72, 36);
+DETAIL_BOX(ladder_item_right_verts, 6, 0, -3, 10, 32, 3,
+  168, 120, 62, 104, 72, 36);
+DETAIL_BOX(ladder_item_rung_verts, -8, 14, -3, 8, 18, 3,
+  186, 138, 76, 118, 84, 44);
+/*
+ * A bedroll: one cell, ankle high, with a pillow at the head.
+ *
+ * Deliberately not the two-cell bed of the game it echoes.  A horizontal pair
+ * is the one occupancy detailCovers does not already handle -- the door's
+ * y + 1 rule and the fence's both run vertically -- and it would mean a
+ * second special case in detailCovers, detailPlace, detailRemove and
+ * detailsApplyColumn for something a 320x240 screen renders about eight
+ * pixels of.  Low and non-solid also spares the bedroom the invisible
+ * head-height wall a full solid cell would leave over a knee-high mattress.
+ */
+DETAIL_BOX(bed_mattress_verts, -26, 0, -30, 26, 14, 30,
+  183, 60, 56, 121, 36, 34);
+DETAIL_BOX(bed_pillow_verts, -20, 14, -28, 20, 22, -14,
+  238, 235, 226, 176, 172, 164);
+DETAIL_BOX(bed_blanket_verts, -26, 14, -12, 26, 19, 30,
+  205, 78, 72, 138, 44, 41);
 /* A taper costs no more than the old flame box and makes both placed and
    dropped torches read as fire rather than a glowing cube. */
 static Vtx torch_flame_verts[] = {
@@ -3079,6 +3122,16 @@ static void drawDetailsForPlayer(u8 viewer_num) {
       drawDetailBox(fence_gate_right_verts);
       drawDetailBox(fence_gate_rail_lo_verts);
       drawDetailBox(fence_gate_rail_hi_verts);
+    } else if (detail->kind == DETAIL_LADDER) {
+      drawDetailBox(ladder_rail_left_verts);
+      drawDetailBox(ladder_rail_right_verts);
+      drawDetailBox(ladder_rung_low_verts);
+      drawDetailBox(ladder_rung_mid_verts);
+      drawDetailBox(ladder_rung_high_verts);
+    } else if (detail->kind == DETAIL_BED) {
+      drawDetailBox(bed_mattress_verts);
+      drawDetailBox(bed_blanket_verts);
+      drawDetailBox(bed_pillow_verts);
     }
   }
 
@@ -3575,6 +3628,19 @@ static void drawLooseItemGeometry(u8 item) {
     gSPVertex(dlp++, fence_gate_item_right_verts, 8, 0);
     gSPDisplayList(dlp++, box_display_list);
     body = fence_item_rail_verts;
+  } else if (item == LADDER) {
+    gSPVertex(dlp++, ladder_item_left_verts, 8, 0);
+    gSPDisplayList(dlp++, box_display_list);
+    gSPVertex(dlp++, ladder_item_right_verts, 8, 0);
+    gSPDisplayList(dlp++, box_display_list);
+    body = ladder_item_rung_verts;
+  } else if (item == BED) {
+    /* The placed roll is already small enough to read as a pickup. */
+    gSPVertex(dlp++, bed_mattress_verts, 8, 0);
+    gSPDisplayList(dlp++, box_display_list);
+    gSPVertex(dlp++, bed_blanket_verts, 8, 0);
+    gSPDisplayList(dlp++, box_display_list);
+    body = bed_pillow_verts;
   }
   if (body != NULL) {
     gSPVertex(dlp++, body, 8, 0);
@@ -5623,6 +5689,20 @@ static void drawItemIcon(u8 item, u32 x, u32 y, u32 size) {
     setHudFillColor(180, 122, 62);
     gDPFillRectangle(dlp++, x + 3, y + size / 2 - 2,
       x + size - 4, y + size / 2);
+  } else if (item == LADDER) {
+    /* Two rails and three rungs, the placed model at icon scale. */
+    setHudFillColor(168, 120, 62);
+    gDPFillRectangle(dlp++, x + 4, y + 2, x + 5, y + size - 2);
+    gDPFillRectangle(dlp++, x + size - 6, y + 2, x + size - 5, y + size - 2);
+    setHudFillColor(190, 142, 80);
+    gDPFillRectangle(dlp++, x + 4, y + 4, x + size - 5, y + 5);
+    gDPFillRectangle(dlp++, x + 4, y + size / 2 - 1, x + size - 5, y + size / 2);
+    gDPFillRectangle(dlp++, x + 4, y + size - 5, x + size - 5, y + size - 4);
+  } else if (item == BED) {
+    setHudFillColor(183, 60, 56);
+    gDPFillRectangle(dlp++, x + 2, y + size / 2 - 2, x + size - 3, y + size - 4);
+    setHudFillColor(238, 235, 226);
+    gDPFillRectangle(dlp++, x + 2, y + size / 2 - 5, x + size / 2, y + size / 2 - 2);
   } else if (itemIsSword(item)) {
     if (item == IRON_SWORD) {
       setHudFillColor(225, 225, 218);
@@ -6461,6 +6541,34 @@ static void drawGameText() {
         drawString(itemName(pickup_item[player_num]), 15,
           y_offset + (active_player_count > 1 ? 16 : 9));
       }
+      /*
+       * What the bed just did, centred over the hotbar where a player pressing
+       * A is already looking.  A refused sleep is the interesting case: three
+       * of the four lines name something the player can go and change, and a
+       * bed that silently did nothing would read as a broken bed.
+       */
+      if (sleep_message[player_num] > 0) {
+        static const char *lines[] = {
+          "YOU CAN ONLY SLEEP AT NIGHT",
+          "MONSTERS ARE TOO CLOSE",
+          "SLEEPING",
+          "GOOD MORNING"
+        };
+        const char *line = lines[sleep_reason[player_num] & 3];
+        u32 line_x;
+
+        /* In co-op, "SLEEPING" is only half the story -- the other half is
+           how many of the party are still on their feet. */
+        if (sleep_reason[player_num] == SLEEP_REASON_WAITING &&
+            active_player_count > 1) {
+          line = "SLEEPING  WAITING FOR THE OTHERS";
+        }
+        line_x = playerViewportX(player_num) +
+          (playerViewportWidth() - hudStringWidth(line)) / 2;
+        setHudTextColor(226, 214, 168);
+        drawString(line, line_x,
+          y_offset + viewport_height - HOTBAR_SLOT_SIZE - HOTBAR_MARGIN - 14);
+      }
       if (active_player_count == 1) {
         u32 name_width;
 
@@ -6498,7 +6606,10 @@ static void drawGameText() {
          both read the target updateMobs resolved this frame. */
       if (mobFeedTarget(player_num) < MAX_MOBS) {
         setHudTextColor(241, 195, 58);
-        drawString("FEED",
+        /* The same four-glyph width either way, so naming the action costs
+           the prompt no layout -- and taming is otherwise invisible until
+           the animal starts walking after you. */
+        drawString(mobFeedIsTame(player_num) ? "TAME" : "FEED",
           feedPromptX() + button_a.width + FEED_PROMPT_GAP,
           bar_y - 40 + GUIDE_LABEL_DROP);
       }

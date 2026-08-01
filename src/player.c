@@ -18,6 +18,7 @@
 #include "main.h"
 #include "details.h"
 #include "edits.h"
+#include "day_cycle.h"
 
 /*
  * Analog stick shaping.
@@ -78,6 +79,16 @@
 #define JUMP_SPEED (BLOCK_SIZE / 4.5)
 #define TERMINAL_SPEED (BLOCK_SIZE / 2)
 #define GRAVITY (BLOCK_SIZE / 40)
+/*
+ * Climbing rates, in the same per-frame units as the three above.
+ *
+ * Two blocks a second up and three down.  A climb wants to be visibly slower
+ * than walking -- it is the price of the shortcut a shaft represents -- while
+ * the descent stays quick enough that a mine is not a chore to leave, and
+ * both are far under TERMINAL_SPEED so a ladder never reads as a fall.
+ */
+#define LADDER_CLIMB_SPEED (BLOCK_SIZE / 30.f)
+#define LADDER_SLIDE_SPEED (BLOCK_SIZE / 20.f)
 #define MAX_FRAME_DELTA 2.5f
 /* Rotation's own frame-time ceiling.  Physics has to keep the tight clamp so
    that a long frame cannot carry anyone through a wall, but a camera tunnels
@@ -165,6 +176,14 @@ const CraftRecipe craft_recipes[CRAFT_RECIPE_COUNT] = {
      is ever stated. */
   {FENCE, 3, {PLANKS, STICK}, {4, 2}},
   {FENCE_GATE, 1, {PLANKS, STICK}, {2, 4}},
+  /* Sticks alone, and cheap by the standards of this table: a ladder is
+     scaffolding for the mine the player is about to dig, and pricing it like
+     furniture would just mean pillar-jumping back out instead. */
+  {LADDER, 3, {STICK, AIR}, {7, 0}},
+  /* Wool's first use in the game.  Sheep have been dropping it since there
+     were sheep, and until now it was an item whose only interaction with
+     anything was taking up an inventory slot. */
+  {BED, 1, {WOOL, PLANKS}, {3, 3}},
   /* Coal stands in for firing until the furnace interface lands. */
   {GLASS_WINDOW, 2, {SAND, COAL}, {4, 1}}
 };
@@ -605,6 +624,11 @@ static void spawnPlayer(Player *player, int x, int z) {
   player->hurt_time = 0;
   player->objective_stage = 0;
   player->objective_time = 420.f;
+  /* A new body has never slept anywhere; the world spawn is its only home. */
+  player->spawn_set = FALSE;
+  player->spawn_x = x;
+  player->spawn_z = z;
+  player->sleeping = FALSE;
   player->dead = FALSE;
   player->death_time = 0;
   player->health = PLAYER_MAX_HEALTH;
@@ -668,6 +692,15 @@ static void killPlayer(Player *player) {
 static void respawnPlayer(Player *player, int x, int z) {
   int y;
 
+  /* A bed the player has slept in outranks the world spawn the callers pass.
+     Resolving it here rather than at the three call sites means death,
+     drowning in the void and a co-op knockout all honour it without each
+     having to remember to. */
+  if (player->spawn_set) {
+    x = player->spawn_x;
+    z = player->spawn_z;
+  }
+  player->sleeping = FALSE;
   player->position.x = (x + 0.5f) * BLOCK_SIZE;
   player->position.z = (z + 0.5f) * BLOCK_SIZE;
   for (y = MAX_Y - 1; y >= 0; y--) {
@@ -716,6 +749,9 @@ void damagePlayer(u8 player_num, u8 damage, Vector3 source) {
   }
   player->health = player->health > damage ? player->health - damage : 0;
   player->hurt_time = PLAYER_ATTACK_DURATION;
+  /* Nobody sleeps through being hit, and in co-op nobody else's night should
+     end because one player is quietly being eaten on the far side of it. */
+  player->sleeping = FALSE;
   dx = player->position.x - source.x;
   dz = player->position.z - source.z;
   distance = sqrtf(dx * dx + dz * dz);
@@ -1487,6 +1523,84 @@ const char *playerObjectiveHint(Player *player) {
     player->objective_stage : PLAYER_OBJECTIVE_COUNT];
 }
 
+/*
+ * Why a sleep attempt was refused, for the line the HUD prints.  A bed that
+ * silently does nothing is indistinguishable from a bed that is broken, and
+ * three of these four refusals are things the player can act on.
+ */
+u8 sleep_message[MAX_PLAYERS];
+u8 sleep_reason[MAX_PLAYERS];
+
+static void noteSleep(u8 player_num, u8 reason) {
+  sleep_reason[player_num] = reason;
+  sleep_message[player_num] = 110;
+}
+
+/*
+ * Lie down, if the night and the neighbourhood allow it.
+ *
+ * The respawn point is set even when the night is not skipped -- claiming a
+ * bed and sleeping through to morning are separate promises, and a player who
+ * built a base at noon should still wake up in it.
+ */
+static u8 trySleep(u8 player_num) {
+  Player *player = &players[player_num];
+
+  player->spawn_x = player->target_x;
+  player->spawn_z = player->target_z;
+  player->spawn_set = TRUE;
+
+  if (!dayCycleIsNight()) {
+    noteSleep(player_num, SLEEP_REASON_DAYTIME);
+    return FALSE;
+  }
+  if (mobHostileNear(player_num)) {
+    noteSleep(player_num, SLEEP_REASON_MONSTERS);
+    return FALSE;
+  }
+  player->sleeping = TRUE;
+  noteSleep(player_num, SLEEP_REASON_WAITING);
+  playSound(SOUND_PICKUP);
+  return TRUE;
+}
+
+/*
+ * Resolve the party's sleep once every player has been updated.
+ *
+ * Every active player has to be down before the night goes, which is the rule
+ * the couch chose: one player cannot delete the night another is out in the
+ * middle of.  It runs after the whole update loop rather than inside it so
+ * the answer is the same whichever player happens to be simulated first.
+ */
+static void resolvePartySleep(void) {
+  u8 player_num;
+  u8 sleepers = 0;
+
+  for (player_num = 0; player_num < active_player_count; player_num++) {
+    if (!players[player_num].active) {
+      continue;
+    }
+    /* Morning ends the arrangement whether it was slept through or not. */
+    if (!dayCycleIsNight()) {
+      players[player_num].sleeping = FALSE;
+      continue;
+    }
+    if (players[player_num].sleeping) {
+      sleepers++;
+    }
+  }
+  if (sleepers == 0 || sleepers < active_player_count) {
+    return;
+  }
+  dayCycleSkipToDawn();
+  for (player_num = 0; player_num < MAX_PLAYERS; player_num++) {
+    players[player_num].sleeping = FALSE;
+    if (players[player_num].active) {
+      noteSleep(player_num, SLEEP_REASON_MORNING);
+    }
+  }
+}
+
 static void updateBreaking(u8 player_num, float delta) {
   Player *player = &players[player_num];
   NUContData *cont = &cont_data[player_num];
@@ -1593,6 +1707,42 @@ static u8 playerInWater(Player *player) {
   return FALSE;
 }
 
+/*
+ * Whether the body is inside a ladder's cell, asked exactly the way water is.
+ *
+ * A ladder is not solid, so the player stands in it rather than against it,
+ * and the same eye-height correction applies -- a climber's hands are at the
+ * camera but their feet are two cells down, and only checking the camera's
+ * own cell would drop them the moment they climbed above the top rung.
+ *
+ * Each probe is a detailAt, whose CRAFTING_TABLE nibble test settles every
+ * cell that is not a detail before the record pool is ever walked, so three
+ * of these a frame per player is the same order of work as the water scan
+ * beside it.
+ */
+static u8 playerOnLadder(Player *player) {
+  int x = floor(player->position.x / BLOCK_SIZE);
+  int z = floor(player->position.z / BLOCK_SIZE);
+  /* The body's real extent, not the water scan's fixed three cells.  Water
+     can afford to be generous; a ladder cannot.  Two cells of slack above
+     the feet would keep `climbing` true for two cells after the top rung,
+     and R would carry the player up through open air above the shaft. */
+  int feet_y = floor((player->position.y - EYE_HEIGHT * BLOCK_SIZE) /
+    BLOCK_SIZE);
+  int head_y = floor(player->position.y / BLOCK_SIZE);
+  int scan_y;
+
+  if (!windowColumnResident(x >> CHUNK_SHIFT, z >> CHUNK_SHIFT)) {
+    return FALSE;
+  }
+  for (scan_y = max(0, feet_y); scan_y <= min(MAX_Y - 1, head_y); scan_y++) {
+    if (detailIsLadderAt(x, scan_y, z)) {
+      return TRUE;
+    }
+  }
+  return FALSE;
+}
+
 /* Lookahead past the player's edge before the frontier wall engages, in
    world units -- half a block, roughly the collision box's reach. */
 #define EDGE_WALL_MARGIN 32.f
@@ -1665,6 +1815,7 @@ static u8 updatePlayer(u8 player_num, float delta, float look_delta) {
   int collision_axis = 0;
   StickInput stick = readStick(cont->stick_x, cont->stick_y);
   u8 swimming = playerInWater(player);
+  u8 climbing = !swimming && playerOnLadder(player);
   u8 grounded;
   u8 steering = FALSE;
   u8 vaulted = FALSE;
@@ -1936,9 +2087,20 @@ static u8 updatePlayer(u8 player_num, float delta, float look_delta) {
     }
   } else block_inc_held[player_num] = FALSE;
 
+  /* Getting up.  Any deliberate movement ends the arrangement, so there is no
+     separate leave-the-bed button to find -- and in co-op it means a player
+     who changes their mind simply walks away rather than stranding the
+     others waiting on them. */
+  if (player->sleeping && (velocity.x != 0 || velocity.z != 0 ||
+      (cont->trigger & (B_BUTTON | R_TRIG)))) {
+    player->sleeping = FALSE;
+  }
+
   diag_player_step = DIAG_STEP_VAULT;
   grounded = onGround(player);
-  if (!swimming && grounded) {
+  /* Vaulting off a ladder would mantle the player through the wall the ladder
+     is nailed to; the ladder is already the way up. */
+  if (!swimming && !climbing && grounded) {
     vaulted = tryVault(player, velocity, delta,
       (cont->button & L_TRIG) && (cont->button & R_TRIG));
   }
@@ -1951,6 +2113,23 @@ static u8 updatePlayer(u8 player_num, float delta, float look_delta) {
     } else if (player->y_velocity > -BLOCK_SIZE / 10.f) {
       player->y_velocity -= GRAVITY * delta * 0.18f;
     }
+  } else if (climbing) {
+    /*
+     * A ladder is held rather than fallen down, so this replaces gravity
+     * outright instead of damping it the way water does.  R climbs; letting
+     * go slides down at a controlled rate rather than dropping, which is what
+     * makes a deep shaft a route back up rather than a commitment.
+     *
+     * fall_distance resets every frame on the ladder, so stepping off at the
+     * top of a mine shaft cannot cash in the fall the climb just undid.
+     */
+    player->fall_distance = 0;
+    if (cont->button & R_TRIG) {
+      player->y_velocity = LADDER_CLIMB_SPEED;
+      jumped = (cont->trigger & R_TRIG) != 0;
+    } else {
+      player->y_velocity = -LADDER_SLIDE_SPEED;
+    }
   } else if (vaulted) {
     /* tryVault already supplied a small upward carry. */
   } else if (grounded) {
@@ -1959,7 +2138,7 @@ static u8 updatePlayer(u8 player_num, float delta, float look_delta) {
   } else if (player->y_velocity > -TERMINAL_SPEED) {
     player->y_velocity -= GRAVITY * delta;
   }
-  if (!swimming && player->y_velocity < 0) {
+  if (!swimming && !climbing && player->y_velocity < 0) {
     player->fall_distance += -player->y_velocity * delta;
   }
   velocity.y += player->y_velocity;
@@ -1999,10 +2178,11 @@ static u8 updatePlayer(u8 player_num, float delta, float look_delta) {
   }
 
   /* This is based on the final collision-resolved motion, so a player only
-     rests when genuinely stationary (and never while swimming or vaulting).
+     rests when genuinely stationary (and never while swimming, climbing or
+     vaulting -- a body on a ladder is holding on, not idling).
      The camera owns its transient phase; gameplay state and saves stay put. */
   updateCameraIdleSway(player_num, delta,
-    grounded && !swimming && player->vault_time <= 0 &&
+    grounded && !swimming && !climbing && player->vault_time <= 0 &&
     velocity.x == 0 && velocity.z == 0);
 
   diag_player_step = DIAG_STEP_TARGET;
@@ -2021,9 +2201,27 @@ static u8 updatePlayer(u8 player_num, float delta, float look_delta) {
       playSound(SOUND_PLACE);
       return FALSE;
     }
+    if (player->target_present && detailIsBedAt(player->target_x,
+        player->target_y, player->target_z)) {
+      trySleep(player_num);
+      return FALSE;
+    }
+    /*
+     * A real crafting table, and not merely a cell wearing one as its proxy.
+     *
+     * Every detail writes CRAFTING_TABLE into the terrain to mark its cell
+     * occupied, so without the record test this branch claimed them all:
+     * pressing A on a torch, a window or a set of stairs opened the
+     * workbench.  It was invisible while the only two kinds a player looked
+     * at were doors (which detailToggle catches above) and torches (which
+     * nobody presses A on), and a bed -- an A-button detail that is not a
+     * toggle -- is what makes it reachable on purpose.
+     */
     if (player->target_present &&
         blockGet(player->target_x, player->target_y,
-          player->target_z) == CRAFTING_TABLE) {
+          player->target_z) == CRAFTING_TABLE &&
+        !detailIsCustomAt(player->target_x, player->target_y,
+          player->target_z)) {
       openInventory(player_num);
       return TRUE;
     }
@@ -2107,12 +2305,16 @@ void updatePlayers() {
   diag_player_step = DIAG_STEP_OBJECTIVES;
   if (current_screen == GAME) {
     for (i = 0; i < active_player_count; i++) {
+      if (sleep_message[i] > 0) {
+        sleep_message[i]--;
+      }
       /* An objective is something to go and do; a corpse is not doing it. */
       if (players[i].dead) {
         continue;
       }
       updatePlayerObjective(&players[i], delta);
     }
+    resolvePartySleep();
   }
 
   if (current_screen == INVENTORY) {

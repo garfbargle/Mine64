@@ -144,6 +144,24 @@ u32 dayCycleTimeOfDay() {
   return world_ticks % DAY_CYCLE_TICKS;
 }
 
+u8 dayCycleIsNight(void) {
+  u32 time = dayCycleTimeOfDay();
+  return time >= DAY_CYCLE_NIGHT_START && time <= DAY_CYCLE_NIGHT_END;
+}
+
+void dayCycleSkipToDawn(void) {
+  u32 day_start = world_ticks - dayCycleTimeOfDay();
+  u32 dawn = day_start + DAY_CYCLE_DAWN_TICK;
+
+  /* Already past first light: the next one is tomorrow's.  Going backwards
+     here would rerun a stretch of the clock that trees and hunger have
+     already been advanced through. */
+  if (dawn <= world_ticks) {
+    dawn += DAY_CYCLE_TICKS;
+  }
+  setDayCycleWorldTicks(dawn);
+}
+
 u8 dayCycleMoonPhase() {
   return (world_ticks / DAY_CYCLE_TICKS) & 7;
 }

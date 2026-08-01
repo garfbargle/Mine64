@@ -8,6 +8,19 @@
 #define DAY_CYCLE_TICKS 24000UL
 #define DAY_CYCLE_START_TICK 1000UL
 
+/*
+ * Night, as one definition rather than as a threshold pair copied wherever it
+ * is needed.  Monster spawning, the dawn retreat and sleeping all have to
+ * agree about it exactly: a bed that ended the night a few hundred ticks
+ * before the monsters accepted it had ended would hand the player a morning
+ * with the previous night's hostiles still standing in it.
+ */
+#define DAY_CYCLE_NIGHT_START 13000UL
+#define DAY_CYCLE_NIGHT_END 23000UL
+/* Just past the end, so waking is unambiguously morning by every rule above
+   rather than sitting on the boundary they all test against. */
+#define DAY_CYCLE_DAWN_TICK 23200UL
+
 typedef struct {
   u8 r;
   u8 g;
@@ -22,6 +35,18 @@ u32 dayCycleWorldTicks();
 void setDayCycleWorldTicks(u32 ticks);
 u32 dayCycleTimeOfDay();
 u8 dayCycleMoonPhase();
+
+/* The one answer to "is it night", for everything that has to agree. */
+u8 dayCycleIsNight(void);
+
+/*
+ * Wind the clock forward to first light without ever winding it back.
+ *
+ * The world clock only counts up -- tree growth, hunger and the mob pool all
+ * read it -- so this advances into the following day when it is already past
+ * dawn rather than rewinding into one that has been.
+ */
+void dayCycleSkipToDawn(void);
 
 /*
  * +X is east in Mine64's world space.  The Sun rises there at tick zero.

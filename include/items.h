@@ -36,7 +36,9 @@
 #define FEATHER        40
 #define FENCE          41
 #define FENCE_GATE     42
-#define ITEM_TYPE_COUNT FENCE_GATE
+#define LADDER         43
+#define BED            44
+#define ITEM_TYPE_COUNT BED
 #define ITEM_IS_VALID(item) \
   ((item) <= BLOCK_TYPE_COUNT || \
    ((item) >= STICK && (item) <= ITEM_TYPE_COUNT))

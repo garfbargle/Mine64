@@ -81,6 +81,8 @@ u8 detailKindForItem(u8 item) {
   if (item == GLASS_WINDOW) return DETAIL_WINDOW;
   if (item == FENCE) return DETAIL_FENCE;
   if (item == FENCE_GATE) return DETAIL_FENCE_GATE;
+  if (item == LADDER) return DETAIL_LADDER;
+  if (item == BED) return DETAIL_BED;
   return DETAIL_NONE;
 }
 
@@ -92,6 +94,8 @@ u8 detailItemForKind(u8 kind) {
   if (kind == DETAIL_WINDOW) return GLASS_WINDOW;
   if (kind == DETAIL_FENCE) return FENCE;
   if (kind == DETAIL_FENCE_GATE) return FENCE_GATE;
+  if (kind == DETAIL_LADDER) return LADDER;
+  if (kind == DETAIL_BED) return BED;
   return AIR;
 }
 
@@ -148,6 +152,37 @@ static void fenceRefreshLinks(int x, int y, int z) {
   }
 }
 
+/*
+ * Which wall each orientation puts a ladder's back against.
+ *
+ * Measured against the model rather than assumed: rotating the rails' own
+ * centroid by orientation * 90, the way modelMatrix does, lands them on -z,
+ * -x, +z and +x in that order.  That is the same order the player's facing
+ * produces -- placeBlock's `(yaw + 45) / 90` is 0 at yaw 0, where forward is
+ * -z -- so a ladder placed while looking at a wall already hangs on that
+ * wall, and this table is only consulted to check the choice and to find a
+ * substitute.
+ */
+static const int ladder_walls[4][2] = {{0, -1}, {-1, 0}, {0, 1}, {1, 0}};
+
+static u8 ladderOrientation(int x, int y, int z, u8 preferred) {
+  u8 i;
+
+  preferred &= 3;
+  if (worldCellSolid(x + ladder_walls[preferred][0], y,
+      z + ladder_walls[preferred][1])) {
+    return preferred;
+  }
+  /* Looking at open air -- placing off the side of a shaft, say.  Any real
+     wall beats hanging the rungs on nothing. */
+  for (i = 0; i < 4; i++) {
+    if (worldCellSolid(x + ladder_walls[i][0], y, z + ladder_walls[i][1])) {
+      return i;
+    }
+  }
+  return preferred;
+}
+
 static u8 detailHasSupport(int x, int y, int z) {
   if (y > 0 && worldCellSolid(x, y - 1, z)) return TRUE;
   if (worldCellSolid(x - 1, y, z)) return TRUE;
@@ -192,8 +227,16 @@ u8 detailPlace(u8 item, int x, int y, int z, u8 orientation, u8 flags) {
   detail->kind = kind;
   /* A fence has no facing.  Its rails are named in absolute world directions
      by the link mask, so letting the player's heading rotate the model would
-     swing them off their neighbours. */
-  detail->orientation = kind == DETAIL_FENCE ? 0 : (orientation & 3);
+     swing them off their neighbours.  A ladder has the opposite problem: its
+     facing is a fact about which wall is really there, not about where the
+     player happened to be standing. */
+  if (kind == DETAIL_FENCE) {
+    detail->orientation = 0;
+  } else if (kind == DETAIL_LADDER) {
+    detail->orientation = ladderOrientation(x, y, z, orientation);
+  } else {
+    detail->orientation = orientation & 3;
+  }
   detail->state = 0;
   detail->flags = flags;
   detail->active = TRUE;
@@ -259,6 +302,16 @@ u8 detailIsCustomAt(int x, int y, int z) {
   return detailAt(x, y, z) != NULL;
 }
 
+u8 detailIsLadderAt(int x, int y, int z) {
+  DetailCell *detail = detailAt(x, y, z);
+  return detail != NULL && detail->kind == DETAIL_LADDER;
+}
+
+u8 detailIsBedAt(int x, int y, int z) {
+  DetailCell *detail = detailAt(x, y, z);
+  return detail != NULL && detail->kind == DETAIL_BED;
+}
+
 u8 detailIsStairAt(int x, int y, int z) {
   DetailCell *detail = detailAt(x, y, z);
   return detail != NULL && (detail->kind == DETAIL_WOOD_STAIRS ||
@@ -283,7 +336,12 @@ u8 worldCellSolid(int x, int y, int z) {
   if (detail == NULL) {
     return TRUE;
   }
-  if (detail->kind == DETAIL_TORCH) {
+  /* Neither of these fills its cell.  A ladder in particular has to be
+     enterable: the player climbs from inside the cell, the way swimming
+     happens inside water, so a solid ladder would be a ladder nobody could
+     get onto. */
+  if (detail->kind == DETAIL_TORCH || detail->kind == DETAIL_LADDER ||
+      detail->kind == DETAIL_BED) {
     return FALSE;
   }
   /* Both hinged kinds stand open the same way.  A gate's upper cell opens

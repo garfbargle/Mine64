@@ -39,7 +39,7 @@
    the screen before the player has read it. */
 #define PLAYER_RESPAWN_DELAY 40.f
 #define PLAYER_OBJECTIVE_COUNT 8
-#define CRAFT_RECIPE_COUNT 19
+#define CRAFT_RECIPE_COUNT 21
 #define POCKET_RECIPE_COUNT 4
 
 enum InventoryArea {
@@ -102,6 +102,20 @@ typedef struct {
      smooth without ticking or scanning an inventory every frame. */
   float hunger_progress;
   float survival_time;
+  /*
+   * Where this player wakes up, once they have slept somewhere.
+   *
+   * Transient, exactly like the bed that sets it: details are not carried by
+   * any save format yet, so a respawn point that survived a reload would
+   * point at a bed that had reverted to the crafting table proxying it.  Both
+   * belong in the same version bump.
+   */
+  int spawn_x;
+  int spawn_z;
+  u8 spawn_set;
+  /* Lying down, waiting for the rest of the party.  Cleared by moving, by
+     being hurt, and by the morning itself. */
+  u8 sleeping;
   u8 health;
   u8 hunger;
   u8 objective_stage;
@@ -147,6 +161,15 @@ typedef struct {
 static __inline__ __attribute__((unused)) u8 playerAlive(const Player *player) {
   return player->active && !player->dead;
 }
+
+/* Why the last sleep attempt did what it did, and how many frames of HUD line
+   it has left.  Indexed by player so a split screen can disagree. */
+#define SLEEP_REASON_DAYTIME 0
+#define SLEEP_REASON_MONSTERS 1
+#define SLEEP_REASON_WAITING 2
+#define SLEEP_REASON_MORNING 3
+extern u8 sleep_message[MAX_PLAYERS];
+extern u8 sleep_reason[MAX_PLAYERS];
 
 extern Player players[MAX_PLAYERS];
 extern u8 active_player_count;
