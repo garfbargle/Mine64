@@ -722,19 +722,20 @@ double-buffered, so the RSP can never read a camera transform while the CPU
 prepares the following frame. That is an important difference on real N64
 hardware.
 
-The linked release program leaves roughly 36 KiB free below NuSystem's fixed
+The linked release program leaves roughly 64 KiB free below NuSystem's fixed
 framebuffer reservation, including the 1 MiB block window, the 1.125 MiB mesh
 arena, the 196 KiB home store, NuSystem task buffers, and doubled render state.
 It remains within the stock console's 4 MiB RDRAM; an Expansion Pak is not
 required. `tools/check_ram.py` runs at the end of every build and fails it on an
 overrun, because nothing at link time notices when BSS grows into addresses
-NuSystem pins at runtime; it also warns under 64 KiB of headroom, which the
-release build currently trips. The audio variant does not currently fit and is
-deferred; see *Known gaps*.
+NuSystem pins at runtime; it also warns under 64 KiB of headroom. The audio
+variant does not currently fit and is deferred; see *Known gaps*.
 
+Half that headroom was bought back by dropping the five graphics microcodes the
+single-task render path stopped using — only F3DEX2 is ever selected, and
+`src/ucode_stubs.c` keeps NuSystem's table resolving without them.
 [RAM budget](docs/ram-budget.md) walks through what every large allocation is
-for and what can be reclaimed — the largest single item, 29 KiB in both builds,
-is five graphics microcodes that are linked and never selected.
+for, what is still reclaimable, and what only looks wasteful.
 
 ### Freeze forensics
 

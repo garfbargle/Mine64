@@ -2,9 +2,11 @@
 
 Where Mine64's 4 MiB goes, in plain terms, and what can be got back.
 
-Measured from the linked ELFs (`mine64.out`, `mine64-audio.out`) at commit
-`155204a`, re-checked against the 2026-08-01 09:21 rebuild. There is an
-interactive treemap of the same data — see *Visualising it* at the bottom.
+Measured by parsing the linked ELFs (`mine64.out`, `mine64-audio.out`) directly
+— section headers and symbol tables, no toolchain needed. Figures are from
+2026-08-01; the treemap linked at the bottom shows the same data as it stood
+just before `5f8979d` landed the first fix. Re-measure after anything large
+moves.
 
 ## The machine
 
@@ -34,9 +36,10 @@ precisely because the linker will not tell you.
 
 Current state:
 
-- `make` — the program ends **35.7 KiB** below the framebuffers. The check
-  warns under 64 KiB, so this build already prints a warning.
-- `make audio` — the program runs **310 KiB past** the audio heap. It fails the
+- `make` — the program ends **64 KiB** below the framebuffers, and no longer
+  trips the headroom warning. It was 35 KiB until the microcode item below
+  landed in `5f8979d`.
+- `make audio` — the program runs **285 KiB past** the audio heap. It fails the
   check and does not ship. This is not new; it predates the home store.
 
 ## What every big piece actually does
@@ -142,16 +145,16 @@ Animation matrices for mobs, the player model, dropped items and trees; the
 tree list; entity state; scratch buffers for the mesher. Nothing here is over
 12 KiB and nothing is obviously wrong.
 
-And outside BSS, **code and read-only data is 395 KiB**, of which 35 KiB is
-graphics microcode (see below) and only 8 KiB is textures — the texture atlas is
-not a memory problem.
+And outside BSS, **code and read-only data is about 365 KiB**. Only 8 KiB of
+that is textures — the atlas is not a memory problem — and 6 KiB is the one
+graphics microcode still linked, down from 35 KiB across six.
 
 ## What we should absolutely do
 
 All three were built and run before being written down here. See *Verified how*
 at the end of this section for what that test did and did not cover.
 
-### 1. Stop linking five microcodes we never run — 29 KiB, both builds
+### 1. Stop linking five microcodes we never run — 29 KiB, both builds · **done, `5f8979d`**
 
 "Microcode" is the program the RSP runs. The SDK ships several variants for
 different tradeoffs, and the spec files link **six** of them.
@@ -318,14 +321,16 @@ exactly where the Z buffer ends. Nothing is wasted between them.
 
 Measured, not projected — every column is a real build in the container.
 
-| | today | + microcodes | + microcodes, FIFO, heap |
+| | before | **today** (`5f8979d`) | with FIFO + heap |
 |---|---|---|---|
-| `make` | 35 KiB free ⚠ | 64 KiB free ✓ | **128 KiB free** ✓ |
-| `make audio` | 310 KiB over ✗ | 281 KiB over ✗ | **2 KiB free** ⚠ |
+| `make` | 35 KiB free ⚠ | **64 KiB free** ✓ | 128 KiB free ✓ |
+| `make audio` | 310 KiB over ✗ | **285 KiB over** ✗ | 2 KiB free ⚠ |
 
-The default build goes from tripping the headroom warning to having four times
-the margin the guard asks for. The audio build stops failing, but 2 KiB is not
-margin — treat it as proof the path exists, not as a shipping configuration.
+The default build no longer trips the headroom warning. The audio build is still
+failing; the last column is a real build, but 2 KiB is not margin — treat it as
+proof the path exists, not as a shipping configuration. The unlanded half is
+kept as `build/ram-fixes-hardware.patch` for whoever picks up the hardware
+session.
 
 ## How to measure it yourself
 
