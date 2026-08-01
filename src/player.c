@@ -5,6 +5,7 @@
 #include "blocks.h"
 #include "graphics.h"
 #include "camera.h"
+#include "cobblemon.h"
 #include "geometry.h"
 #include "items.h"
 #include "mobs.h"
@@ -12,6 +13,7 @@
 #include "storage.h"
 #include "audio.h"
 #include "world.h"
+#include "mods.h"
 #include "details.h"
 #include "edits.h"
 
@@ -71,6 +73,10 @@ static NUContData cont_data[MAX_PLAYERS];
 /* World units.  ~30x further out than anyone has walked on hardware; only a
    corrupt float gets here.  See the sanity snap at the top of updatePlayer. */
 #define POSITION_SANITY_LIMIT 20000000.f
+/* World units.  Six blocks below bedrock: past anything the generator or a
+   player edit can leave standing, and close enough that a fall off a sky
+   island resolves while it still reads as a fall. */
+#define VOID_FALL_DEPTH (-6.f * BLOCK_SIZE)
 static Vector3 last_good_position[MAX_PLAYERS];
 static u8 last_good_valid[MAX_PLAYERS];
 static OSTime last_time = 0;
@@ -146,6 +152,8 @@ static u8 inventoryNavigation(NUContData *cont) {
   return pressed;
 }
 
+static void refreshHeldItem(Player *player);
+
 void resetPlayerInventory(Player *player) {
   u8 slot;
   int selected_slot = player->held_block - FIRST_PLACEABLE_BLOCK;
@@ -177,6 +185,19 @@ void resetPlayerInventory(Player *player) {
   player->inventory_area = INVENTORY_AREA_ITEMS;
   player->crafting_table_open = FALSE;
   player->held_block = player->inventory[player->inventory_cursor].item;
+
+  /* Enough to skip the first hour of punching wood, and not a block more:
+     the kit is a head start, not a creative-mode inventory.  Torches matter
+     most on the sky islands, where there is no cave to shelter in. */
+  if (worldModOn(MOD_BONUS_KIT)) {
+    addItemToInventory(player, WOOD_PICKAXE, 1);
+    addItemToInventory(player, WOOD_AXE, 1);
+    addItemToInventory(player, WOOD_SWORD, 1);
+    addItemToInventory(player, TORCH, 8);
+    addItemToInventory(player, PLANKS, 16);
+    addItemToInventory(player, APPLE, 3);
+    refreshHeldItem(player);
+  }
 }
 
 static void selectHotbarSlot(Player *player, u8 slot) {
@@ -1494,6 +1515,20 @@ static u8 updatePlayer(u8 player_num, float delta) {
     last_good_valid[player_num] = TRUE;
   }
 
+  /*
+   * Fell out of the world.  Skylands is open air under every island, so this
+   * is a routine way to die there rather than a glitch -- but it applies to
+   * every world, because a player who ends up under the bedrock has the same
+   * unrecoverable fall ahead of them and nothing below to land on.  Caves
+   * never breach y = 0, so no legitimate position is anywhere near this.
+   */
+  if (player->position.y < VOID_FALL_DEPTH) {
+    respawnPlayer(player, START_X + player_num * 3,
+      START_Z + (player_num & 1 ? 0 : 3));
+    playSound(SOUND_PUNCH);
+    return FALSE;
+  }
+
   if (cont->trigger & U_CBUTTONS) {
     /* Z already means "the camera is mine", so it is the natural modifier for
        changing what the stick does with the camera. */
@@ -1734,6 +1769,13 @@ static u8 updatePlayer(u8 player_num, float delta) {
   updateTargetBlock(player_num);
   diag_player_step = DIAG_STEP_ACTIONS;
   if (cont->trigger & A_BUTTON) {
+    /* A creature in front of the player owns A before any block does.  The
+       prompt on screen already said so, and a press that placed dirt into a
+       creature's face instead would be the game contradicting its own HUD. */
+    if (cobblemonTryInteract(player_num,
+        (cont->button & Z_TRIG) != 0)) {
+      return TRUE;
+    }
     if (player->target_present && detailToggle(player->target_x,
         player->target_y, player->target_z)) {
       playSound(SOUND_PLACE);
@@ -1791,6 +1833,24 @@ void updatePlayers() {
     delta = MAX_FRAME_DELTA;
   }
   diagPaintPhase(DIAG_PHASE_PLAYERS);
+
+  /*
+   * A battle is a full pause inside GAME rather than a screen of its own.
+   *
+   * Everything below this point -- objectives, movement, mining, mobs, trees,
+   * dropped items -- stops, which is what makes the battle the cheapest frame
+   * the game draws with terrain on it: the world is already meshed, nobody is
+   * moving, and the RSP has two box models and a flat panel to do.  Making it
+   * a Screen value instead would mean auditing every current_screen == GAME
+   * test in the project for something that is, in every way that matters,
+   * still the game.
+   */
+  if (cobblemonBattleActive()) {
+    cobblemonBattleInput(cont_data);
+    cobblemonUpdate(delta);
+    return;
+  }
+
   diag_player_step = DIAG_STEP_OBJECTIVES;
   if (current_screen == GAME) {
     for (i = 0; i < active_player_count; i++) {
@@ -1885,6 +1945,29 @@ void updatePlayers() {
     return;
   }
 
+  if (current_screen == WORLD_SETUP) {
+    u8 setup_navigation = inventoryNavigation(&cont_data[0]);
+
+    /* The same stick-with-repeat the inventory and the keyboard use, so
+       moving through a list feels the same everywhere in the game. */
+    if (cont_data[0].trigger & START_BUTTON) {
+      menuAct();
+    } else if (cont_data[0].trigger & B_BUTTON) {
+      menuBack();
+    } else if (cont_data[0].trigger & (L_TRIG | R_TRIG)) {
+      worldSetupReroll();
+    } else if (cont_data[0].trigger & A_BUTTON) {
+      worldSetupToggle();
+    } else if ((setup_navigation & NAV_UP) ||
+        (cont_data[0].trigger & U_JPAD)) {
+      worldSetupUp();
+    } else if ((setup_navigation & NAV_DOWN) ||
+        (cont_data[0].trigger & D_JPAD)) {
+      worldSetupDown();
+    }
+    return;
+  }
+
   if (current_screen == WORLD_NAMING) {
     u8 name_navigation = inventoryNavigation(&cont_data[0]);
 
@@ -1892,6 +1975,10 @@ void updatePlayers() {
        function of moving the insertion point. */
     if (cont_data[0].trigger & START_BUTTON) {
       confirmWorldName();
+    } else if (cont_data[0].trigger & Z_TRIG) {
+      /* B is already the eraser here, so backing out of the card needs a
+         button of its own. */
+      menuBack();
     } else if ((name_navigation & NAV_LEFT) ||
         (cont_data[0].trigger & L_JPAD)) {
       worldNameKeyboardLeft();
@@ -1925,7 +2012,9 @@ void updatePlayers() {
   if (current_screen != GAME) {
     down_pressed = cont_data[0].stick_y < -50;
     up_pressed = cont_data[0].stick_y > 50;
-    act_pressed = cont_data[0].button & (START_BUTTON | A_BUTTON | B_BUTTON);
+    /* B is the way back out of every other card in the front end, so it must
+       not also be a second way in here. */
+    act_pressed = cont_data[0].button & (START_BUTTON | A_BUTTON);
     if (down_pressed && !down_held) menuDown();
     if (up_pressed && !up_held) menuUp();
     if (act_pressed && !act_held) menuAct();
@@ -1959,6 +2048,9 @@ void updatePlayers() {
   updateDroppedItems(delta);
   diagPaintPhase(DIAG_PHASE_MOBS);
   updateMobs(delta);
+  /* Shares the mob phase colour: the freeze square only has to say which
+     subsystem died, and these two are one ecology on one budget. */
+  cobblemonUpdate(delta);
 
   /* Z + D-pad is the developer chord; the plain D-pad save below ignores the
      D-pad while Z is held, so these cannot collide with it.  Up toggles the

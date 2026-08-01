@@ -163,9 +163,12 @@ void initWorld();
 
 /* Sliced generation.  stepWorldGeneration consumes at most `columns` terrain
    columns and returns TRUE once the world is finished, so a caller can keep
-   submitting frames while a world builds. */
-void beginWorldGeneration();
+   submitting frames while a world builds.  The seed is the caller's, so the
+   setup card can show it and roll it again before committing.  Cancelling
+   abandons the partial world; the next begin claims the extent afresh. */
+void beginWorldGeneration(u32 chosen_seed);
 u8 stepWorldGeneration(u32 columns);
+void cancelWorldGeneration(void);
 
 /*
  * Per-column generation.  Terrain can always be built alone; decoration

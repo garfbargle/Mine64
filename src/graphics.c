@@ -1,6 +1,7 @@
 #include <nusys.h>
 #include <assert.h>
 #include "graphics.h"
+#include "cobblemon.h"
 #include "geometry.h"
 #include "items.h"
 #include "mobs.h"
@@ -1942,6 +1943,18 @@ void beginWorldMeshBuild(void) {
   mesh_build_active = TRUE;
 }
 
+void cancelWorldMeshBuild(void) {
+  if (!mesh_build_active) {
+    return;
+  }
+  /* Only the staged generation goes back; column_starts still points at the
+     world the RSP has been drawing all along, so the frame this is called
+     from renders exactly what the previous one did. */
+  meshFreeGeneration(mesh_building_generation);
+  mesh_building_generation = mesh_generation;
+  mesh_build_active = FALSE;
+}
+
 u8 worldMeshBuildProgress() {
   if (!mesh_build_active) {
     return 100;
@@ -3226,8 +3239,7 @@ static void drawGroundShadows(void) {
 
 void drawWorld() {
   u8 i, player_num;
-  u8 cinematic = current_screen == LOADING_PREVIEW || current_screen == MENU ||
-    current_screen == WORLD_NAMING;
+  u8 cinematic = screenShowsPreview(current_screen);
   u8 viewer_count = cinematic ? 1 : active_player_count;
   u8 fogged = !cinematic && fog_enabled;
   SkyColor sky = dayCycleSkyColor(255);
@@ -3240,7 +3252,7 @@ void drawWorld() {
     buildGroundShadows();
   }
 
-  if (current_screen == MENU || current_screen == WORLD_NAMING) {
+  if (screenIsWorldPicker(current_screen)) {
     /* Black background while the first world loads. */
     clearBuffers(GPACK_RGBA5551(0, 0, 0, 1));
   } else if (cinematic) {
@@ -3363,6 +3375,10 @@ void drawWorld() {
       drawFallingTrees(player_num);
       drawDroppedItems(player_num);
       drawMobsForPlayer(player_num);
+      /* Wild creatures, or the two facing each other in a battle.  Same
+         entity pass, same tint, same combiner -- and never both, so the
+         cost is bounded by whichever is larger rather than their sum. */
+      cobblemonDrawForPlayer(player_num);
     }
     if (!cinematic && (active_player_count > 1 ||
         players[player_num].camera_mode == CAMERA_THIRD_PERSON)) {
@@ -4466,7 +4482,10 @@ static void drawGameText() {
   if (active_player_count == 1 && diagnostics_visible) {
     drawStreamingDiagnostics();
   }
-  for (player_num = 0; player_num < active_player_count; player_num++) {
+  /* The HUD's fills were skipped for the battle above; skip its labels too,
+     or the objective panel's text is left floating with no panel under it. */
+  for (player_num = 0; player_num < active_player_count &&
+      !cobblemonBattleActive(); player_num++) {
     u32 x_offset = playerViewportX(player_num);
     u32 y_offset = playerViewportY(player_num);
     u32 viewport_height = playerViewportHeight();
@@ -4548,12 +4567,11 @@ void drawHUD() {
   u8 player_num;
 
   if (current_screen != GAME && current_screen != INVENTORY &&
-      current_screen != LOADING_PREVIEW && current_screen != MENU &&
-      current_screen != WORLD_NAMING) {
+      !screenShowsPreview(current_screen)) {
     clearBuffers(GPACK_RGBA5551(0, 0, 0, 1));
   } else if (current_screen == LOADING_PREVIEW) {
     drawLoadingOverlay();
-  } else if (current_screen == MENU || current_screen == WORLD_NAMING) {
+  } else if (screenIsWorldPicker(current_screen)) {
     /* The carousel has its own text overlay; never let the inventory panel
        fall through on top of its world preview.  Every other branch here ends
        by draining the pipe before drawMenu reconfigures the RDP for text --
@@ -4565,7 +4583,11 @@ void drawHUD() {
        viewport.  HUD primitives use absolute framebuffer coordinates, so
        reset it before drawing every player's overlay. */
     gDPSetScissor(dlp++, G_SC_NON_INTERLACE, 0, 0, SCREEN_WD, SCREEN_HT);
-    for (player_num = 0; player_num < active_player_count; player_num++) {
+    /* A battle takes the screen.  The crosshair, hotbar, compass and hint
+       panels all describe things nobody can do while one is running, and
+       they would sit behind the battle's own panels saying so. */
+    for (player_num = 0; player_num < active_player_count &&
+        !cobblemonBattleActive(); player_num++) {
       u32 crosshair_x = playerViewportX(player_num) + playerViewportWidth() / 2;
       u32 crosshair_y = playerViewportY(player_num) + playerViewportHeight() / 2;
       drawCrosshair(crosshair_x, crosshair_y, &players[player_num]);
@@ -4601,6 +4623,21 @@ void drawHUD() {
   drawMenu();
   if (current_screen == GAME) {
     drawGameText();
+    /*
+     * The creature interface goes last, over everything.  A battle owns the
+     * screen, and the encounter prompt has to sit above the hotbar rather
+     * than under it.  Both leave the RDP configured for text, which is what
+     * every branch above them also leaves behind.
+     */
+    if (cobblemonBattleActive()) {
+      cobblemonDrawBattleInterface();
+    } else {
+      for (player_num = 0; player_num < active_player_count; player_num++) {
+        cobblemonDrawPrompt(player_num,
+          playerViewportX(player_num) + playerViewportWidth() / 2,
+          playerViewportY(player_num) + playerViewportHeight() - 34);
+      }
+    }
   } else if (current_screen == INVENTORY) {
     /* drawInventory may leave an item preview bound; restore the font before
        issuing count glyph rectangles. */
@@ -4711,7 +4748,7 @@ void draw(int can_reclaim_mesh_arena) {
     updateLoadingCamera();
     processColumnDisplayListUpdates(can_reclaim_mesh_arena);
     drawWorld();
-  } else if (current_screen == MENU || current_screen == WORLD_NAMING) {
+  } else if (screenIsWorldPicker(current_screen)) {
     /* Keep orbiting the mesh that is already resident.  A requested preview
        has not touched the arena yet -- callbackGfx rebuilds it only with no
        task in flight -- so the previous slot stays on screen right up to the

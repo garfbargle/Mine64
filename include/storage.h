@@ -56,6 +56,10 @@ u8 storageWriteFreezeReport(const char *text, u32 length);
 
 u8 beginLoadGame(void);
 u8 stepLoadGame(u16 slabs);
+/* Abandon a load in progress and close its file.  The blocks already written
+   stay where they are; the next build claims the extent again before writing
+   anything into it. */
+void cancelLoadGame(void);
 /* 0..100 across the payload; header work counts as zero and is one page. */
 u8 loadGameProgress(void);
 /* Blocking whole-file load, for callers that cannot yield.  Identical

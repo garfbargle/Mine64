@@ -1,0 +1,73 @@
+# Battle interface capture.  Intended for a build whose interact range has
+# been temporarily widened, so the encounter can be reached without hunting.
+
+wait 400
+wait 560
+press A 8
+wait 40
+
+press DDOWN 8
+wait 4
+press DDOWN 8
+wait 4
+press DDOWN 8
+wait 4
+press DDOWN 8
+wait 4
+press DDOWN 8
+wait 4
+press DDOWN 8
+wait 4
+press DDOWN 8
+wait 4
+press DDOWN 8
+wait 4
+press DDOWN 8
+wait 4
+press DDOWN 8
+wait 10
+press A 8
+wait 20
+
+press START 8
+wait 60
+press START 8
+wait 400
+
+wait 200
+shot ui-prompt          # the encounter badge above the hotbar
+press A 8
+wait 60
+shot ui-starter         # first creature joins instead of fighting
+wait 200
+press A 8
+wait 90
+shot ui-intro           # A WILD ... APPEARED
+press A 8
+wait 40
+press A 8
+wait 60
+shot ui-command         # FIGHT / TEAM / BAG / RUN
+press A 8
+wait 40
+shot ui-moves           # the move grid and its info strip
+press A 8
+wait 40
+shot ui-turn            # the turn resolving
+press A 8
+wait 40
+press A 8
+wait 40
+shot ui-turn-2
+press A 8
+wait 40
+press A 8
+wait 40
+shot ui-turn-3
+press A 8
+wait 60
+press A 8
+wait 60
+shot ui-turn-4
+
+stop

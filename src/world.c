@@ -3,6 +3,7 @@
 #include "blocks.h"
 #include "noise.h"
 #include "math.h"
+#include "mods.h"
 #include "trees.h"
 #include "graphics.h"
 #include "details.h"
@@ -196,6 +197,7 @@ static int clampHeight(int height) {
 #define HASH_SALT_STRUCTURE_Z 0xC2B2AE35UL
 #define HASH_SALT_STRUCTURE_VARIANT 0xD1B54A35UL
 #define HASH_SALT_STRUCTURE_BLOCK 0x94D049BBUL
+#define HASH_SALT_SKY_ISLAND 0x6C078965UL
 
 static u32 coordinateHash(int x, int y, int z, u32 salt) {
   u32 value = (u32) x * 0x8DA6B343UL;
@@ -239,13 +241,87 @@ static u8 oreInCell(int x, int y, int z, int cell_size, u8 rarity) {
     absolute((float) (z - cell_z * cell_size - center_z)) <= 1.f;
 }
 
+/*
+ * Where the world begins, in blocks.  The generator needs it for the same
+ * reason the player spawner does -- an archipelago whose player wakes up
+ * treading water, or a sky world with no island under their feet, is not a
+ * world anyone wants to preview -- and taking it from a fixed coordinate is
+ * what keeps those guarantees pure.  Derived from MAX_X/MAX_Z exactly as
+ * START_X/START_Z in player.c are, so the two cannot drift apart.
+ */
+#define WORLD_SPAWN_X (MAX_X / 2)
+#define WORLD_SPAWN_Z (MAX_Z / 2)
+
+/* FLAT's one surface height: high enough to dig meaningfully below, low
+   enough to leave most of the 32-block column as sky to build into. */
+#define FLAT_SURFACE_HEIGHT 9
+
+/*
+ * ISLANDS carves the ordinary landscape into an archipelago by sinking
+ * everything outside a slow land mask below the waterline.  It is one more
+ * octave-noise sample per block column, paid only when the mod is on.
+ *
+ * The mask is deliberately slower than any field the classic generator uses
+ * (0.0055 against 0.010): islands want to be a few dozen blocks across, not a
+ * few, so that sailing between them is a journey rather than a hop.
+ */
+#define ISLAND_SHORE .52f
+#define ISLAND_DEPTH 46.f
+/* Blocks.  The spawn island's mask bonus fades to nothing over this radius,
+   so the world starts on dry land without a circular scar around it. */
+#define ISLAND_SPAWN_RADIUS 22.f
+
+/*
+ * The rise that guarantees dry ground where the player wakes up.
+ *
+ * Not an ISLANDS refinement: the classic generator could always drop spawn
+ * into shore-level water -- lakes and river mouths sit at exactly the heights
+ * spawn is most likely to land on -- and the generation harness catches it on
+ * roughly one seed in three.  The archipelago only made an existing hazard
+ * common enough to notice.
+ *
+ * Two blocks of clearance at the centre, tapering to the waterline at the
+ * rim, so it reads as a low headland rather than a plinth, and the rest of
+ * the landscape is untouched.
+ */
+#define SPAWN_LAND_RADIUS 18.f
+#define SPAWN_LAND_CLEARANCE 2
+
+/* How strongly the spawn point insists on being land, falling off with
+   distance.  Pure in (x, z), so a column regenerated after eviction lands on
+   exactly the value it had when the world was made. */
+static float spawnLandBias(int x, int z, float radius, float strength) {
+  float dx = (float) (x - WORLD_SPAWN_X);
+  float dz = (float) (z - WORLD_SPAWN_Z);
+  float distance_sq = dx * dx + dz * dz;
+  float radius_sq = radius * radius;
+
+  if (distance_sq >= radius_sq) {
+    return 0.f;
+  }
+  return strength * (1.f - distance_sq / radius_sq);
+}
+
 static int terrainHeight(int x, int z) {
-  float plains = perlin2d(x + 97, z + 211, 0.010f, 4);
-  float lowlands = perlin2d(x + 557, z + 877, 0.030f, 3);
-  float gentle_hills = perlin2d(x + 419, z + 131, 0.014f, 3);
-  float mountain_mask = perlin2d(x + 701, z + 337, 0.022f, 3);
-  float mountain_shape = perlin2d(x + 109, z + 593, 0.010f, 3);
+  float plains;
+  float lowlands;
+  float gentle_hills;
+  float mountain_mask;
+  float mountain_shape;
   int height;
+
+  /* Before any sampling: a flat world is a constant, and skipping five
+     multi-octave fields is what makes it appear on the preview instantly
+     rather than in the fifteen seconds the others take. */
+  if (worldModOn(MOD_FLAT)) {
+    return FLAT_SURFACE_HEIGHT;
+  }
+
+  plains = perlin2d(x + 97, z + 211, 0.010f, 4);
+  lowlands = perlin2d(x + 557, z + 877, 0.030f, 3);
+  gentle_hills = perlin2d(x + 419, z + 131, 0.014f, 3);
+  mountain_mask = perlin2d(x + 701, z + 337, 0.022f, 3);
+  mountain_shape = perlin2d(x + 109, z + 593, 0.010f, 3);
 
   /* Keep the normal route through the world broad and mostly level.  Small,
    * scattered lowlands form shore-level basins, while a slow contribution
@@ -264,6 +340,32 @@ static int terrainHeight(int x, int z) {
   if (mountain_mask > 0.74f) {
     height += (int)((mountain_mask - 0.74f) *
       (45.0f + mountain_shape * 55.0f));
+  }
+
+  if (worldModOn(MOD_ISLANDS)) {
+    /* Sink the land mask's low ground far enough under the waterline that
+       the channels between islands are open water rather than marsh, and
+       leave the high ground exactly as the classic generator shaped it --
+       the islands are the same landscape, just surrounded. */
+    float land = perlin2d(x + 1301, z + 977, 0.0055f, 3) +
+      spawnLandBias(x, z, ISLAND_SPAWN_RADIUS, .18f);
+
+    if (land < ISLAND_SHORE) {
+      height -= (int) ((ISLAND_SHORE - land) * ISLAND_DEPTH);
+    }
+  }
+
+  /* Last, so it wins over anything above it that would have sunk spawn. */
+  {
+    float bias = spawnLandBias(x, z, SPAWN_LAND_RADIUS, 1.f);
+
+    if (bias > 0.f) {
+      int minimum = SEA_LEVEL + (int) (bias * SPAWN_LAND_CLEARANCE + .5f);
+
+      if (height < minimum) {
+        height = minimum;
+      }
+    }
   }
 
   return clampHeight(height);
@@ -292,16 +394,21 @@ static int isRiver(int x, int z, int natural_height) {
 
 static int shapedSurfaceHeight(int x, int z, int natural_height,
     int *water_level) {
+  /* Lifting the terrain at spawn is not enough on its own: a lake or a river
+     mouth is carved back *below* the waterline from a height that passed the
+     lift, which would put the player right back in the water. */
+  u8 at_spawn = spawnLandBias(x, z, SPAWN_LAND_RADIUS, 1.f) > 0.f;
+
   *water_level = -1;
   if (natural_height <= SEA_LEVEL) {
     *water_level = SEA_LEVEL;
     return natural_height;
   }
-  if (isLake(x, z, natural_height)) {
+  if (!at_spawn && isLake(x, z, natural_height)) {
     *water_level = SEA_LEVEL;
     return SEA_LEVEL - 2;
   }
-  if (isRiver(x, z, natural_height)) {
+  if (!at_spawn && isRiver(x, z, natural_height)) {
     *water_level = SEA_LEVEL;
     return SEA_LEVEL - 1;
   }
@@ -1178,10 +1285,15 @@ static void columnProfile(int x, int z, ColumnProfile *profile) {
  * outrun a sprinting player.
  */
 static void carveTerrainColumn(int x, int z, int height, int dirt_depth) {
+  /* Resolved once per column rather than per block: the cave test is two 3D
+     noise samples, and this is the inner loop the deepen pass exists to
+     defer.  Switching caves off leaves the ore veins alone -- a solid world
+     is still a world worth mining. */
+  u8 caves = worldModActive(MOD_CAVES);
   int y;
 
   for (y = 1; y < height; y++) {
-    if (isCave(x, y, z, height)) {
+    if (caves && isCave(x, y, z, height)) {
       blockSet(x, y, z, AIR);
     } else if (y < height - dirt_depth) {
       if (y < 13 && oreInCell(x, y, z, 5, 7)) {
@@ -1190,6 +1302,170 @@ static void carveTerrainColumn(int x, int z, int height, int dirt_depth) {
         blockSet(x, y, z, COAL_ORE);
       }
     }
+  }
+}
+
+/*
+ * SKYLANDS: floating islands in open air.
+ *
+ * One island per coarse cell, kept entirely inside its own cell so that a
+ * block column only ever has to ask about the cell it stands in -- a single
+ * hash, against the nine a cell-straddling layout would need, in a function
+ * called for every block column of the world.  The gutter that guarantees
+ * costs nothing visually: islands are supposed to be separate.
+ *
+ * Everything here is a pure function of (x, z, seed), like the rest of
+ * generation, so an island regenerates identically after its column has been
+ * evicted and walked back to.
+ */
+#define SKY_CELL_SIZE 24
+#define SKY_ISLAND_MIN_RADIUS 4
+#define SKY_ISLAND_RADIUS_RANGE 6
+/* The lowest island sits a block clear of the sea below: MIN_TOP minus the
+   deepest keel (THICKNESS_RANGE + MIN_THICKNESS - 1) must stay above
+   SEA_LEVEL. */
+#define SKY_ISLAND_MIN_TOP 14
+#define SKY_ISLAND_TOP_RANGE 12
+#define SKY_ISLAND_MIN_THICKNESS 3
+#define SKY_ISLAND_THICKNESS_RANGE 4
+/* The island the world starts on, fixed rather than drawn: waking up in
+   freefall is not a first impression worth previewing. */
+#define SKY_SPAWN_RADIUS 8
+#define SKY_SPAWN_TOP 18
+#define SKY_SPAWN_THICKNESS 5
+
+/*
+ * The sea beneath the islands.
+ *
+ * Without it a sky world reads as a diorama floating in space: the orbiting
+ * preview frames a horizon, and with nothing under the islands that horizon
+ * is void.  The sea also gives a fall somewhere to land -- swimming back to a
+ * shore you can climb is a mistake with a recovery, where a drop into nothing
+ * is only a death -- and it puts the one thing the islands are short of, open
+ * water, within reach.
+ *
+ * Bedrock, a stone shelf carrying the same ore veins as any other underground,
+ * a sand bed, then water up to the same sea level every other world uses.
+ */
+#define SKY_SEABED_ROCK_TOP 3
+#define SKY_SEABED_SAND_TOP 4
+
+typedef struct {
+  u8 present;
+  int center_x;
+  int center_z;
+  int radius;
+  int top;
+  int thickness;
+} SkyIsland;
+
+static void skyIslandFor(int x, int z, SkyIsland *island) {
+  int cell_x = floorDiv(x, SKY_CELL_SIZE);
+  int cell_z = floorDiv(z, SKY_CELL_SIZE);
+  int base_x = cell_x * SKY_CELL_SIZE;
+  int base_z = cell_z * SKY_CELL_SIZE;
+  u32 hash;
+  int span;
+
+  if (cell_x == floorDiv(WORLD_SPAWN_X, SKY_CELL_SIZE) &&
+      cell_z == floorDiv(WORLD_SPAWN_Z, SKY_CELL_SIZE)) {
+    island->present = TRUE;
+    island->center_x = WORLD_SPAWN_X;
+    island->center_z = WORLD_SPAWN_Z;
+    island->radius = SKY_SPAWN_RADIUS;
+    island->top = SKY_SPAWN_TOP;
+    island->thickness = SKY_SPAWN_THICKNESS;
+    return;
+  }
+
+  hash = coordinateHash(cell_x, 0, cell_z, HASH_SALT_SKY_ISLAND);
+  /* Three cells in four carry an island.  The empty quarter is what keeps
+     the sky feeling open rather than tiled. */
+  if ((hash & 3u) == 0) {
+    island->present = FALSE;
+    return;
+  }
+  island->present = TRUE;
+  island->radius = SKY_ISLAND_MIN_RADIUS +
+    (int) ((hash >> 4) % SKY_ISLAND_RADIUS_RANGE);
+  /* Offsets are constrained so the island cannot cross into a neighbouring
+     cell, which is the whole reason one hash suffices per column. */
+  span = SKY_CELL_SIZE - 2 * island->radius;
+  island->center_x = base_x + island->radius + (int) ((hash >> 8) % span);
+  island->center_z = base_z + island->radius + (int) ((hash >> 13) % span);
+  island->top = SKY_ISLAND_MIN_TOP + (int) ((hash >> 18) % SKY_ISLAND_TOP_RANGE);
+  island->thickness = SKY_ISLAND_MIN_THICKNESS +
+    (int) ((hash >> 24) % SKY_ISLAND_THICKNESS_RANGE);
+}
+
+/*
+ * Stone, or the ore that happens to run through it.
+ *
+ * Sky worlds never call carveTerrainColumn -- there is no continuous
+ * underground to defer or to tunnel through -- so the veins have to be placed
+ * here or the whole tool progression stops at wood.  Same cell fields as
+ * everywhere else, minus the depth gates: an island is only a few blocks
+ * thick, and gating iron to y < 13 would put it entirely out of reach.
+ */
+static u8 skyStoneAt(int x, int y, int z) {
+  if (oreInCell(x, y, z, 5, 7)) {
+    return IRON_ORE;
+  }
+  if (oreInCell(x, y, z, 4, 5)) {
+    return COAL_ORE;
+  }
+  return STONE;
+}
+
+static void generateSkyColumn(int x, int z) {
+  SkyIsland island;
+  int top = -1;
+  int bottom = 0;
+  int y;
+
+  skyIslandFor(x, z, &island);
+  if (island.present) {
+    int dx = x - island.center_x;
+    int dz = z - island.center_z;
+    int distance_sq = dx * dx + dz * dz;
+    int radius_sq = island.radius * island.radius;
+
+    if (distance_sq <= radius_sq) {
+      /* Thickness tapers to a single block at the rim, which gives the
+         underside a rounded keel instead of the flat disc a constant depth
+         would produce -- and a rounded keel is what makes these read as
+         islands from the orbiting preview camera. */
+      int depth = 1 + ((island.thickness - 1) * (radius_sq - distance_sq)) /
+        radius_sq;
+
+      top = island.top;
+      bottom = top - depth + 1;
+    }
+  }
+
+  for (y = 0; y < MAX_Y; y++) {
+    u8 block;
+
+    if (y <= top && y >= bottom) {
+      if (y == top) {
+        block = GRASS;
+      } else if (y > top - 3) {
+        block = DIRT;
+      } else {
+        block = skyStoneAt(x, y, z);
+      }
+    } else if (y == 0) {
+      block = BEDROCK;
+    } else if (y <= SKY_SEABED_ROCK_TOP) {
+      block = skyStoneAt(x, y, z);
+    } else if (y <= SKY_SEABED_SAND_TOP) {
+      block = SAND;
+    } else if (y <= SEA_LEVEL) {
+      block = WATER;
+    } else {
+      block = AIR;
+    }
+    blockSet(x, y, z, block);
   }
 }
 
@@ -1204,6 +1480,13 @@ static void generateTerrainColumn(int x, int z, u8 deep) {
   ColumnProfile profile;
   int y;
   u8 block;
+
+  if (worldModOn(MOD_SKYLANDS)) {
+    /* Nothing below an island to carve, so `deep` has nothing to do here
+       and the deferred deepen pass skips these columns entirely. */
+    generateSkyColumn(x, z);
+    return;
+  }
 
   columnProfile(x, z, &profile);
 
@@ -1309,6 +1592,13 @@ static void worldDeepenColumn(int cx, int cz) {
   int base_z = cz * CHUNK_SIZE;
   int bx, bz;
 
+  if (worldModOn(MOD_SKYLANDS)) {
+    /* A sky column is generated complete: there is no underground below it
+       to defer, so marking it deep is the whole of the work. */
+    column_deep[WINDOW_SLOT(cx, cz)] = TRUE;
+    return;
+  }
+
   fillHeightPatch(base_x, base_z);
   for (bx = 0; bx < CHUNK_SIZE; bx++) {
     for (bz = 0; bz < CHUNK_SIZE; bz++) {
@@ -1363,9 +1653,13 @@ u8 worldAdvanceColumnDecoration(int cx, int cz) {
 
   if (column_state[slot] == COLUMN_TERRAIN) {
     /* Structure plans are coordinate-pure, and the stamper writes only this
-       target column.  It therefore needs no neighbour gate of its own. */
-    stampStructureColumn(cx, cz);
-    stampWaystonesColumn(cx, cz);
+       target column.  It therefore needs no neighbour gate of its own.
+       The stage itself still runs with RUINS off, because the state machine
+       and its progress bar are shared with every other world. */
+    if (worldModActive(MOD_RUINS)) {
+      stampStructureColumn(cx, cz);
+      stampWaystonesColumn(cx, cz);
+    }
     column_state[slot] = COLUMN_STRUCTURED;
     return FALSE;
   }
@@ -1376,10 +1670,12 @@ u8 worldAdvanceColumnDecoration(int cx, int cz) {
     if (!neighboursReached(cx, cz, COLUMN_STRUCTURED)) {
       return FALSE;
     }
-    for (bx = 0; bx < CHUNK_SIZE; bx++) {
-      for (bz = 0; bz < CHUNK_SIZE; bz++) {
-        if (treeSeededAt(base_x + bx, base_z + bz)) {
-          trySpawnTree(base_x + bx, base_z + bz);
+    if (worldModOn(MOD_FORESTS)) {
+      for (bx = 0; bx < CHUNK_SIZE; bx++) {
+        for (bz = 0; bz < CHUNK_SIZE; bz++) {
+          if (treeSeededAt(base_x + bx, base_z + bz)) {
+            trySpawnTree(base_x + bx, base_z + bz);
+          }
         }
       }
     }
@@ -1664,12 +1960,20 @@ void stepWorldStreaming(int pcx, int pcz, u32 terrain_budget,
   }
 }
 
-void beginWorldGeneration() {
+void beginWorldGeneration(u32 chosen_seed) {
   u32 slot;
 
-  /* One draw of entropy fixes the world; the gameplay RNG starts from the same
-     place but is free to wander, because nothing reproducible reads it. */
-  world_seed = (u32) osGetTime();
+  /*
+   * The seed arrives from the caller now rather than being drawn here.  The
+   * setup card shows the player the number their world is about to be made
+   * from and lets them roll it again, which only means anything if the seed
+   * is decided before generation starts -- and it makes the reroll button a
+   * pure restart of the same job rather than a second source of entropy.
+   *
+   * The gameplay RNG starts from the same place but is free to wander,
+   * because nothing reproducible reads it.
+   */
+  world_seed = chosen_seed;
   seed = world_seed;
   setDayCycleWorldTicks(DAY_CYCLE_START_TICK);
   initTrees();
@@ -1766,7 +2070,14 @@ u8 stepWorldGeneration(u32 columns) {
    fallback when a save will not open.  Identical output to the sliced path:
    the same RNG stream is consumed in the same order. */
 void initWorld() {
-  beginWorldGeneration();
+  beginWorldGeneration((u32) osGetTime());
   while (!stepWorldGeneration(MAX_X * MAX_Z)) {
   }
+}
+
+void cancelWorldGeneration() {
+  /* The columns already written stay written; nothing reads them until a
+     later build claims the extent again, and beginWorldGeneration resets
+     every column's state when it does. */
+  world_gen_stage = WORLD_GEN_IDLE;
 }

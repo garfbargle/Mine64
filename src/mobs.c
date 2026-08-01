@@ -4,11 +4,13 @@
 
 #include "audio.h"
 #include "blocks.h"
+#include "cobblemon.h"
 #include "day_cycle.h"
 #include "graphics.h"
 #include "items.h"
 #include "player.h"
 #include "world.h"
+#include "mods.h"
 
 #define MOB_WALK_SPEED 0.82f
 #define MOB_FLEE_SPEED 1.55f
@@ -16,6 +18,17 @@
 #define MOB_SLIME_SPEED 1.15f
 #define MOB_SPIDER_SPEED 1.42f
 #define MOB_RETREAT_SPEED 1.68f
+/*
+ * CRITTERS: how a world of creatures differs from a world with creatures in
+ * it.  Animals notice the player from seven blocks and walk over, stopping
+ * short of standing inside them.  Slightly faster than a wander so they
+ * actually arrive, slower than the player so they trail rather than crowd --
+ * and a frightened animal still runs, because the FLEE branch is ahead of
+ * this one.
+ */
+#define MOB_FOLLOW_SPEED 0.95f
+#define MOB_FOLLOW_DISTANCE (BLOCK_SIZE * 7.f)
+#define MOB_FOLLOW_SPACING (BLOCK_SIZE * 1.7f)
 #define MOB_DECISION_MIN 45.f
 #define MOB_DECISION_VARIATION 105.f
 #define MOB_HIT_RANGE 120.f
@@ -245,8 +258,17 @@ void initMobs() {
     mob_special_effects[index].type = MOB_SPECIAL_NONE;
     mob_special_effects[index].hit_count = 0;
   }
-  for (index = 0; index < MOB_PASSIVE_BUDGET; index++) {
-    spawnMob(&mobs[index], index % 3 == 2 ? MOB_PIG : MOB_SHEEP);
+  /* Seed the world with the animals the pool still owns after COBBLEMON has
+     taken its share, so a creature world does not open with a full herd that
+     then despawns to make room. */
+  {
+    u8 reserve = cobblemonRoamerReserve();
+    u8 seeded = MOB_PASSIVE_BUDGET > reserve ?
+      (u8) (MOB_PASSIVE_BUDGET - reserve) : 0;
+
+    for (index = 0; index < seeded; index++) {
+      spawnMob(&mobs[index], index % 3 == 2 ? MOB_PIG : MOB_SHEEP);
+    }
   }
 }
 
@@ -498,11 +520,26 @@ static u8 spawnForBudget(u8 night) {
   u8 hostiles;
   u8 type;
   u8 index;
+  /* CRITTERS hands the monsters' half of the pool to the animals, so a world
+     chosen for its wildlife actually has more of it.  The pool itself never
+     grows: the AI and matrix cost of MAX_MOBS is what four-player frames are
+     budgeted around. */
+  u8 passive_budget = worldModOn(MOD_CRITTERS) ?
+    MOB_PASSIVE_BUDGET + MOB_NIGHT_HOSTILE_BUDGET : MOB_PASSIVE_BUDGET;
+  /* COBBLEMON takes its roamers out of this budget rather than adding a pool
+     beside it.  A world with creatures in it therefore simulates and draws
+     exactly as many entities as one without -- it simply has fewer sheep.
+     The reserve is zero when the mod is off. */
+  u8 roamer_reserve = cobblemonRoamerReserve();
+
+  passive_budget = passive_budget > roamer_reserve ?
+    (u8) (passive_budget - roamer_reserve) : 0;
 
   countMobs(&passives, &hostiles);
-  if (night && hostiles < MOB_NIGHT_HOSTILE_BUDGET) {
+  if (night && !worldModOn(MOD_PEACEFUL) &&
+      hostiles < MOB_NIGHT_HOSTILE_BUDGET) {
     type = randomHostileType();
-  } else if (passives < MOB_PASSIVE_BUDGET) {
+  } else if (passives < passive_budget) {
     type = random(3) == 0 ? MOB_PIG : MOB_SHEEP;
   } else {
     return FALSE;
@@ -596,6 +633,18 @@ void updateMobs(float delta) {
         beginMobWindup(mob, nearest);
         speed = 0;
       }
+    } else if (worldModOn(MOD_CRITTERS) && !mobTypeIsHostile(mob->type) &&
+        mob->state != MOB_FLEE &&
+        vertical_distance < BLOCK_SIZE * 2.f &&
+        player_distance < MOB_FOLLOW_DISTANCE * MOB_FOLLOW_DISTANCE) {
+      /* Reusing CHASE rather than adding a state: the movement gate, the
+         walk animation and the stuck-recovery all already read it, and a
+         following sheep wants every one of those behaviours.  Inside the
+         spacing ring it holds position and simply watches. */
+      mob->state = MOB_CHASE;
+      forward = chaseDirection(mob, nearest, player_distance);
+      speed = player_distance < MOB_FOLLOW_SPACING * MOB_FOLLOW_SPACING ?
+        0.f : MOB_FOLLOW_SPEED;
     } else if (mob->state == MOB_CHASE) {
       chooseMobAction(mob);
       forward = rotateY((Vector3) {0, 0, -1}, -mob->yaw);

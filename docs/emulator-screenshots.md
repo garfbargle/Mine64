@@ -75,10 +75,13 @@ to confirm a timeline did what it says.
 
 Two waits in `gui-tour.txt` are not padding:
 
-- **The world preview.** `menuAct` refuses to launch while
+- **The world preview.** `menuAct` still refuses to *launch* while
   `menu_preview_requested` is set, because the terrain drawn behind the menu
-  must match the slot being selected. START is ignored for roughly the first 900
-  frames; pressing early does nothing at all.
+  must match the slot being selected — a full generation is roughly 900
+  frames. It no longer drops the press, though: an early START is latched and
+  spent the moment the preview lands, so a script that presses too soon now
+  advances anyway, at a frame it did not choose. Wait for the build if the
+  timeline needs to stay predictable.
 - **A `shot` immediately before `stop`.** The core writes a screenshot at the
   end of the frame, so stopping on the next one loses it. The plugin holds
   `stop` back five frames to cover this -- worth knowing if the last capture of
@@ -133,6 +136,14 @@ other, then that the bar advances 7-9 points per 55 frames from one end of a
 build to the other. Both of those went straight into the stage weights in
 `worldGenerationProgress` and the `BAR_SHARE` split in `main.c`, which is why
 those comments claim measurement rather than estimation.
+
+`world-setup.txt` is the third kind: it walks the create-world flow and
+selects every terrain shape in turn, giving each one a full rebuild. That is
+what a card claiming to preview the world it is describing has to be checked
+against, and it is how the setup card's first draft was caught drawing its
+selected row's text in dark ink on an opaque black glyph cell -- invisible,
+and invisible in exactly one state no static reading of the code would have
+questioned.
 
 ## 9. What this has turned up so far
 

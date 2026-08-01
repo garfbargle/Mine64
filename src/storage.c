@@ -8,6 +8,7 @@
 #include "player.h"
 #include "trees.h"
 #include "world.h"
+#include "mods.h"
 #include "day_cycle.h"
 
 static FATFS fs;
@@ -18,7 +19,7 @@ static FATFS fs;
 #define LEGACY_COOP_HEADER_SIZE 256
 #define LEGACY_MAX_PLAYERS 2
 #define BUFFER_LEN 512
-#define SAVE_VERSION 11
+#define SAVE_VERSION 12
 
 /*
  * v11 appends the world seed, and changes nothing else.
@@ -39,7 +40,25 @@ static FATFS fs;
  * serves both.  Only the checksum and the seed restore are version-gated.
  */
 #define SAVE_VERSION_SEED 11
-/* The first version using the four-player Header layout.  v10 and v11 share
+
+/*
+ * v12 appends the world mod mask, on exactly the same terms as v11's seed.
+ *
+ * The mods are chosen once, on the setup card, and the generator reads them
+ * for every column it produces -- including the columns regenerated when the
+ * player walks back out past the saved extent, years of sessions later.  A
+ * world whose mask was not recorded would grow classic terrain onto the edge
+ * of an archipelago, which is the same failure the seed had and just as
+ * visible.
+ *
+ * Also after the player array, in space the fixed 512-byte header page
+ * already zero-filled, so every v10 and v11 offset is untouched and one
+ * struct still serves all three.  A pre-v12 file reads as mask zero, which
+ * setWorldMods turns into the classic default -- the only world those
+ * versions could have made.
+ */
+#define SAVE_VERSION_MODS 12
+/* The first version using the four-player Header layout.  v10 onwards share
    it, so the load path keys on this rather than on SAVE_VERSION. */
 #define SAVE_VERSION_HEADER 10
 
@@ -78,6 +97,8 @@ typedef struct {
      reads as 0 here, which is why the version -- not the value -- decides
      whether it means anything. */
   u32 world_seed;
+  /* Appended by v12; see SAVE_VERSION_MODS.  Same rule. */
+  u32 world_mods;
 } Header;
 
 /* Version 8 is the current four-player header before the world clock.  Keep
@@ -224,6 +245,7 @@ static struct {
   u32 version;
   u32 saved_world_ticks;
   u32 saved_world_seed;
+  u32 saved_world_mods;
   u32 expected_checksum;
   u32 checksum;
   int block_x;      /* next x-slab of packed blocks to read */
@@ -315,6 +337,16 @@ static void restoreWorldSeed(u32 version, const Header *saved) {
   /* Nothing reproducible reads the gameplay RNG, but starting it from the
      same place a new world would keeps the two paths alike. */
   seed = world_seed;
+}
+
+/*
+ * Point generation at the mods this world was made with, before a single
+ * column of it is claimed.  A pre-v12 save records nothing, and there is
+ * nothing to guess: those versions could only produce the classic world, so
+ * a zero mask is exactly right and setWorldMods fills in the default.
+ */
+static void restoreWorldMods(u32 version, const Header *saved) {
+  setWorldMods(version >= SAVE_VERSION_MODS ? (u16) saved->world_mods : 0);
 }
 
 /* The on-disk tree payload is frozen at the original 96 records even though
@@ -785,15 +817,17 @@ u8 saveGame() {
   header->player_count = active_player_count;
   header->world_ticks = dayCycleWorldTicks();
   /* What every column outside the saved extent will be regenerated from when
-     this world is loaded again. */
+     this world is loaded again -- the seed alone is not enough, because the
+     mods decide what the generator does with it. */
   header->world_seed = world_seed;
+  header->world_mods = world_mods;
   for (player_num = 0; player_num < active_player_count; player_num++) {
     savePlayerState(&header->player[player_num], &players[player_num]);
   }
   saveWorldDimensions(header);
-  header->checksum = checksumWord(checksumWord(checksumTrees(
+  header->checksum = checksumWord(checksumWord(checksumWord(checksumTrees(
     checksumSave(header->player, header->player_count, MAX_PLAYERS)),
-    header->world_ticks), header->world_seed);
+    header->world_ticks), header->world_seed), header->world_mods);
 
   cursor_pos = sizeof(Header);
   while (cursor_pos < BUFFER_LEN) {
@@ -881,6 +915,7 @@ u8 beginLoadGame(void) {
   u32 version;
   u32 saved_world_ticks = 0;
   u32 saved_world_seed = 0;
+  u32 saved_world_mods = 0;
   u32 wood_count[2] = {0, 0};
   u32 planks_count[2] = {0, 0};
   u32 crafting_table_count[2] = {0, 0};
@@ -975,13 +1010,17 @@ u8 beginLoadGame(void) {
   }
   active_player_count = 1;
   restoreWorldSeed(version, header);
+  /* Before windowClaimFixedExtent below, and long before any streaming: the
+     mask decides what every regenerated column outside the save will be. */
+  restoreWorldMods(version, header);
 
   if (version >= SAVE_VERSION_HEADER) {
-    /* The two scalars the checksum folds in after the world data.  Copy them
+    /* The scalars the checksum folds in after the world data.  Copy them
        out with the rest of the header, not at the end of the load, when the
        struct they came from is long since overwritten. */
     saved_world_ticks = header->world_ticks;
     saved_world_seed = header->world_seed;
+    saved_world_mods = header->world_mods;
     expected_checksum = header->checksum;
     computed_checksum = checksumPlayers(header->player, header->player_count,
       MAX_PLAYERS);
@@ -1163,6 +1202,7 @@ u8 beginLoadGame(void) {
   load_job.version = version;
   load_job.saved_world_ticks = saved_world_ticks;
   load_job.saved_world_seed = saved_world_seed;
+  load_job.saved_world_mods = saved_world_mods;
   load_job.expected_checksum = expected_checksum;
   load_job.checksum = computed_checksum;
   load_job.full_inventory_saved = full_inventory_saved;
@@ -1196,6 +1236,10 @@ static u8 finishLoadGame(void) {
   if (load_job.version >= SAVE_VERSION_SEED) {
     load_job.checksum = checksumWord(load_job.checksum,
       load_job.saved_world_seed);
+  }
+  if (load_job.version >= SAVE_VERSION_MODS) {
+    load_job.checksum = checksumWord(load_job.checksum,
+      load_job.saved_world_mods);
   }
   if (load_job.read_ok &&
       (!load_job.full_inventory_saved ||
@@ -1295,6 +1339,14 @@ u8 stepLoadGame(u16 slabs) {
     recoverTreesFromWorld();
   }
   return finishLoadGame();
+}
+
+void cancelLoadGame(void) {
+  if (load_job.stage == LOAD_STAGE_IDLE) {
+    return;
+  }
+  f_close(&load_job.file);
+  load_job.stage = LOAD_STAGE_IDLE;
 }
 
 u8 loadGameProgress(void) {

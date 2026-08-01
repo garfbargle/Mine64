@@ -24,6 +24,11 @@ void beginWorldMeshBuild(void);
 u8 stepWorldMeshBuild(u16 columns);
 u8 worldMeshBuildProgress();
 u8 worldMeshBuildComplete();
+/* Drop a build whose world is no longer wanted, returning its staged blocks
+   to the arena.  The live pointer set -- the world on screen -- is untouched,
+   which is what makes this safe to call from the same gated slot the build
+   itself steps in. */
+void cancelWorldMeshBuild(void);
 void makeDisplayListsAt(int x, int z);
 /*
  * The render origin.  Block coordinates stay absolute everywhere; the origin
@@ -129,6 +134,10 @@ void diagNoteFrameSubmitted(void);
 #define DIAG_PHASE_LOAD GPACK_RGBA5551(255, 0, 128, 1)       /* rose */
 #define DIAG_PHASE_GENERATE GPACK_RGBA5551(128, 255, 0, 1)   /* lime */
 #define DIAG_PHASE_MESH GPACK_RGBA5551(128, 128, 255, 1)     /* periwinkle */
+/* Committing a named world: the one place left that stops the console for
+   longer than a frame, so the frozen square must be able to say it was the
+   cart rather than blaming whatever ran before it. */
+#define DIAG_PHASE_SAVE GPACK_RGBA5551(255, 200, 0, 1)       /* amber */
 #define DIAG_PHASE_DONE GPACK_RGBA5551(0, 0, 255, 1)         /* blue */
 /* Stop drawing a slot and drop any pending rebuild for it.  Called when the
    residency window rebinds the slot to a different column. */

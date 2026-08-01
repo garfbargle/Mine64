@@ -1,0 +1,96 @@
+# The create-world flow: picker -> setup card -> naming -> game.
+#
+# Every shape is selected in turn and given time to rebuild, because the setup
+# card's whole claim is that the world beside it is the world you will get.
+# Durations are rendered frames.  A full generation is roughly 900 of them;
+# FLAT skips all five noise fields and lands in a fraction of that.
+
+wait 400
+shot picker-building    # bar filling, terrain name under the list
+
+wait 560
+shot picker-ready       # CLASSIC preview finished and orbiting
+
+press A 8
+wait 40
+shot setup-classic      # the card, CLASSIC selected, world beside it
+
+# ISLANDS
+press DDOWN 8
+wait 10
+press A 8
+wait 40
+shot setup-islands-building
+wait 900
+shot setup-islands      # archipelago behind the card
+
+# SKYLANDS -- also greys out CAVES and RUINS
+press DDOWN 8
+wait 10
+press A 8
+wait 900
+shot setup-skylands     # floating islands, two rows dimmed
+
+# FLAT
+press DDOWN 8
+wait 10
+press A 8
+wait 240
+shot setup-flat
+
+# Back to CLASSIC for the rest of the tour
+press DUP 8
+wait 5
+press DUP 8
+wait 5
+press DUP 8
+wait 10
+press A 8
+wait 900
+shot setup-classic-again
+
+# A switch that costs a rebuild, and one that does not
+press DDOWN 8
+wait 5
+press DDOWN 8
+wait 5
+press DDOWN 8
+wait 5
+press DDOWN 8
+wait 10
+shot setup-caves-row    # cursor on CAVES, its blurb under the card
+press A 8
+wait 40
+shot setup-caves-off    # rebuilding: unchecked box, bar running
+wait 900
+
+press DDOWN 8
+wait 5
+press DDOWN 8
+wait 5
+press DDOWN 8
+wait 10
+shot setup-critters-row
+press A 8
+wait 20
+shot setup-critters-off # no rebuild: the bar never appears
+
+# Reroll the seed
+press R 8
+wait 40
+shot setup-reroll       # new seed digits, bar running again
+wait 900
+shot setup-rerolled
+
+press START 8
+wait 60
+shot naming             # the keyboard, unchanged, now reached from the card
+
+press START 8
+wait 12
+shot creating           # CREATING WORLD announcement before the write
+
+wait 240
+shot game               # dropped straight into the world that was orbiting
+
+stop

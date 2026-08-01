@@ -263,6 +263,16 @@ GLYPHS = {
     ">": ("10000", "01000", "00100", "00010", "00100", "01000", "10000"),
     "<": ("00001", "00010", "00100", "01000", "00100", "00010", "00001"),
     "-": ("00000", "00000", "00000", "11111", "00000", "00000", "00000"),
+    # Sentence punctuation. The atlas held capitals, digits and four symbols,
+    # so any UI text with an exclamation, a comma, an apostrophe or a slash
+    # came out with a seven-pixel hole where the mark should be. Battle and
+    # dialogue text needs all four; every other screen is free to keep
+    # avoiding them.
+    "!": ("00100", "00100", "00100", "00100", "00100", "00000", "00100"),
+    ",": ("00000", "00000", "00000", "00000", "00110", "00110", "01100"),
+    "'": ("00100", "00100", "00100", "00000", "00000", "00000", "00000"),
+    "/": ("00001", "00010", "00010", "00100", "01000", "01000", "10000"),
+    "?": ("01110", "10001", "00001", "00010", "00100", "00000", "00100"),
 }
 
 

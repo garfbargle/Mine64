@@ -14,6 +14,7 @@
 
 #include "blocks.h"
 #include "math.h"
+#include "mods.h"
 #include "world.h"
 
 /*
@@ -31,7 +32,7 @@ static int failures;
 
 static void generateWorld(u64 time, u32 slice, int perturb_rng) {
   gentestSetTime(time);
-  beginWorldGeneration();
+  beginWorldGeneration((u32) time);
   while (!stepWorldGeneration(slice)) {
     /* Stand in for a game running alongside generation: mob AI, item drops and
        tree felling all pull on the gameplay RNG.  Terrain must not notice. */
@@ -182,7 +183,7 @@ static void generateColumnByColumn(u64 time) {
   /* Claims the extent and clears the per-column states, then the passes are
      bypassed entirely in favour of driving single columns. */
   gentestSetTime(time);
-  beginWorldGeneration();
+  beginWorldGeneration((u32) time);
 
   for (i = 0; i < count; i++) {
     order[i] = i;
@@ -228,7 +229,7 @@ static void checkStructureColumnOwnership(void) {
     return;
   }
   gentestSetTime(0x5E771EULL);
-  beginWorldGeneration();
+  beginWorldGeneration(0x5E771Eu);
   for (i = 0; i < count; i++) {
     order[i] = i;
     worldGenerateColumnTerrain(i / CHUNKS_Z, i % CHUNKS_Z);
@@ -511,6 +512,89 @@ static void checkFarLands(void) {
   free(direct);
 }
 
+/*
+ * Every world shape has to be standable where the player wakes up.  An
+ * archipelago that starts you treading water and a sky world with nothing
+ * under your feet are both generator bugs the setup card would show off and
+ * nobody would enjoy, and both are prevented by a coordinate-pure bias
+ * rather than by a search -- so they are worth asserting rather than
+ * assuming.
+ */
+static void expectDryLandAtSpawn(const char *name) {
+  int y;
+  int ground = -1;
+
+  for (y = MAX_Y - 1; y >= 0; y--) {
+    u8 block = blockGet(MAX_X / 2, y, MAX_Z / 2);
+
+    if (block != AIR && block != WATER && block != BLOCK_NOT_RESIDENT) {
+      ground = y;
+      break;
+    }
+  }
+  if (ground >= 0 && ground + 1 < MAX_Y &&
+      blockGet(MAX_X / 2, ground + 1, MAX_Z / 2) == AIR) {
+    printf("  PASS  %s stands on dry land at spawn (y %d)\n", name, ground);
+    return;
+  }
+  printf("  FAIL  %s has no dry spawn (ground y %d)\n", name, ground);
+  failures++;
+}
+
+/*
+ * The mods change what the generator produces, so each shape has to hold the
+ * same property the classic one does: a column built alone, in whatever order
+ * a walk reached it, is the column the whole-world passes would have made.
+ * Anything less and walking out of a skyblock world and back rewrites it.
+ */
+static void checkWorldMods(u8 *base, u8 *other) {
+  u8 index;
+  u8 *classic = malloc(SNAPSHOT_BYTES);
+
+  printf("\nWorld mods\n");
+  if (classic == 0) {
+    printf("  FAIL  out of memory checking world mods\n");
+    failures++;
+    return;
+  }
+
+  setWorldMods(MOD_DEFAULTS);
+  generateWorld(0x51DE571AULL, 64, 0);
+  snapshot(classic);
+
+  for (index = 0; index < WORLD_MOD_TERRAIN_COUNT; index++) {
+    u64 seed_time = 0x51DE571AULL;
+
+    setWorldMods((u16) (world_mod_table[index].bit |
+      MOD_CAVES | MOD_RUINS | MOD_FORESTS));
+    generateWorld(seed_time, 64, 0);
+    snapshot(base);
+    expectDryLandAtSpawn(world_mod_table[index].name);
+    generateColumnByColumn(seed_time);
+    snapshot(other);
+    expectIdentical(world_mod_table[index].name, base, other);
+    if (index > 0) {
+      /* The same seed through a different shape has to give a different
+         world, or the row on the card is decoration. */
+      expectDifferent(world_mod_table[index].name, classic, base);
+    }
+  }
+
+  /* Switches the generator reads, on the classic shape. */
+  setWorldMods(MOD_CLASSIC | MOD_RUINS | MOD_FORESTS);
+  generateWorld(0x51DE571AULL, 64, 0);
+  snapshot(base);
+  expectDifferent("caves off changes the underground", classic, base);
+
+  setWorldMods(MOD_CLASSIC | MOD_CAVES | MOD_RUINS);
+  generateWorld(0x51DE571AULL, 64, 0);
+  snapshot(base);
+  expectDifferent("forests off changes the surface", classic, base);
+
+  setWorldMods(MOD_DEFAULTS);
+  free(classic);
+}
+
 int main(void) {
   u8 *base = malloc(SNAPSHOT_BYTES);
   u8 *other = malloc(SNAPSHOT_BYTES);
@@ -603,6 +687,8 @@ int main(void) {
       total_hamlets, total_ruins);
     failures++;
   }
+
+  checkWorldMods(base, other);
 
   free(base);
   free(other);

@@ -570,8 +570,7 @@ static u8 cameraProjectionMode() {
   /* The menu can launch its already-loaded preview directly into gameplay.
      Screen state is therefore the projection authority: a sticky preview
      flag would leave the 34-degree cinematic lens active in the game. */
-  if (current_screen == LOADING_PREVIEW || current_screen == MENU ||
-      current_screen == WORLD_NAMING) {
+  if (screenShowsPreview(current_screen)) {
     projection = CAMERA_VIEW_LOADING;
   } else {
     projection = active_player_count >= 3 ? CAMERA_VIEW_FOUR_PLAYER :

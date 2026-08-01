@@ -1,0 +1,2226 @@
+#include "cobblemon.h"
+
+#include <stddef.h>
+
+#include "audio.h"
+#include "blocks.h"
+#include "day_cycle.h"
+#include "graphics.h"
+#include "items.h"
+#include "menu.h"
+#include "mods.h"
+#include "world.h"
+
+/*
+ * Creature simulation, battles, and the party.
+ *
+ * The whole feature is one pool, one battle and one array of six-byte
+ * records.  Nothing here allocates, nothing here waits, and nothing here
+ * uses a float for a rule -- the presentation timers are the only floats in
+ * the file, and a dropped frame can only make an animation shorter, never
+ * change who won.
+ */
+
+/* Roamer behaviour.  Frames, at the 60 Hz delta updatePlayers hands out. */
+#define ROAM_WALK_SPEED 0.62f
+#define ROAM_FLEE_SPEED 1.34f
+#define ROAM_APPROACH_SPEED 0.95f
+#define ROAM_DECISION_MIN 60.f
+#define ROAM_DECISION_VARIATION 120.f
+#define ROAM_DESPAWN_DISTANCE (BLOCK_SIZE * 34.f)
+#define ROAM_SPAWN_DELAY 90.f
+#define ROAM_FAILED_SPAWN_DELAY 40.f
+/* How close the player has to be for A to mean "battle this creature". */
+#define ROAM_INTERACT_RANGE (BLOCK_SIZE * 3.4f)
+/* An aggressive creature closes to this before it starts the fight itself. */
+#define ROAM_AGGRO_RANGE (BLOCK_SIZE * 1.9f)
+#define ROAM_NOTICE_RANGE (BLOCK_SIZE * 9.f)
+/* A challenge between two players needs them face to face. */
+#define PVP_CHALLENGE_RANGE (BLOCK_SIZE * 3.2f)
+
+/* Degrees, in the player's 0..360 pitch space where 270..360 looks down.
+   Eighteen degrees is what it takes to lift creatures standing on the ground
+   a few blocks away out from behind the message box. */
+#define BATTLE_VIEW_PITCH 342.f
+
+#define ROAM_IDLE 0
+#define ROAM_WANDER 1
+#define ROAM_NOTICE 2
+#define ROAM_FLEE 3
+#define ROAM_APPROACH 4
+
+/* One health point per party member every four seconds.  Slow enough that a
+   hard loss costs real time, fast enough that nobody is ever stranded with a
+   fainted team and nothing to do about it -- there is no healing building in
+   a world the player may have walked a thousand blocks from. */
+#define PARTY_REGEN_INTERVAL 240.f
+
+/* Message pacing: characters revealed per frame, times four. */
+#define MESSAGE_REVEAL_RATE 10
+/* Frames a fully typed line waits before it will advance on its own.  A is
+   always faster; this only stops an unattended battle from stopping dead. */
+#define MESSAGE_AUTO_ADVANCE 150
+
+CobbleMon cobble_party[MAX_PLAYERS][COBBLE_PARTY_SIZE];
+CobbleRoamer cobble_roamers[COBBLE_MAX_ROAMERS];
+CobbleBattle cobble_battle;
+
+static float roamer_spawn_time;
+static float party_regen_time;
+static float message_hold;
+/* The creature each player is currently close enough to act on, refreshed
+   once per simulation step so the prompt and the A button cannot disagree. */
+static u8 roamer_target[MAX_PLAYERS];
+/* A pending player-versus-player challenge, and who it is waiting on. */
+static u8 pvp_challenger = COBBLE_NONE;
+static u8 pvp_target = COBBLE_NONE;
+static float pvp_challenge_time;
+
+u8 cobblemonEnabled(void) {
+  return worldModActive(MOD_COBBLEMON);
+}
+
+u8 cobblemonRoamerReserve(void) {
+  return cobblemonEnabled() ? COBBLE_MAX_ROAMERS : 0;
+}
+
+u8 cobblemonBattleActive(void) {
+  return cobble_battle.active;
+}
+
+/* ------------------------------------------------------------------ */
+/* Derived statistics.  Integer, pure, and safe to call from the renderer.   */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Nothing about a creature is stored except its species, level, experience
+ * and current health.  Everything else is recomputed here on demand, which
+ * is what makes a balance change safe: retuning a base stat retunes every
+ * creature in every existing save, with no migration and no drift between
+ * what a party card shows and what a battle uses.
+ */
+u16 cobbleMaxHealth(u8 species, u8 level) {
+  const CobbleSpecies *s;
+
+  if (species >= COBBLE_SPECIES_COUNT) {
+    return 1;
+  }
+  s = &cobble_species[species];
+  return (u16) (12 + ((u32) s->base_hp * level) / 10);
+}
+
+static u16 statValue(u8 base, u8 level) {
+  return (u16) (4 + ((u32) base * level) / 20);
+}
+
+u16 cobbleAttack(u8 species, u8 level) {
+  return species < COBBLE_SPECIES_COUNT ?
+    statValue(cobble_species[species].base_attack, level) : 1;
+}
+
+u16 cobbleDefense(u8 species, u8 level) {
+  return species < COBBLE_SPECIES_COUNT ?
+    statValue(cobble_species[species].base_defense, level) : 1;
+}
+
+u16 cobbleSpeed(u8 species, u8 level) {
+  return species < COBBLE_SPECIES_COUNT ?
+    statValue(cobble_species[species].base_speed, level) : 1;
+}
+
+/*
+ * Experience needed to leave `level`.  Quadratic, so early levels arrive
+ * quickly and the last few are a real investment, and bounded well inside a
+ * u16 at level 50 (5600) so the stored progress never has to widen.
+ */
+u16 cobbleXpForLevel(u8 level) {
+  return (u16) (2 * (u32) level * level + 12 * (u32) level);
+}
+
+u8 cobbleKnownMoves(u8 species, u8 level, u8 *out) {
+  const CobbleSpecies *s;
+  u8 index;
+  u8 count = 0;
+
+  if (species >= COBBLE_SPECIES_COUNT) {
+    out[0] = 0;
+    return 1;
+  }
+  s = &cobble_species[species];
+  for (index = 0; index < COBBLE_MOVES; index++) {
+    if (s->move_levels[index] <= level) {
+      out[count++] = s->moves[index];
+    }
+  }
+  /* A creature always has something to do on its turn.  A learnset whose
+     first entry was mis-levelled would otherwise produce a turn the player
+     cannot take. */
+  if (count == 0) {
+    out[0] = s->moves[0];
+    count = 1;
+  }
+  return count;
+}
+
+u8 cobblePartyCount(u8 player_num) {
+  u8 index;
+  u8 count = 0;
+
+  for (index = 0; index < COBBLE_PARTY_SIZE; index++) {
+    if (cobble_party[player_num][index].species != COBBLE_NONE) {
+      count++;
+    }
+  }
+  return count;
+}
+
+u8 cobblePartyLead(u8 player_num) {
+  u8 index;
+
+  for (index = 0; index < COBBLE_PARTY_SIZE; index++) {
+    CobbleMon *mon = &cobble_party[player_num][index];
+    if (mon->species != COBBLE_NONE && mon->hp > 0) {
+      return index;
+    }
+  }
+  return COBBLE_NONE;
+}
+
+static u8 addToParty(u8 player_num, u8 species, u8 level) {
+  u8 index;
+
+  for (index = 0; index < COBBLE_PARTY_SIZE; index++) {
+    CobbleMon *mon = &cobble_party[player_num][index];
+    if (mon->species != COBBLE_NONE) {
+      continue;
+    }
+    mon->species = species;
+    mon->level = level;
+    mon->xp = 0;
+    mon->hp = cobbleMaxHealth(species, level);
+    return index;
+  }
+  return COBBLE_NONE;
+}
+
+void initCobblemon(void) {
+  u8 player_num;
+  u8 index;
+
+  for (player_num = 0; player_num < MAX_PLAYERS; player_num++) {
+    for (index = 0; index < COBBLE_PARTY_SIZE; index++) {
+      cobble_party[player_num][index].species = COBBLE_NONE;
+      cobble_party[player_num][index].level = 0;
+      cobble_party[player_num][index].xp = 0;
+      cobble_party[player_num][index].hp = 0;
+    }
+    roamer_target[player_num] = COBBLE_NONE;
+  }
+  for (index = 0; index < COBBLE_MAX_ROAMERS; index++) {
+    cobble_roamers[index].active = FALSE;
+  }
+  cobble_battle.active = FALSE;
+  cobble_battle.phase = COBBLE_PHASE_NONE;
+  roamer_spawn_time = ROAM_SPAWN_DELAY;
+  party_regen_time = 0;
+  pvp_challenger = COBBLE_NONE;
+  pvp_target = COBBLE_NONE;
+}
+
+/* ------------------------------------------------------------------ */
+/* The battle log.                                                          */
+/* ------------------------------------------------------------------ */
+
+static char *appendText(char *out, const char *text) {
+  while (*text) {
+    *out++ = *text++;
+  }
+  return out;
+}
+
+static char *appendNumber(char *out, u32 value) {
+  char digits[10];
+  u8 count = 0;
+
+  do {
+    digits[count++] = (char) ('0' + (value % 10u));
+    value /= 10u;
+  } while (value > 0 && count < 10);
+  while (count > 0) {
+    *out++ = digits[--count];
+  }
+  return out;
+}
+
+/*
+ * Queue one line.  The caller writes into a scratch buffer and hands it over,
+ * because every message in the game is built from at most a name, a number
+ * and two fragments -- a formatter would be more machinery than the whole log
+ * is worth.  Overflow drops the oldest line rather than the newest: the most
+ * recent thing that happened is always the one worth reading.
+ */
+static void pushMessage(const char *text) {
+  u8 slot;
+  u8 index = 0;
+
+  if (cobble_battle.message_count >= COBBLE_MESSAGE_QUEUE) {
+    cobble_battle.message_head =
+      (u8) ((cobble_battle.message_head + 1) % COBBLE_MESSAGE_QUEUE);
+    cobble_battle.message_count--;
+  }
+  slot = (u8) ((cobble_battle.message_head + cobble_battle.message_count) %
+    COBBLE_MESSAGE_QUEUE);
+  while (text[index] && index < COBBLE_MESSAGE_LENGTH) {
+    cobble_battle.message[slot][index] = text[index];
+    index++;
+  }
+  cobble_battle.message[slot][index] = 0;
+  cobble_battle.message_count++;
+  if (cobble_battle.phase != COBBLE_PHASE_MESSAGE) {
+    cobble_battle.next_phase = cobble_battle.phase;
+    cobble_battle.phase = COBBLE_PHASE_MESSAGE;
+    cobble_battle.message_reveal = 0;
+    message_hold = 0;
+  }
+}
+
+/* "<name> used <move>!" and friends, built in one shared scratch line. */
+static char message_scratch[COBBLE_MESSAGE_LENGTH + 1];
+
+static void pushNamed(const char *name, const char *tail) {
+  char *out = message_scratch;
+
+  out = appendText(out, name);
+  out = appendText(out, tail);
+  *out = 0;
+  pushMessage(message_scratch);
+}
+
+/*
+ * Move to a phase without stepping on a line the player has not read yet.
+ *
+ * Every transition goes through here.  Assigning cobble_battle.phase directly
+ * beside a pushMessage is the one mistake this system can make that a player
+ * would experience as "the game skipped something" -- and it is invisible in
+ * an emulator, because the message would still be in the queue.
+ */
+static void setPhase(u8 phase) {
+  cobble_battle.next_phase = phase;
+  if (cobble_battle.phase != COBBLE_PHASE_MESSAGE) {
+    cobble_battle.phase = phase;
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* Fighters.                                                                */
+/* ------------------------------------------------------------------ */
+
+static const char *fighterName(u8 side) {
+  u8 species = cobble_battle.fighter[side].species;
+
+  return species < COBBLE_SPECIES_COUNT ?
+    cobble_species[species].name : "???";
+}
+
+static void loadFighter(u8 side, u8 species, u8 level, u16 hp,
+    u8 party_slot) {
+  CobbleFighter *f = &cobble_battle.fighter[side];
+  u8 index;
+
+  f->species = species;
+  f->level = level;
+  f->max_hp = cobbleMaxHealth(species, level);
+  f->hp = hp > f->max_hp ? f->max_hp : hp;
+  f->attack = cobbleAttack(species, level);
+  f->defense = cobbleDefense(species, level);
+  f->speed = cobbleSpeed(species, level);
+  f->move_count = cobbleKnownMoves(species, level, f->move);
+  for (index = 0; index < f->move_count; index++) {
+    f->pp[index] = cobble_moves[f->move[index]].pp;
+  }
+  for (; index < COBBLE_MOVES; index++) {
+    f->pp[index] = 0;
+  }
+  /* Stat changes belong to the fighter on the field, not to the creature.
+     Switching out is meant to cost the buffs it built up. */
+  f->attack_stage = 0;
+  f->defense_stage = 0;
+  f->party_slot = party_slot;
+  cobble_battle.lunge[side] = 0;
+  cobble_battle.hurt[side] = 0;
+  cobble_battle.faint[side] = 0;
+}
+
+/* Write a player side's remaining health back to the party record.  Called
+   whenever a fighter leaves the field, so the party is never a turn behind
+   what the battle shows. */
+static void storeFighter(u8 side) {
+  CobbleFighter *f = &cobble_battle.fighter[side];
+
+  if (!cobble_battle.side_is_player[side] ||
+      f->party_slot >= COBBLE_PARTY_SIZE) {
+    return;
+  }
+  cobble_party[cobble_battle.side_player[side]][f->party_slot].hp = f->hp;
+}
+
+static u16 stagedStat(u16 base, s8 stage) {
+  if (stage > 0) {
+    return (u16) (((u32) base * (2 + stage)) / 2);
+  }
+  if (stage < 0) {
+    return (u16) (((u32) base * 2) / (2 - stage));
+  }
+  return base;
+}
+
+static u8 typeMultiplier(u8 move_type, u8 defender_species) {
+  u8 defender_type;
+
+  if (move_type >= COBBLE_TYPE_COUNT ||
+      defender_species >= COBBLE_SPECIES_COUNT) {
+    return 4;
+  }
+  defender_type = cobble_species[defender_species].type;
+  return cobble_type_chart[move_type][defender_type];
+}
+
+/* ------------------------------------------------------------------ */
+/* Encounters.                                                              */
+/* ------------------------------------------------------------------ */
+
+static u8 groundBlockAt(int x, int y, int z) {
+  return blockGet(x, y, z);
+}
+
+/*
+ * Facing, as the mob pool defines it: yaw 0 looks toward -Z and increases
+ * anticlockwise, so a model's nose -- local -Z in every rig -- ends up along
+ * (-sin yaw, -cos yaw), which is also the direction the player walks in.
+ * Four-way is all a box creature can express and it costs no arc tangent.
+ */
+static float facingYaw(float dx, float dz) {
+  float ax = dx < 0 ? -dx : dx;
+  float az = dz < 0 ? -dz : dz;
+
+  if (ax > az) {
+    return dx > 0 ? 270.f : 90.f;
+  }
+  return dz > 0 ? 180.f : 0.f;
+}
+
+/* Drop a battle position onto the ground beneath it, so a creature standing
+   just off a ledge or on a slope does not float or sink into it. */
+static float groundHeightNear(float world_x, float world_z, float around_y) {
+  int block_x = floor(world_x / BLOCK_SIZE);
+  int block_z = floor(world_z / BLOCK_SIZE);
+  int start = floor(around_y / BLOCK_SIZE) + 2;
+  int y;
+
+  if (start >= MAX_Y) {
+    start = MAX_Y - 1;
+  }
+  for (y = start; y >= 0; y--) {
+    u8 block = groundBlockAt(block_x, y, block_z);
+    if (block != BLOCK_NOT_RESIDENT && BLOCK_IS_SOLID(block)) {
+      return (float) (y + 1) * BLOCK_SIZE;
+    }
+  }
+  return around_y;
+}
+
+static u8 roamerCanStandAt(int x, int ground_y, int z) {
+  u8 ground;
+
+  if ((u32) ground_y >= (u32) (MAX_Y - 2)) {
+    return FALSE;
+  }
+  ground = groundBlockAt(x, ground_y, z);
+  if (!BLOCK_IS_SOLID(ground) || ground == LEAVES) {
+    return FALSE;
+  }
+  return groundBlockAt(x, ground_y + 1, z) == AIR &&
+    groundBlockAt(x, ground_y + 2, z) == AIR;
+}
+
+static u8 roamerGroundNear(int x, int z, int current_y, int *ground_y) {
+  static const s8 offsets[3] = {0, 1, -1};
+  u8 index;
+
+  if (!windowColumnResident(x >> CHUNK_SHIFT, z >> CHUNK_SHIFT)) {
+    return FALSE;
+  }
+  for (index = 0; index < 3; index++) {
+    int y = current_y + offsets[index];
+    if (roamerCanStandAt(x, y, z)) {
+      *ground_y = y;
+      return TRUE;
+    }
+  }
+  return FALSE;
+}
+
+/* The full-height scan is reserved for the occasional spawn attempt; a live
+   roamer only ever asks the three-cell question above. */
+static u8 roamerSpawnGroundAt(int x, int z, int *ground_y) {
+  int y;
+
+  if (!windowColumnResident(x >> CHUNK_SHIFT, z >> CHUNK_SHIFT)) {
+    return FALSE;
+  }
+  for (y = MAX_Y - 3; y >= 0; y--) {
+    if (roamerCanStandAt(x, y, z)) {
+      *ground_y = y;
+      return TRUE;
+    }
+  }
+  return FALSE;
+}
+
+/* Which habitats a given spawn pad satisfies.  Water within two blocks makes
+   a pad a shore, which is the only habitat that needs to look past its own
+   cell -- and it looks at four cells, not a radius. */
+static u8 habitatAt(int x, int ground_y, int z) {
+  u8 ground = groundBlockAt(x, ground_y, z);
+  u8 mask = 0;
+
+  if (ground == GRASS || ground == DIRT) {
+    mask |= COBBLE_HAB_GRASS;
+  } else if (ground == SAND) {
+    mask |= COBBLE_HAB_SAND;
+  } else if (ground == STONE || ground == COBBLESTONE ||
+      ground == MOSSY_COBBLESTONE) {
+    mask |= COBBLE_HAB_STONE;
+  }
+  if (mask != 0) {
+    if (groundBlockAt(x + 2, ground_y, z) == WATER ||
+        groundBlockAt(x - 2, ground_y, z) == WATER ||
+        groundBlockAt(x, ground_y, z + 2) == WATER ||
+        groundBlockAt(x, ground_y, z - 2) == WATER) {
+      mask |= COBBLE_HAB_SHORE;
+    }
+  }
+  mask |= dayCycleSunAltitude() < 0 ? COBBLE_HAB_NIGHT : COBBLE_HAB_DAY;
+  return mask;
+}
+
+/*
+ * Pick a species for a pad.  Weighted by rarity within the habitats the pad
+ * actually satisfies, so a beach and a cave floor draw from genuinely
+ * different rosters without a biome map existing anywhere.
+ */
+static u8 pickSpecies(u8 habitat) {
+  u32 total = 0;
+  u32 roll;
+  u8 index;
+  u8 night = (habitat & COBBLE_HAB_NIGHT) != 0;
+
+  for (index = 0; index < COBBLE_SPECIES_COUNT; index++) {
+    const CobbleSpecies *s = &cobble_species[index];
+    if (s->spawn_weight == 0) {
+      continue;
+    }
+    if ((s->habitat & habitat & 0x0F) == 0) {
+      continue;
+    }
+    if ((s->habitat & COBBLE_HAB_DAY) && night) {
+      continue;
+    }
+    if ((s->habitat & COBBLE_HAB_NIGHT) && !night) {
+      continue;
+    }
+    total += s->spawn_weight;
+  }
+  if (total == 0) {
+    return COBBLE_NONE;
+  }
+  roll = random((u32) total);
+  for (index = 0; index < COBBLE_SPECIES_COUNT; index++) {
+    const CobbleSpecies *s = &cobble_species[index];
+    if (s->spawn_weight == 0) {
+      continue;
+    }
+    if ((s->habitat & habitat & 0x0F) == 0) {
+      continue;
+    }
+    if ((s->habitat & COBBLE_HAB_DAY) && night) {
+      continue;
+    }
+    if ((s->habitat & COBBLE_HAB_NIGHT) && !night) {
+      continue;
+    }
+    if (roll < s->spawn_weight) {
+      return index;
+    }
+    roll -= s->spawn_weight;
+  }
+  return COBBLE_NONE;
+}
+
+/*
+ * How strong wild creatures are here.
+ *
+ * Distance from the world's origin, not a stored progression flag: the world
+ * has no edges and no chapters, so the only honest difficulty curve is "the
+ * further you walk, the older the things you meet".  It costs nothing to
+ * store and it makes a direction of travel a decision.  The player's own
+ * lead then bounds it from both sides, so a fresh party near spawn is never
+ * mauled and a veteran is never farming level threes.
+ */
+static u8 encounterLevel(u8 player_num, int block_x, int block_z) {
+  int distance = block_x < 0 ? -block_x : block_x;
+  int depth = block_z < 0 ? -block_z : block_z;
+  int level;
+  u8 lead = cobblePartyLead(player_num);
+  int lead_level = lead == COBBLE_NONE ? 5 :
+    cobble_party[player_num][lead].level;
+
+  if (depth > distance) {
+    distance = depth;
+  }
+  level = 3 + distance / 45;
+  if (level > lead_level + 3) {
+    level = lead_level + 3;
+  }
+  if (level < lead_level - 4) {
+    level = lead_level - 4;
+  }
+  level += (int) random(3) - 1;
+  if (level < 2) {
+    level = 2;
+  }
+  if (level > COBBLE_MAX_LEVEL) {
+    level = COBBLE_MAX_LEVEL;
+  }
+  return (u8) level;
+}
+
+static Player *spawnAnchorPlayer(u8 *player_num) {
+  u8 offset;
+  u8 start;
+
+  if (active_player_count == 0) {
+    return NULL;
+  }
+  start = (u8) random(active_player_count);
+  for (offset = 0; offset < active_player_count; offset++) {
+    u8 index = (u8) ((start + offset) % active_player_count);
+    if (players[index].active) {
+      *player_num = index;
+      return &players[index];
+    }
+  }
+  return NULL;
+}
+
+static u8 roamerTooClose(float x, float z) {
+  u8 index;
+
+  for (index = 0; index < COBBLE_MAX_ROAMERS; index++) {
+    CobbleRoamer *other = &cobble_roamers[index];
+    float dx;
+    float dz;
+    if (!other->active) {
+      continue;
+    }
+    dx = other->position.x - x;
+    dz = other->position.z - z;
+    if (dx * dx + dz * dz < (BLOCK_SIZE * 6.f) * (BLOCK_SIZE * 6.f)) {
+      return TRUE;
+    }
+  }
+  return FALSE;
+}
+
+static u8 trySpawnRoamer(void) {
+  u8 anchor_num = 0;
+  Player *anchor = spawnAnchorPlayer(&anchor_num);
+  int block_x;
+  int block_z;
+  int ground_y;
+  u8 habitat;
+  u8 species;
+  u8 index;
+  float x;
+  float z;
+
+  if (anchor == NULL) {
+    return FALSE;
+  }
+  for (index = 0; index < COBBLE_MAX_ROAMERS; index++) {
+    if (!cobble_roamers[index].active) {
+      break;
+    }
+  }
+  if (index >= COBBLE_MAX_ROAMERS) {
+    return FALSE;
+  }
+
+  /* Ten to twenty-five blocks out: far enough not to appear in front of the
+     player, near enough to be inside the meshed ring so it is not spawned
+     into terrain that has not streamed in. */
+  block_x = floor(anchor->position.x / BLOCK_SIZE) +
+    (int) random(31) - 15;
+  block_z = floor(anchor->position.z / BLOCK_SIZE) +
+    (int) random(31) - 15;
+  x = (block_x + .5f) * BLOCK_SIZE;
+  z = (block_z + .5f) * BLOCK_SIZE;
+  {
+    float dx = x - anchor->position.x;
+    float dz = z - anchor->position.z;
+    float distance = dx * dx + dz * dz;
+    if (distance < (BLOCK_SIZE * 10.f) * (BLOCK_SIZE * 10.f) ||
+        distance > (BLOCK_SIZE * 25.f) * (BLOCK_SIZE * 25.f)) {
+      return FALSE;
+    }
+  }
+  if (roamerTooClose(x, z)) {
+    return FALSE;
+  }
+  if (!roamerSpawnGroundAt(block_x, block_z, &ground_y)) {
+    return FALSE;
+  }
+  habitat = habitatAt(block_x, ground_y, block_z);
+  species = pickSpecies(habitat);
+  if (species == COBBLE_NONE) {
+    return FALSE;
+  }
+
+  {
+    CobbleRoamer *roamer = &cobble_roamers[index];
+
+    roamer->position.x = x;
+    roamer->position.y = (float) (ground_y + 1) * BLOCK_SIZE;
+    roamer->position.z = z;
+    roamer->yaw = (float) random(360);
+    roamer->walk_time = 0;
+    roamer->decision_time = ROAM_DECISION_MIN;
+    roamer->notice_time = 0;
+    roamer->ground_y = (s8) ground_y;
+    roamer->species = species;
+    roamer->level = encounterLevel(anchor_num, block_x, block_z);
+    roamer->state = ROAM_WANDER;
+    roamer->seed = (u32) block_x * 0x9E3779B9u ^
+      ((u32) block_z * 0x85EBCA6Bu) ^ world_seed;
+    /*
+     * One spawn in seven is a wandering trainer rather than a wild creature.
+     * They are the only source of a real team fight outside co-op, and
+     * because their party is a pure function of the seed above, meeting the
+     * same trainer twice means meeting the same team twice without a byte
+     * being written down.
+     */
+    roamer->kind = random(7) == 0 ? COBBLE_ROAMER_TRAINER :
+      COBBLE_ROAMER_WILD;
+    roamer->active = TRUE;
+  }
+  return TRUE;
+}
+
+static void updateRoamer(CobbleRoamer *roamer, float delta) {
+  const CobbleSpecies *species = &cobble_species[roamer->species];
+  Player *nearest = NULL;
+  float nearest_distance = 1.0e18f;
+  u8 player_num;
+  float speed = 0;
+  u8 night = dayCycleSunAltitude() < 0;
+
+  for (player_num = 0; player_num < active_player_count; player_num++) {
+    float dx;
+    float dz;
+    float distance;
+    if (!players[player_num].active) {
+      continue;
+    }
+    dx = players[player_num].position.x - roamer->position.x;
+    dz = players[player_num].position.z - roamer->position.z;
+    distance = dx * dx + dz * dz;
+    if (distance < nearest_distance) {
+      nearest_distance = distance;
+      nearest = &players[player_num];
+    }
+  }
+  if (nearest == NULL) {
+    return;
+  }
+  if (nearest_distance > ROAM_DESPAWN_DISTANCE * ROAM_DESPAWN_DISTANCE) {
+    roamer->active = FALSE;
+    return;
+  }
+
+  roamer->decision_time -= delta;
+  if (roamer->decision_time <= 0) {
+    roamer->decision_time = ROAM_DECISION_MIN + (float) random(
+      (u32) ROAM_DECISION_VARIATION);
+    roamer->state = random(3) == 0 ? ROAM_IDLE : ROAM_WANDER;
+    roamer->yaw = (float) random(360);
+  }
+
+  /*
+   * Creatures look at whoever is near them.  That is the entire "encounter
+   * telegraph": the game never grabs the player out of what they were doing,
+   * it turns a creature toward them and puts one line on the HUD, and the
+   * player decides.  Forced encounters are the wrong trade on a console this
+   * slow to return to what you were building.
+   */
+  if (nearest_distance < ROAM_NOTICE_RANGE * ROAM_NOTICE_RANGE) {
+    float dx = nearest->position.x - roamer->position.x;
+    float dz = nearest->position.z - roamer->position.z;
+
+    if (dx != 0 || dz != 0) {
+      roamer->yaw = facingYaw(dx, dz);
+    }
+    if (roamer->state != ROAM_FLEE) {
+      roamer->state = ROAM_NOTICE;
+      roamer->notice_time += delta;
+    }
+    /* Aggressive middle stages take the initiative after dark, and only in
+       a world that did not ask for peace. */
+    if (species->aggressive && night && !worldModActive(MOD_PEACEFUL) &&
+        !cobble_battle.active &&
+        nearest_distance > ROAM_AGGRO_RANGE * ROAM_AGGRO_RANGE) {
+      roamer->state = ROAM_APPROACH;
+    }
+  } else {
+    roamer->notice_time = 0;
+  }
+
+  switch (roamer->state) {
+    case ROAM_FLEE:
+      speed = ROAM_FLEE_SPEED;
+      break;
+    case ROAM_APPROACH:
+      speed = ROAM_APPROACH_SPEED;
+      break;
+    case ROAM_WANDER:
+      speed = ROAM_WALK_SPEED;
+      break;
+    default:
+      speed = 0;
+      break;
+  }
+
+  if (speed > 0) {
+    float radians = roamer->yaw * M_DTOR;
+    float step_x = -sinf(radians) * speed * delta;
+    float step_z = -cosf(radians) * speed * delta;
+    float next_x = roamer->position.x + step_x;
+    float next_z = roamer->position.z + step_z;
+    int block_x = floor(next_x / BLOCK_SIZE);
+    int block_z = floor(next_z / BLOCK_SIZE);
+    int ground_y;
+
+    if (roamerGroundNear(block_x, block_z, roamer->ground_y, &ground_y)) {
+      roamer->position.x = next_x;
+      roamer->position.z = next_z;
+      roamer->ground_y = (s8) ground_y;
+      roamer->position.y = (float) (ground_y + 1) * BLOCK_SIZE;
+      roamer->walk_time += delta * .22f;
+    } else {
+      /* Blocked.  Turn rather than stall against the wall. */
+      roamer->yaw = (float) random(360);
+    }
+  } else {
+    roamer->walk_time += delta * .05f;
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* Battle setup.                                                            */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Where the two creatures stand, fixed once when the battle opens.
+ *
+ * The scene is laid out along the direction the player is already looking,
+ * not along the line to whatever started the fight.  There is no battle
+ * camera and no cut -- the player keeps their own view -- so the only
+ * placement that reliably puts both creatures on screen is one measured from
+ * where that view already points.  It also means an ambush from behind
+ * becomes a fight in front of you rather than a fight you cannot see.
+ */
+static void placeBattleScene(u8 player_num) {
+  Player *player = &players[player_num];
+  float radians = player->yaw * M_DTOR;
+  float forward_x = -sinf(radians);
+  float forward_z = -cosf(radians);
+  /* The player's right, for the stagger that keeps the near creature from
+     standing exactly in front of the far one. */
+  float right_x = -forward_z;
+  float right_z = forward_x;
+
+  /*
+   * The distances are set by where the pair lands on screen, not by what
+   * would feel like a duelling range.  With the view tipped down by
+   * BATTLE_VIEW_PITCH, three and a half blocks puts the near creature in the
+   * clear band between the status panels and the message box, and six and a
+   * half puts the far one just above it.  Standing them closer -- which
+   * looks better written down -- puts both under the interface.
+   */
+  cobble_battle.stand[1].x = player->position.x +
+    forward_x * (BLOCK_SIZE * 6.6f) + right_x * (BLOCK_SIZE * .9f);
+  cobble_battle.stand[1].z = player->position.z +
+    forward_z * (BLOCK_SIZE * 6.6f) + right_z * (BLOCK_SIZE * .9f);
+  cobble_battle.stand[0].x = player->position.x +
+    forward_x * (BLOCK_SIZE * 3.4f) - right_x * (BLOCK_SIZE * 1.2f);
+  cobble_battle.stand[0].z = player->position.z +
+    forward_z * (BLOCK_SIZE * 3.4f) - right_z * (BLOCK_SIZE * 1.2f);
+  cobble_battle.stand[0].y = groundHeightNear(cobble_battle.stand[0].x,
+    cobble_battle.stand[0].z, player->position.y);
+  cobble_battle.stand[1].y = groundHeightNear(cobble_battle.stand[1].x,
+    cobble_battle.stand[1].z, player->position.y);
+  /* The battle axis.  Side zero faces along it and side one faces back, so
+     the pair always squares up whatever direction the fight started in. */
+  cobble_battle.facing = player->yaw;
+}
+
+/* Tip the battling players' views down onto the scene, remembering what they
+   were looking at so the world is handed back exactly as it was found. */
+static void takeBattleView(void) {
+  u8 side;
+
+  for (side = 0; side < 2; side++) {
+    u8 player_num = cobble_battle.side_player[side];
+
+    cobble_battle.saved_pitch[side] = 0;
+    if (!cobble_battle.side_is_player[side] || player_num >= MAX_PLAYERS) {
+      continue;
+    }
+    cobble_battle.saved_pitch[side] = players[player_num].pitch;
+    players[player_num].pitch = BATTLE_VIEW_PITCH;
+  }
+}
+
+static void releaseBattleView(void) {
+  u8 side;
+
+  for (side = 0; side < 2; side++) {
+    u8 player_num = cobble_battle.side_player[side];
+
+    if (!cobble_battle.side_is_player[side] || player_num >= MAX_PLAYERS) {
+      continue;
+    }
+    players[player_num].pitch = cobble_battle.saved_pitch[side];
+  }
+}
+
+static void resetBattleCursors(void) {
+  cobble_battle.command_cursor = 0;
+  cobble_battle.move_cursor = 0;
+  cobble_battle.team_cursor = 0;
+  cobble_battle.bag_cursor = 0;
+}
+
+static void beginBattleCommon(u8 kind, u8 challenger) {
+  u8 index;
+
+  cobble_battle.active = TRUE;
+  cobble_battle.kind = kind;
+  cobble_battle.finished = FALSE;
+  cobble_battle.message_head = 0;
+  cobble_battle.message_count = 0;
+  cobble_battle.message_reveal = 0;
+  cobble_battle.scene_time = 0;
+  cobble_battle.escape_attempts = 0;
+  cobble_battle.pending_xp = 0;
+  cobble_battle.catch_shakes = 0;
+  cobble_battle.acting_side = 0;
+  cobble_battle.resolve_index = 0;
+  cobble_battle.side_is_player[0] = TRUE;
+  cobble_battle.side_player[0] = challenger;
+  cobble_battle.side_is_player[1] = FALSE;
+  cobble_battle.side_player[1] = 0;
+  cobble_battle.npc_party_size = 0;
+  cobble_battle.npc_active = 0;
+  for (index = 0; index < 2; index++) {
+    cobble_battle.action[index] = COBBLE_ACTION_NONE;
+    cobble_battle.action_arg[index] = 0;
+    cobble_battle.lunge[index] = 0;
+    cobble_battle.hurt[index] = 0;
+    cobble_battle.faint[index] = 0;
+  }
+  resetBattleCursors();
+  message_hold = 0;
+}
+
+static void sendOutPlayerLead(u8 side) {
+  u8 player_num = cobble_battle.side_player[side];
+  u8 slot = cobblePartyLead(player_num);
+  CobbleMon *mon;
+
+  if (slot == COBBLE_NONE) {
+    return;
+  }
+  mon = &cobble_party[player_num][slot];
+  loadFighter(side, mon->species, mon->level, mon->hp, slot);
+  pushNamed(cobble_species[mon->species].name, " GO!");
+}
+
+/*
+ * A trainer's team, derived from the seed their roamer was spawned with.
+ * Nothing about a trainer is stored: the same coordinates and world seed
+ * always produce the same opponent, which is what lets them exist at all in
+ * a world whose entities are never saved.
+ */
+static void buildTrainerTeam(u32 seed, u8 level) {
+  u8 count = (u8) (2 + (seed >> 3) % 2u);
+  u8 index;
+
+  cobble_battle.npc_party_size = count;
+  for (index = 0; index < count; index++) {
+    u32 draw = seed ^ (0x9E3779B9u * (index + 1));
+    u8 species = (u8) (draw % COBBLE_SPECIES_COUNT);
+    u8 mon_level;
+
+    /* Trainers do not lead with a final stage the player could not have
+       reached yet; a species that never spawns wild is stepped back to the
+       family it evolves from by walking the table. */
+    if (cobble_species[species].spawn_weight == 0 && level < 25) {
+      u8 search;
+      for (search = 0; search < COBBLE_SPECIES_COUNT; search++) {
+        if (cobble_species[search].evolves_to == species) {
+          species = search;
+          break;
+        }
+      }
+    }
+    mon_level = (u8) (level - 1 + (draw >> 8) % 3u);
+    if (mon_level < 2) {
+      mon_level = 2;
+    }
+    if (mon_level > COBBLE_MAX_LEVEL) {
+      mon_level = COBBLE_MAX_LEVEL;
+    }
+    cobble_battle.npc_party[index].species = species;
+    cobble_battle.npc_party[index].level = mon_level;
+    cobble_battle.npc_party[index].xp = 0;
+    cobble_battle.npc_party[index].hp = cobbleMaxHealth(species, mon_level);
+  }
+}
+
+static void sendOutNpc(void) {
+  CobbleMon *mon = &cobble_battle.npc_party[cobble_battle.npc_active];
+
+  loadFighter(1, mon->species, mon->level, mon->hp, COBBLE_NONE);
+  pushNamed(cobble_species[mon->species].name, " STEPS UP!");
+}
+
+/*
+ * The first creature a player ever meets joins them instead of fighting.
+ *
+ * A collection game whose first ten minutes are "you cannot play yet" is a
+ * bad trade on a console people put on for twenty minutes at a time, and
+ * every alternative -- a starter menu, a gift chest, a tutorial NPC -- costs
+ * a screen and takes the choice away.  Walking up to the one you like is
+ * both the shortest path in and the most player-owned.
+ */
+static u8 grantStarter(u8 player_num, CobbleRoamer *roamer) {
+  u8 level = roamer->level < 5 ? 5 : roamer->level;
+  u8 slot;
+
+  if (level > 8) {
+    level = 8;
+  }
+  slot = addToParty(player_num, roamer->species, level);
+  if (slot == COBBLE_NONE) {
+    return FALSE;
+  }
+  roamer->active = FALSE;
+  playSound(SOUND_PICKUP);
+  return TRUE;
+}
+
+static void beginWildBattle(u8 player_num, CobbleRoamer *roamer) {
+  beginBattleCommon(COBBLE_BATTLE_WILD, player_num);
+  placeBattleScene(player_num);
+  loadFighter(1, roamer->species, roamer->level,
+    cobbleMaxHealth(roamer->species, roamer->level), COBBLE_NONE);
+  setPhase(COBBLE_PHASE_COMMAND);
+  {
+    char *out = message_scratch;
+    out = appendText(out, "A WILD ");
+    out = appendText(out, cobble_species[roamer->species].name);
+    out = appendText(out, " APPEARED!");
+    *out = 0;
+    pushMessage(message_scratch);
+  }
+  sendOutPlayerLead(0);
+  takeBattleView();
+  roamer->active = FALSE;
+  playSound(SOUND_PUNCH);
+}
+
+static void beginTrainerBattle(u8 player_num, CobbleRoamer *roamer) {
+  beginBattleCommon(COBBLE_BATTLE_TRAINER, player_num);
+  placeBattleScene(player_num);
+  buildTrainerTeam(roamer->seed, roamer->level);
+  cobble_battle.npc_active = 0;
+  setPhase(COBBLE_PHASE_COMMAND);
+  pushMessage("A TRAINER WANTS TO BATTLE!");
+  sendOutNpc();
+  sendOutPlayerLead(0);
+  takeBattleView();
+  roamer->active = FALSE;
+  playSound(SOUND_PUNCH);
+}
+
+static void beginPvpBattle(u8 challenger, u8 opponent) {
+  beginBattleCommon(COBBLE_BATTLE_PVP, challenger);
+  placeBattleScene(challenger);
+  cobble_battle.side_is_player[1] = TRUE;
+  cobble_battle.side_player[1] = opponent;
+  setPhase(COBBLE_PHASE_COMMAND);
+  {
+    char *out = message_scratch;
+    out = appendText(out, "PLAYER ");
+    out = appendNumber(out, challenger + 1u);
+    out = appendText(out, " VS PLAYER ");
+    out = appendNumber(out, opponent + 1u);
+    out = appendText(out, "!");
+    *out = 0;
+    pushMessage(message_scratch);
+  }
+  sendOutPlayerLead(0);
+  sendOutPlayerLead(1);
+  takeBattleView();
+  playSound(SOUND_PUNCH);
+}
+
+/* ------------------------------------------------------------------ */
+/* Interaction.                                                             */
+/* ------------------------------------------------------------------ */
+
+/* The creature in front of a player, or COBBLE_NONE.  Distance plus a
+   generous facing cone: on one stick, demanding precise aim at a wandering
+   target is the difference between charming and annoying. */
+static u8 findRoamerTarget(u8 player_num) {
+  Player *player = &players[player_num];
+  float best = ROAM_INTERACT_RANGE * ROAM_INTERACT_RANGE;
+  u8 best_index = COBBLE_NONE;
+  u8 index;
+  float radians = player->yaw * M_DTOR;
+  float forward_x = -sinf(radians);
+  float forward_z = -cosf(radians);
+
+  for (index = 0; index < COBBLE_MAX_ROAMERS; index++) {
+    CobbleRoamer *roamer = &cobble_roamers[index];
+    float dx;
+    float dz;
+    float distance;
+
+    if (!roamer->active) {
+      continue;
+    }
+    dx = roamer->position.x - player->position.x;
+    dz = roamer->position.z - player->position.z;
+    distance = dx * dx + dz * dz;
+    if (distance > best) {
+      continue;
+    }
+    /* Anything genuinely underfoot counts however the player is facing. */
+    if (distance > (BLOCK_SIZE * 1.4f) * (BLOCK_SIZE * 1.4f) &&
+        dx * forward_x + dz * forward_z <= 0) {
+      continue;
+    }
+    best = distance;
+    best_index = index;
+  }
+  return best_index;
+}
+
+u8 cobblemonTargetRoamer(u8 player_num) {
+  return player_num < MAX_PLAYERS ? roamer_target[player_num] : COBBLE_NONE;
+}
+
+/* A player standing in front of another, for the challenge. */
+static u8 findPlayerTarget(u8 player_num) {
+  Player *player = &players[player_num];
+  float radians = player->yaw * M_DTOR;
+  float forward_x = -sinf(radians);
+  float forward_z = -cosf(radians);
+  u8 index;
+
+  for (index = 0; index < active_player_count; index++) {
+    float dx;
+    float dz;
+
+    if (index == player_num || !players[index].active) {
+      continue;
+    }
+    dx = players[index].position.x - player->position.x;
+    dz = players[index].position.z - player->position.z;
+    if (dx * dx + dz * dz < PVP_CHALLENGE_RANGE * PVP_CHALLENGE_RANGE &&
+        dx * forward_x + dz * forward_z > 0) {
+      return index;
+    }
+  }
+  return COBBLE_NONE;
+}
+
+u8 cobblemonTryInteract(u8 player_num, u8 challenge_held) {
+  u8 target;
+
+  if (!cobblemonEnabled() || cobble_battle.active) {
+    return FALSE;
+  }
+
+  /* Accepting a challenge comes first: the prompt is on screen and A is what
+     it says to press. */
+  if (pvp_target == player_num && pvp_challenger != COBBLE_NONE) {
+    u8 challenger = pvp_challenger;
+    pvp_challenger = COBBLE_NONE;
+    pvp_target = COBBLE_NONE;
+    if (cobblePartyLead(player_num) == COBBLE_NONE ||
+        cobblePartyLead(challenger) == COBBLE_NONE) {
+      return TRUE;
+    }
+    beginPvpBattle(challenger, player_num);
+    return TRUE;
+  }
+
+  target = roamer_target[player_num];
+  if (target != COBBLE_NONE) {
+    CobbleRoamer *roamer = &cobble_roamers[target];
+
+    if (roamer->kind == COBBLE_ROAMER_TRAINER) {
+      if (cobblePartyLead(player_num) == COBBLE_NONE) {
+        return TRUE;
+      }
+      beginTrainerBattle(player_num, roamer);
+      return TRUE;
+    }
+    if (cobblePartyCount(player_num) == 0) {
+      return grantStarter(player_num, roamer);
+    }
+    if (cobblePartyLead(player_num) == COBBLE_NONE) {
+      return TRUE;
+    }
+    beginWildBattle(player_num, roamer);
+    return TRUE;
+  }
+
+  /* Nothing to battle in front of them.  Z + A challenges the player they
+     are looking at instead: the chord keeps a plain A free for the block a
+     co-op partner is almost certainly standing next to. */
+  if (challenge_held) {
+    u8 other = findPlayerTarget(player_num);
+    if (other != COBBLE_NONE && cobblePartyLead(player_num) != COBBLE_NONE) {
+      pvp_challenger = player_num;
+      pvp_target = other;
+      pvp_challenge_time = 300.f;
+      return TRUE;
+    }
+  }
+  return FALSE;
+}
+
+/* ------------------------------------------------------------------ */
+/* Turn resolution.                                                         */
+/* ------------------------------------------------------------------ */
+
+static void applyDamage(u8 side, u16 amount) {
+  CobbleFighter *f = &cobble_battle.fighter[side];
+
+  if (amount >= f->hp) {
+    f->hp = 0;
+  } else {
+    f->hp = (u16) (f->hp - amount);
+  }
+  cobble_battle.hurt[side] = 14.f;
+  storeFighter(side);
+}
+
+static void healFighter(u8 side, u16 amount) {
+  CobbleFighter *f = &cobble_battle.fighter[side];
+
+  if (f->hp + amount > f->max_hp) {
+    f->hp = f->max_hp;
+  } else {
+    f->hp = (u16) (f->hp + amount);
+  }
+  storeFighter(side);
+}
+
+/*
+ * One move, start to finish: accuracy, damage, type message, side effect.
+ *
+ * Written as a single step because that is exactly what one line of the log
+ * describes.  Everything is integer; the only division that could ever see a
+ * zero is by defence, which statValue floors at four.
+ */
+static void performMove(u8 attacker, u8 defender) {
+  CobbleFighter *att = &cobble_battle.fighter[attacker];
+  CobbleFighter *def = &cobble_battle.fighter[defender];
+  u8 slot = cobble_battle.action_arg[attacker];
+  const CobbleMove *move;
+  u32 damage;
+  u8 multiplier;
+  u8 critical = FALSE;
+  u8 hits = 1;
+  u8 hit;
+  u32 total = 0;
+
+  if (slot >= att->move_count) {
+    slot = 0;
+  }
+  move = &cobble_moves[att->move[slot]];
+  if (att->pp[slot] > 0) {
+    att->pp[slot]--;
+  }
+  cobble_battle.lunge[attacker] = 16.f;
+
+  {
+    char *out = message_scratch;
+    out = appendText(out, fighterName(attacker));
+    out = appendText(out, " USED ");
+    out = appendText(out, move->name);
+    out = appendText(out, "!");
+    *out = 0;
+    pushMessage(message_scratch);
+  }
+
+  if (random(100) >= move->accuracy) {
+    pushMessage("IT MISSED!");
+    return;
+  }
+
+  if (move->power == 0) {
+    switch (move->effect) {
+      case COBBLE_EFFECT_HEAL:
+        healFighter(attacker, (u16) ((att->max_hp - att->hp + 1) / 2));
+        pushNamed(fighterName(attacker), " RECOVERED.");
+        break;
+      case COBBLE_EFFECT_BUFF_ATK:
+        if (att->attack_stage < 4) {
+          att->attack_stage++;
+        }
+        pushNamed(fighterName(attacker), "'S ATTACK ROSE!");
+        break;
+      case COBBLE_EFFECT_BUFF_DEF:
+        if (att->defense_stage < 4) {
+          att->defense_stage++;
+        }
+        pushNamed(fighterName(attacker), "'S DEFENCE ROSE!");
+        break;
+      default:
+        break;
+    }
+    return;
+  }
+
+  multiplier = typeMultiplier(move->type, def->species);
+  critical = random(move->effect == COBBLE_EFFECT_HIGH_CRIT ? 4u : 16u) == 0;
+  if (move->effect == COBBLE_EFFECT_MULTI) {
+    hits = 2;
+  }
+
+  for (hit = 0; hit < hits; hit++) {
+    u32 attack_stat = stagedStat(att->attack, att->attack_stage);
+    u32 defense_stat = critical ? def->defense :
+      stagedStat(def->defense, def->defense_stage);
+
+    if (defense_stat == 0) {
+      defense_stat = 1;
+    }
+    damage = ((2u * att->level) / 5u + 2u) * move->power;
+    damage = (damage * attack_stat) / defense_stat;
+    damage = damage / 50u + 2u;
+    /* Same-type bonus: three halves, the traditional and legible amount. */
+    if (move->type < COBBLE_TYPE_COUNT &&
+        att->species < COBBLE_SPECIES_COUNT &&
+        cobble_species[att->species].type == move->type) {
+      damage = (damage * 3u) / 2u;
+    }
+    damage = (damage * multiplier) / 4u;
+    if (critical) {
+      damage *= 2u;
+    }
+    /* 85..100 percent, so identical turns are not identical. */
+    damage = (damage * (85u + random(16))) / 100u;
+    if (damage == 0) {
+      damage = 1;
+    }
+    total += damage;
+    applyDamage(defender, (u16) damage);
+    if (def->hp == 0) {
+      break;
+    }
+  }
+
+  if (hits > 1) {
+    pushMessage("IT HIT TWICE!");
+  }
+  if (critical) {
+    pushMessage("A CRITICAL HIT!");
+  }
+  if (multiplier > 4) {
+    pushMessage("IT IS SUPER EFFECTIVE!");
+  } else if (multiplier < 4) {
+    pushMessage("IT IS NOT VERY EFFECTIVE.");
+  }
+
+  if (move->effect == COBBLE_EFFECT_DRAIN) {
+    healFighter(attacker, (u16) ((total + 1) / 2));
+    pushNamed(fighterName(attacker), " DRAINED HEALTH.");
+  } else if (move->effect == COBBLE_EFFECT_RECOIL) {
+    applyDamage(attacker, (u16) ((total + 3) / 4));
+    pushNamed(fighterName(attacker), " TOOK RECOIL.");
+  }
+}
+
+/*
+ * The opponent's choice.
+ *
+ * Trainers score every move they know by what it would actually do -- power
+ * times effectiveness, with a bonus for the one that would finish the fight
+ * -- and take the best.  Wild creatures roll instead.  That difference is
+ * the entire "trainers are harder" design, and it costs four multiplies.
+ */
+static u8 chooseNpcMove(void) {
+  CobbleFighter *npc = &cobble_battle.fighter[1];
+  CobbleFighter *foe = &cobble_battle.fighter[0];
+  u8 best = 0;
+  u32 best_score = 0;
+  u8 index;
+
+  if (cobble_battle.kind == COBBLE_BATTLE_WILD || random(5) == 0) {
+    return (u8) random(npc->move_count);
+  }
+  for (index = 0; index < npc->move_count; index++) {
+    const CobbleMove *move = &cobble_moves[npc->move[index]];
+    u32 score;
+
+    if (npc->pp[index] == 0) {
+      continue;
+    }
+    if (move->power == 0) {
+      /* Support only when it would plainly help: healing while hurt, or
+         buffing early while there is time to use it. */
+      score = (move->effect == COBBLE_EFFECT_HEAL &&
+        npc->hp * 3u < npc->max_hp) ? 90u : 25u;
+    } else {
+      score = (u32) move->power * typeMultiplier(move->type, foe->species);
+      score = (score * move->accuracy) / 100u;
+      if (move->type < COBBLE_TYPE_COUNT &&
+          cobble_species[npc->species].type == move->type) {
+        score = (score * 3u) / 2u;
+      }
+    }
+    if (score > best_score) {
+      best_score = score;
+      best = index;
+    }
+  }
+  return best;
+}
+
+static u8 firstAbleSlot(u8 player_num, u8 except) {
+  u8 index;
+
+  for (index = 0; index < COBBLE_PARTY_SIZE; index++) {
+    CobbleMon *mon = &cobble_party[player_num][index];
+    if (index != except && mon->species != COBBLE_NONE && mon->hp > 0) {
+      return index;
+    }
+  }
+  return COBBLE_NONE;
+}
+
+static void awardExperience(u8 side) {
+  u8 player_num = cobble_battle.side_player[side];
+  CobbleFighter *winner = &cobble_battle.fighter[side];
+  CobbleFighter *loser = &cobble_battle.fighter[side ^ 1];
+  CobbleMon *mon;
+  u32 gain;
+
+  if (!cobble_battle.side_is_player[side] ||
+      winner->party_slot >= COBBLE_PARTY_SIZE) {
+    return;
+  }
+  mon = &cobble_party[player_num][winner->party_slot];
+  if (mon->level >= COBBLE_MAX_LEVEL) {
+    return;
+  }
+  gain = ((u32) cobble_species[loser->species].xp_yield * loser->level) / 4u;
+  if (cobble_battle.kind != COBBLE_BATTLE_WILD) {
+    /* A team that fights back is worth more than one that wandered into you. */
+    gain = (gain * 3u) / 2u;
+  }
+  if (gain == 0) {
+    gain = 1;
+  }
+  {
+    char *out = message_scratch;
+    out = appendText(out, cobble_species[mon->species].name);
+    out = appendText(out, " GAINED ");
+    out = appendNumber(out, gain);
+    out = appendText(out, " XP.");
+    *out = 0;
+    pushMessage(message_scratch);
+  }
+  mon->xp = (u16) (mon->xp + gain);
+
+  /* Level ups, then evolution.  Both are announced; a change the player did
+     not see happen is a change they will assume is a bug. */
+  while (mon->level < COBBLE_MAX_LEVEL &&
+      mon->xp >= cobbleXpForLevel(mon->level)) {
+    u16 old_max = cobbleMaxHealth(mon->species, mon->level);
+    mon->xp = (u16) (mon->xp - cobbleXpForLevel(mon->level));
+    mon->level++;
+    /* A level up heals by the health it added, so growing stronger is never
+       also a reason to have to stop and wait. */
+    mon->hp = (u16) (mon->hp + cobbleMaxHealth(mon->species, mon->level) -
+      old_max);
+    {
+      char *out = message_scratch;
+      out = appendText(out, cobble_species[mon->species].name);
+      out = appendText(out, " REACHED LEVEL ");
+      out = appendNumber(out, mon->level);
+      out = appendText(out, "!");
+      *out = 0;
+      pushMessage(message_scratch);
+    }
+    if (cobble_species[mon->species].evolves_to != COBBLE_NONE &&
+        mon->level >= cobble_species[mon->species].evolve_level) {
+      u8 from = mon->species;
+      u8 to = cobble_species[from].evolves_to;
+      u16 missing = (u16) (cobbleMaxHealth(from, mon->level) - mon->hp);
+
+      mon->species = to;
+      mon->hp = (u16) (cobbleMaxHealth(to, mon->level) - missing);
+      {
+        char *out = message_scratch;
+        out = appendText(out, cobble_species[from].name);
+        out = appendText(out, " BECAME ");
+        out = appendText(out, cobble_species[to].name);
+        out = appendText(out, "!");
+        *out = 0;
+        pushMessage(message_scratch);
+      }
+      playSound(SOUND_PICKUP);
+    }
+  }
+  /* Reload the fighter so the panel and the next turn use the new numbers. */
+  loadFighter(side, mon->species, mon->level, mon->hp, winner->party_slot);
+}
+
+static void endBattle(const char *line) {
+  if (line != NULL) {
+    pushMessage(line);
+  }
+  cobble_battle.finished = TRUE;
+  setPhase(COBBLE_PHASE_END);
+}
+
+/* Every party member back to one health, so a loss costs time rather than
+   the save.  Regeneration does the rest while the player walks home. */
+static void reviveParty(u8 player_num) {
+  u8 index;
+
+  for (index = 0; index < COBBLE_PARTY_SIZE; index++) {
+    CobbleMon *mon = &cobble_party[player_num][index];
+    if (mon->species != COBBLE_NONE && mon->hp == 0) {
+      mon->hp = 1;
+    }
+  }
+}
+
+static void attemptCatch(void) {
+  CobbleFighter *target = &cobble_battle.fighter[1];
+  u32 odds;
+  u8 shakes;
+
+  /*
+   * Weakening matters and level matters, in that order.  At full health the
+   * gel is worth about a third of the species' rate; at a sliver it is worth
+   * all of it, less a penalty for a creature far above the thrower's own.
+   */
+  odds = ((u32) cobble_species[target->species].catch_rate *
+    (3u * target->max_hp - 2u * target->hp)) / (3u * target->max_hp);
+  if (target->level > 20) {
+    odds = (odds * 20u) / target->level;
+  }
+  if (odds > 250u) {
+    odds = 250u;
+  }
+
+  for (shakes = 0; shakes < 3; shakes++) {
+    if (random(256) >= odds) {
+      break;
+    }
+  }
+  cobble_battle.catch_shakes = shakes;
+  cobble_battle.catch_result = shakes >= 3;
+  cobble_battle.catch_time = 0;
+  setPhase(COBBLE_PHASE_CATCH);
+}
+
+/*
+ * One atomic step of the turn being resolved, run each time the log drains.
+ *
+ * The indices are a script, not a state machine with transitions: 0 and 2 are
+ * the two sides acting in speed order, 1 and 3 check whether that killed
+ * anybody, and 4 closes the turn.  Keeping it linear is what makes "who acts
+ * next" answerable by reading four lines.
+ */
+static void resolveStep(void) {
+  u8 first = cobble_battle.first_side;
+  u8 second = (u8) (first ^ 1);
+  u8 acting;
+  u8 index = cobble_battle.resolve_index;
+
+  cobble_battle.resolve_index++;
+  switch (index) {
+    case 0:
+    case 2:
+      acting = index == 0 ? first : second;
+      if (cobble_battle.fighter[acting].hp == 0 ||
+          cobble_battle.fighter[acting ^ 1].hp == 0) {
+        return;
+      }
+      if (cobble_battle.action[acting] == COBBLE_ACTION_MOVE) {
+        performMove(acting, (u8) (acting ^ 1));
+      }
+      return;
+
+    case 1:
+    case 3: {
+      u8 fainted = cobble_battle.fighter[0].hp == 0 ? 0 :
+        (cobble_battle.fighter[1].hp == 0 ? 1 : COBBLE_NONE);
+
+      if (fainted == COBBLE_NONE) {
+        return;
+      }
+      cobble_battle.faint[fainted] = 1.f;
+      pushNamed(fighterName(fainted), " FAINTED!");
+      /* Skip straight to the end of the turn; nothing else happens after a
+         knockout. */
+      cobble_battle.resolve_index = 4;
+      return;
+    }
+
+    default:
+      break;
+  }
+
+  /* End of turn.  Deal with a knockout, or hand control back. */
+  if (cobble_battle.fighter[1].hp == 0) {
+    awardExperience(0);
+    if (cobble_battle.kind == COBBLE_BATTLE_TRAINER) {
+      cobble_battle.npc_party[cobble_battle.npc_active].hp = 0;
+      cobble_battle.npc_active++;
+      if (cobble_battle.npc_active < cobble_battle.npc_party_size) {
+        sendOutNpc();
+        cobble_battle.resolve_index = 0;
+        cobble_battle.acting_side = 0;
+        setPhase(COBBLE_PHASE_COMMAND);
+        resetBattleCursors();
+        return;
+      }
+      endBattle("THE TRAINER IS OUT OF CREATURES!");
+      return;
+    }
+    if (cobble_battle.kind == COBBLE_BATTLE_PVP) {
+      u8 replacement = firstAbleSlot(cobble_battle.side_player[1],
+        COBBLE_PARTY_SIZE);
+      if (replacement != COBBLE_NONE) {
+        CobbleMon *mon = &cobble_party[cobble_battle.side_player[1]][replacement];
+        loadFighter(1, mon->species, mon->level, mon->hp, replacement);
+        pushNamed(cobble_species[mon->species].name, " GO!");
+        cobble_battle.resolve_index = 0;
+        cobble_battle.acting_side = 0;
+        setPhase(COBBLE_PHASE_COMMAND);
+        resetBattleCursors();
+        return;
+      }
+      reviveParty(cobble_battle.side_player[1]);
+      endBattle("PLAYER ONE WINS!");
+      return;
+    }
+    endBattle(NULL);
+    return;
+  }
+
+  if (cobble_battle.fighter[0].hp == 0) {
+    u8 player_num = cobble_battle.side_player[0];
+    u8 replacement = firstAbleSlot(player_num, COBBLE_PARTY_SIZE);
+
+    if (replacement != COBBLE_NONE) {
+      CobbleMon *mon = &cobble_party[player_num][replacement];
+      loadFighter(0, mon->species, mon->level, mon->hp, replacement);
+      pushNamed(cobble_species[mon->species].name, " GO!");
+      cobble_battle.resolve_index = 0;
+      cobble_battle.acting_side = 0;
+      setPhase(COBBLE_PHASE_COMMAND);
+      resetBattleCursors();
+      return;
+    }
+    reviveParty(player_num);
+    endBattle("YOUR TEAM CANNOT FIGHT ON.");
+    return;
+  }
+
+  cobble_battle.resolve_index = 0;
+  cobble_battle.acting_side = 0;
+  setPhase(COBBLE_PHASE_COMMAND);
+  resetBattleCursors();
+}
+
+/* Both sides have committed.  Decide the order and start the script. */
+static void beginResolve(void) {
+  u16 speed_a = cobble_battle.fighter[0].speed;
+  u16 speed_b = cobble_battle.fighter[1].speed;
+
+  /* Running and items resolve before anything else, exactly as a player
+     expects: fleeing after being hit is not fleeing. */
+  if (cobble_battle.action[0] == COBBLE_ACTION_RUN) {
+    u32 chance = 40u + (speed_a > speed_b ? 40u : 10u) +
+      cobble_battle.escape_attempts * 15u;
+    cobble_battle.escape_attempts++;
+    if (cobble_battle.kind != COBBLE_BATTLE_WILD) {
+      pushMessage("NO RUNNING FROM A TRAINER!");
+    } else if (random(100) < chance) {
+      endBattle("GOT AWAY SAFELY!");
+      return;
+    } else {
+      pushMessage("COULD NOT GET AWAY!");
+    }
+    cobble_battle.action[0] = COBBLE_ACTION_NONE;
+  }
+
+  cobble_battle.first_side = speed_a > speed_b ? 0 :
+    (speed_b > speed_a ? 1 : (u8) random(2));
+  cobble_battle.resolve_index = 0;
+  /* The panels go back to the challenger's point of view for the turn
+     itself.  In a two-player battle they would otherwise stay flipped to
+     whoever committed last, so the same health bar would change sides
+     halfway through reading about the hit that emptied it. */
+  cobble_battle.acting_side = 0;
+  setPhase(COBBLE_PHASE_RESOLVE);
+}
+
+/* The opponent commits, then the turn starts.  A PvP battle waits for the
+   second player instead. */
+static void commitSide(u8 side) {
+  if (side == 0 && cobble_battle.kind == COBBLE_BATTLE_PVP) {
+    cobble_battle.acting_side = 1;
+    resetBattleCursors();
+    setPhase(COBBLE_PHASE_COMMAND);
+    return;
+  }
+  if (!cobble_battle.side_is_player[1]) {
+    cobble_battle.action[1] = COBBLE_ACTION_MOVE;
+    cobble_battle.action_arg[1] = chooseNpcMove();
+  }
+  beginResolve();
+}
+
+/* ------------------------------------------------------------------ */
+/* Battle input.                                                            */
+/* ------------------------------------------------------------------ */
+
+/* Stick and D-pad, with the same edge-triggered feel the rest of the game's
+   menus have. */
+#define NAV_REPEAT_DELAY 14
+
+static u8 navigationEdge(NUContData *cont, u8 *held, s8 *dx, s8 *dy) {
+  static u8 repeat;
+  u8 direction = 0;
+
+  *dx = 0;
+  *dy = 0;
+  if (cont->stick_x > 45 || (cont->trigger & R_JPAD)) {
+    direction = 1;
+    *dx = 1;
+  } else if (cont->stick_x < -45 || (cont->trigger & L_JPAD)) {
+    direction = 2;
+    *dx = -1;
+  } else if (cont->stick_y > 45 || (cont->trigger & U_JPAD)) {
+    direction = 3;
+    *dy = -1;
+  } else if (cont->stick_y < -45 || (cont->trigger & D_JPAD)) {
+    direction = 4;
+    *dy = 1;
+  }
+  if (direction == 0) {
+    *held = 0;
+    repeat = 0;
+    return FALSE;
+  }
+  if (*held == direction) {
+    if (++repeat < NAV_REPEAT_DELAY) {
+      return FALSE;
+    }
+    repeat = 0;
+    return TRUE;
+  }
+  *held = direction;
+  repeat = 0;
+  return TRUE;
+}
+
+static u8 battleNavigationHeld;
+
+static u8 usableBagItem(Player *player, u8 slot_index) {
+  return slot_index == 0 ? SLIME_GEL : APPLE;
+}
+
+static u8 countInventory(Player *player, u8 item) {
+  u8 index;
+  u16 total = 0;
+
+  for (index = 0; index < INVENTORY_SIZE; index++) {
+    if (player->inventory[index].item == item) {
+      total = (u16) (total + player->inventory[index].count);
+    }
+  }
+  return total > 255 ? 255 : (u8) total;
+}
+
+static u8 consumeInventory(Player *player, u8 item) {
+  u8 index;
+
+  for (index = 0; index < INVENTORY_SIZE; index++) {
+    if (player->inventory[index].item == item &&
+        player->inventory[index].count > 0) {
+      player->inventory[index].count--;
+      if (player->inventory[index].count == 0) {
+        player->inventory[index].item = 0;
+      }
+      return TRUE;
+    }
+  }
+  return FALSE;
+}
+
+void cobblemonBattleInput(NUContData *pads) {
+  u8 side = cobble_battle.acting_side;
+  u8 player_num = cobble_battle.side_player[side];
+  NUContData *cont;
+  s8 dx;
+  s8 dy;
+  u8 moved;
+
+  /* Any player at the couch may push the log along.  Making the reader wait
+     for whoever happens to own the current turn is the kind of rule that only
+     makes sense to the person who wrote it. */
+  if (cobble_battle.phase == COBBLE_PHASE_MESSAGE) {
+    u8 index;
+
+    for (index = 0; index < active_player_count; index++) {
+      if (!(pads[index].trigger & (A_BUTTON | START_BUTTON | B_BUTTON))) {
+        continue;
+      }
+      /* First press finishes the line, second advances it: skipping a line
+         unread is the one thing a mashing player must not be able to do. */
+      if (cobble_battle.message_reveal < (u16) (COBBLE_MESSAGE_LENGTH * 4)) {
+        cobble_battle.message_reveal = COBBLE_MESSAGE_LENGTH * 4;
+      } else {
+        message_hold = MESSAGE_AUTO_ADVANCE;
+      }
+      break;
+    }
+    return;
+  }
+
+  if (!cobble_battle.side_is_player[side] || player_num >= MAX_PLAYERS) {
+    return;
+  }
+  cont = &pads[player_num];
+  moved = navigationEdge(cont, &battleNavigationHeld, &dx, &dy);
+
+  switch (cobble_battle.phase) {
+
+    case COBBLE_PHASE_COMMAND:
+      if (moved) {
+        u8 cursor = cobble_battle.command_cursor;
+        if (dx != 0) {
+          cursor = (u8) (cursor ^ 1);
+        } else if (dy != 0) {
+          cursor = (u8) (cursor ^ 2);
+        }
+        cobble_battle.command_cursor = cursor;
+      }
+      if (cont->trigger & A_BUTTON) {
+        switch (cobble_battle.command_cursor) {
+          case 0:
+            cobble_battle.phase = COBBLE_PHASE_MOVE;
+            cobble_battle.move_cursor = 0;
+            break;
+          case 1:
+            cobble_battle.phase = COBBLE_PHASE_TEAM;
+            cobble_battle.team_cursor = 0;
+            break;
+          case 2:
+            cobble_battle.phase = COBBLE_PHASE_BAG;
+            cobble_battle.bag_cursor = 0;
+            break;
+          default:
+            cobble_battle.action[side] = COBBLE_ACTION_RUN;
+            commitSide(side);
+            break;
+        }
+      }
+      return;
+
+    case COBBLE_PHASE_MOVE: {
+      CobbleFighter *f = &cobble_battle.fighter[side];
+
+      if (moved && f->move_count > 0) {
+        u8 cursor = cobble_battle.move_cursor;
+        if (dx != 0) {
+          cursor = (u8) (cursor ^ 1);
+        } else if (dy != 0) {
+          cursor = (u8) (cursor ^ 2);
+        }
+        if (cursor < f->move_count) {
+          cobble_battle.move_cursor = cursor;
+        }
+      }
+      if (cont->trigger & B_BUTTON) {
+        cobble_battle.phase = COBBLE_PHASE_COMMAND;
+        return;
+      }
+      if (cont->trigger & A_BUTTON) {
+        if (f->pp[cobble_battle.move_cursor] == 0) {
+          pushMessage("NO POWER LEFT FOR THAT MOVE.");
+          return;
+        }
+        cobble_battle.action[side] = COBBLE_ACTION_MOVE;
+        cobble_battle.action_arg[side] = cobble_battle.move_cursor;
+        commitSide(side);
+      }
+      return;
+    }
+
+    case COBBLE_PHASE_TEAM:
+      if (moved && dy != 0) {
+        cobble_battle.team_cursor = (u8) ((cobble_battle.team_cursor +
+          (dy > 0 ? 1 : COBBLE_PARTY_SIZE - 1)) % COBBLE_PARTY_SIZE);
+      }
+      if (cont->trigger & B_BUTTON) {
+        cobble_battle.phase = COBBLE_PHASE_COMMAND;
+        return;
+      }
+      if (cont->trigger & A_BUTTON) {
+        CobbleMon *mon = &cobble_party[player_num][cobble_battle.team_cursor];
+        if (mon->species == COBBLE_NONE || mon->hp == 0 ||
+            cobble_battle.team_cursor ==
+              cobble_battle.fighter[side].party_slot) {
+          return;
+        }
+        storeFighter(side);
+        pushNamed(fighterName(side), ", COME BACK!");
+        loadFighter(side, mon->species, mon->level, mon->hp,
+          cobble_battle.team_cursor);
+        pushNamed(cobble_species[mon->species].name, " GO!");
+        /* Switching gives up the turn, which is what makes it a decision. */
+        cobble_battle.action[side] = COBBLE_ACTION_NONE;
+        commitSide(side);
+      }
+      return;
+
+    case COBBLE_PHASE_BAG:
+      if (moved && dy != 0) {
+        cobble_battle.bag_cursor = (u8) (cobble_battle.bag_cursor ^ 1);
+      }
+      if (cont->trigger & B_BUTTON) {
+        cobble_battle.phase = COBBLE_PHASE_COMMAND;
+        return;
+      }
+      if (cont->trigger & A_BUTTON) {
+        Player *player = &players[player_num];
+        u8 item = usableBagItem(player, cobble_battle.bag_cursor);
+
+        if (countInventory(player, item) == 0) {
+          return;
+        }
+        if (item == SLIME_GEL) {
+          if (cobble_battle.kind != COBBLE_BATTLE_WILD) {
+            setPhase(COBBLE_PHASE_COMMAND);
+            pushMessage("THAT IS NOT YOURS TO CATCH!");
+            return;
+          }
+          if (cobblePartyCount(player_num) >= COBBLE_PARTY_SIZE) {
+            setPhase(COBBLE_PHASE_COMMAND);
+            pushMessage("YOUR TEAM IS FULL.");
+            return;
+          }
+          consumeInventory(player, item);
+          pushMessage("YOU THREW SOME GEL!");
+          attemptCatch();
+          return;
+        }
+        consumeInventory(player, item);
+        healFighter(side, 20);
+        pushNamed(fighterName(side), " ATE AN APPLE.");
+        cobble_battle.action[side] = COBBLE_ACTION_NONE;
+        commitSide(side);
+      }
+      return;
+
+    default:
+      return;
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* Per-frame step.                                                          */
+/* ------------------------------------------------------------------ */
+
+static void stepMessages(float delta) {
+  if (cobble_battle.message_count == 0) {
+    /* The queue is empty: go where the phase that queued it wanted to go. */
+    if (cobble_battle.phase == COBBLE_PHASE_MESSAGE) {
+      cobble_battle.phase = cobble_battle.next_phase;
+      if (cobble_battle.phase == COBBLE_PHASE_MESSAGE) {
+        cobble_battle.phase = COBBLE_PHASE_COMMAND;
+      }
+    }
+    return;
+  }
+  cobble_battle.message_reveal =
+    (u16) (cobble_battle.message_reveal + MESSAGE_REVEAL_RATE);
+  if (cobble_battle.message_reveal < (u16) (COBBLE_MESSAGE_LENGTH * 4)) {
+    return;
+  }
+  message_hold += delta;
+  if (message_hold < MESSAGE_AUTO_ADVANCE) {
+    return;
+  }
+  message_hold = 0;
+  cobble_battle.message_reveal = 0;
+  cobble_battle.message_head =
+    (u8) ((cobble_battle.message_head + 1) % COBBLE_MESSAGE_QUEUE);
+  cobble_battle.message_count--;
+}
+
+static void stepCatch(float delta) {
+  cobble_battle.catch_time += delta;
+  /* One shake every twenty frames, then the verdict.  The wobble is the
+     whole drama of a catch and it costs a counter. */
+  if (cobble_battle.catch_time < 20.f * (cobble_battle.catch_shakes + 1)) {
+    return;
+  }
+  if (cobble_battle.catch_result) {
+    u8 player_num = cobble_battle.side_player[0];
+    CobbleFighter *target = &cobble_battle.fighter[1];
+
+    addToParty(player_num, target->species, target->level);
+    playSound(SOUND_PICKUP);
+    pushNamed(cobble_species[target->species].name, " WAS CAUGHT!");
+    endBattle(NULL);
+    return;
+  }
+  pushMessage("IT BROKE FREE!");
+  /* A failed throw still costs the turn: the creature gets its move. */
+  cobble_battle.action[0] = COBBLE_ACTION_NONE;
+  commitSide(0);
+}
+
+static void stepBattle(float delta) {
+  u8 index;
+
+  cobble_battle.scene_time += delta;
+  for (index = 0; index < 2; index++) {
+    if (cobble_battle.lunge[index] > 0) {
+      cobble_battle.lunge[index] -= delta;
+    }
+    if (cobble_battle.hurt[index] > 0) {
+      cobble_battle.hurt[index] -= delta;
+    }
+    if (cobble_battle.faint[index] > 0 && cobble_battle.faint[index] < 30.f) {
+      cobble_battle.faint[index] += delta;
+    }
+  }
+
+  /*
+   * The log always goes first, and nothing else runs until it is empty.
+   * That single rule is what keeps the battle readable: no turn can advance
+   * past a line the player has not been shown, however many events one move
+   * produced.
+   */
+  stepMessages(delta);
+  if (cobble_battle.message_count > 0) {
+    return;
+  }
+
+  switch (cobble_battle.phase) {
+    case COBBLE_PHASE_CATCH:
+      stepCatch(delta);
+      break;
+    case COBBLE_PHASE_RESOLVE:
+      resolveStep();
+      break;
+    case COBBLE_PHASE_END:
+      /* Everything the battle changed is already written back through
+         storeFighter and the party record; closing it is a flag and the
+         view the players lent it. */
+      releaseBattleView();
+      cobble_battle.active = FALSE;
+      cobble_battle.phase = COBBLE_PHASE_NONE;
+      break;
+    default:
+      break;
+  }
+}
+
+void cobblemonUpdate(float delta) {
+  u8 index;
+
+  if (!cobblemonEnabled()) {
+    return;
+  }
+
+  if (cobble_battle.active) {
+    stepBattle(delta);
+    return;
+  }
+
+  /* Party health comes back on its own.  There is nowhere to rest in a world
+     the player may be a thousand blocks from spawn in, and a collection game
+     that strands you is a collection game you stop playing. */
+  party_regen_time += delta;
+  if (party_regen_time >= PARTY_REGEN_INTERVAL) {
+    u8 player_num;
+
+    party_regen_time = 0;
+    for (player_num = 0; player_num < MAX_PLAYERS; player_num++) {
+      for (index = 0; index < COBBLE_PARTY_SIZE; index++) {
+        CobbleMon *mon = &cobble_party[player_num][index];
+        u16 max_hp;
+        if (mon->species == COBBLE_NONE) {
+          continue;
+        }
+        max_hp = cobbleMaxHealth(mon->species, mon->level);
+        if (mon->hp < max_hp) {
+          mon->hp++;
+        }
+      }
+    }
+  }
+
+  if (pvp_challenger != COBBLE_NONE) {
+    pvp_challenge_time -= delta;
+    if (pvp_challenge_time <= 0) {
+      pvp_challenger = COBBLE_NONE;
+      pvp_target = COBBLE_NONE;
+    }
+  }
+
+  for (index = 0; index < COBBLE_MAX_ROAMERS; index++) {
+    if (cobble_roamers[index].active) {
+      updateRoamer(&cobble_roamers[index], delta);
+    }
+  }
+
+  roamer_spawn_time -= delta;
+  if (roamer_spawn_time <= 0) {
+    roamer_spawn_time = trySpawnRoamer() ? ROAM_SPAWN_DELAY :
+      ROAM_FAILED_SPAWN_DELAY;
+  }
+
+  /* Refresh what each player could act on, once, so the prompt the HUD draws
+     and the creature the A button takes are the same creature. */
+  for (index = 0; index < MAX_PLAYERS; index++) {
+    roamer_target[index] = index < active_player_count && players[index].active ?
+      findRoamerTarget(index) : COBBLE_NONE;
+  }
+
+  /* An aggressive creature that has closed the distance starts the fight
+     itself; the player still had the whole approach to walk away. */
+  for (index = 0; index < COBBLE_MAX_ROAMERS; index++) {
+    CobbleRoamer *roamer = &cobble_roamers[index];
+    u8 player_num;
+
+    if (!roamer->active || roamer->state != ROAM_APPROACH ||
+        roamer->kind != COBBLE_ROAMER_WILD) {
+      continue;
+    }
+    for (player_num = 0; player_num < active_player_count; player_num++) {
+      float dx;
+      float dz;
+      if (!players[player_num].active ||
+          cobblePartyLead(player_num) == COBBLE_NONE) {
+        continue;
+      }
+      dx = players[player_num].position.x - roamer->position.x;
+      dz = players[player_num].position.z - roamer->position.z;
+      if (dx * dx + dz * dz < ROAM_AGGRO_RANGE * ROAM_AGGRO_RANGE) {
+        beginWildBattle(player_num, roamer);
+        return;
+      }
+    }
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* Persistence.                                                             */
+/* ------------------------------------------------------------------ */
+
+/*
+ * The party as a flat blob.
+ *
+ * Deliberately not called from storage.c yet.  Saves still write the original
+ * fixed footprint and are refused away from spawn, and the per-chunk diff
+ * format that fixes that will move every offset in the file -- adding a
+ * section to the format twice is how save formats acquire the bug that eats
+ * worlds.  The blob is ready for whichever version bump lands first; the two
+ * lines it needs are in docs/cobblemon.md.
+ */
+u32 cobblemonSaveSize(void) {
+  return (u32) (MAX_PLAYERS * COBBLE_PARTY_SIZE * 6);
+}
+
+void cobblemonSaveBlob(u8 *out) {
+  u8 player_num;
+  u8 index;
+
+  for (player_num = 0; player_num < MAX_PLAYERS; player_num++) {
+    for (index = 0; index < COBBLE_PARTY_SIZE; index++) {
+      CobbleMon *mon = &cobble_party[player_num][index];
+      *out++ = mon->species;
+      *out++ = mon->level;
+      *out++ = (u8) (mon->xp >> 8);
+      *out++ = (u8) (mon->xp & 0xFF);
+      *out++ = (u8) (mon->hp >> 8);
+      *out++ = (u8) (mon->hp & 0xFF);
+    }
+  }
+}
+
+void cobblemonLoadBlob(const u8 *in, u32 length) {
+  u8 player_num;
+  u8 index;
+
+  if (length < cobblemonSaveSize()) {
+    return;
+  }
+  for (player_num = 0; player_num < MAX_PLAYERS; player_num++) {
+    for (index = 0; index < COBBLE_PARTY_SIZE; index++) {
+      CobbleMon *mon = &cobble_party[player_num][index];
+      u8 species = *in++;
+      u8 level = *in++;
+      u16 xp = (u16) (*in++ << 8);
+      xp = (u16) (xp | *in++);
+      mon->hp = (u16) (*in++ << 8);
+      mon->hp = (u16) (mon->hp | *in++);
+      /* A species or level outside the tables means a file from a build with
+         a different roster.  Drop that slot rather than index off the end of
+         cobble_species with it. */
+      if (species >= COBBLE_SPECIES_COUNT || level == 0 ||
+          level > COBBLE_MAX_LEVEL) {
+        mon->species = COBBLE_NONE;
+        mon->level = 0;
+        mon->xp = 0;
+        mon->hp = 0;
+        continue;
+      }
+      mon->species = species;
+      mon->level = level;
+      mon->xp = xp;
+      if (mon->hp > cobbleMaxHealth(species, level)) {
+        mon->hp = cobbleMaxHealth(species, level);
+      }
+    }
+  }
+}

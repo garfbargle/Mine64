@@ -6,6 +6,7 @@
 #include "player.h"
 #include "geometry.h"
 #include "graphics.h"
+#include "cobblemon.h"
 #include "items.h"
 #include "mobs.h"
 #include "storage.h"
@@ -94,28 +95,39 @@
 #define REBASE_SANITY_LIMIT 100000
 
 static u8 world_job_stage = WORLD_JOB_IDLE;
-/* Which slot the running preview is for.  The cursor can move again while a
-   world is still building, and the finished preview must not be mistaken for
-   the slot now highlighted. */
+/* Which slot the running preview is for. */
 static u8 world_job_world;
+/*
+ * The choices the running build is making a world out of.  The player can
+ * move the cursor, pick a different terrain shape or reroll the seed while
+ * it runs, and the moment they do, this build is producing terrain nobody
+ * asked for -- so it is abandoned rather than finished.  Running it out
+ * first used to cost the whole of a fifteen-second generation before the one
+ * the player actually wanted could even start.
+ */
+static u8 world_job_token;
 /* Slicing makes a world arrive smoothly but not faster -- it is still seconds
-   of noise sampling.  Scrolling past a slot should not pay for it, so wait for
-   the cursor to settle before committing to a build. */
+   of noise sampling.  Flicking through slots or shapes should not pay for it,
+   so wait for the choice to settle before committing to a build. */
 #define WORLD_PREVIEW_SETTLE_FRAMES 12
 static u8 world_preview_settle;
-static u8 world_preview_last_world = 0xFF;
+static u8 world_preview_last_token;
 /* The bar only ever moves forwards within one job; see worldJobProgress. */
 static u8 world_job_progress_floor;
 /* Where this job's mesh stage takes over the bar, from BAR_SHARE. */
 static u8 world_job_mesh_start;
 
 static u8 worldGameBuildRequested() {
-  return (current_screen == MENU || current_screen == WORLD_NAMING) &&
-    menuGameRequested();
+  return (current_screen == MENU || current_screen == WORLD_SETUP ||
+    current_screen == WORLD_NAMING) && menuGameRequested();
 }
 
+/* The setup card builds its own previews: every row on it changes the world
+   standing beside it, which is the only way to judge a choice before making
+   it. */
 static u8 worldPreviewBuildRequested() {
-  return current_screen == MENU && menuPreviewRequested();
+  return (current_screen == MENU || current_screen == WORLD_SETUP) &&
+    menuPreviewRequested();
 }
 
 u8 worldJobActive() {
@@ -147,13 +159,13 @@ u8 worldJobProgress() {
   return progress;
 }
 
-/* TRUE once the highlighted slot has held still long enough to be worth
+/* TRUE once the choice on screen has held still long enough to be worth
    generating.  Entering a world is never delayed by this. */
-static u8 previewSelectionSettled() {
-  u8 selected = menuSelectedWorld();
+static u8 previewRequestSettled() {
+  u8 token = menuPreviewToken();
 
-  if (selected != world_preview_last_world) {
-    world_preview_last_world = selected;
+  if (token != world_preview_last_token) {
+    world_preview_last_token = token;
     world_preview_settle = 0;
     return FALSE;
   }
@@ -162,6 +174,28 @@ static u8 previewSelectionSettled() {
     return FALSE;
   }
   return TRUE;
+}
+
+/*
+ * Abandon the running build.
+ *
+ * Every stage can be dropped where it stands.  A partial load or generation
+ * has only written window_blocks, which nothing on screen reads -- the mesh
+ * the RSP is walking was baked from the previous world -- and the next build
+ * claims the extent afresh.  A partial mesh is staged behind its own
+ * generation, which the allocator takes back.  Nothing here may touch the
+ * live pointer set, and nothing does.
+ */
+static void cancelWorldJob() {
+  if (world_job_stage == WORLD_JOB_LOAD) {
+    cancelLoadGame();
+  } else if (world_job_stage == WORLD_JOB_GENERATE) {
+    cancelWorldGeneration();
+  } else if (world_job_stage == WORLD_JOB_MESH) {
+    cancelWorldMeshBuild();
+  }
+  world_job_stage = WORLD_JOB_IDLE;
+  world_job_progress_floor = 0;
 }
 
 /*
@@ -179,6 +213,7 @@ static void beginWorldMeshStage(u8 place_players) {
   }
   initDroppedItems();
   initMobs();
+  initCobblemon();
   initGeometry();
   world_job_stage = WORLD_JOB_MESH;
   beginWorldMeshBuild();
@@ -200,13 +235,14 @@ static void applyLoadStatus(u8 status) {
     beginWorldMeshStage(FALSE);
     return;
   }
-  beginWorldGeneration();
+  beginWorldGeneration(menuPendingSeed());
   world_job_mesh_start = BAR_SHARE(WORLD_GEN_STEPS);
   world_job_stage = WORLD_JOB_GENERATE;
 }
 
 static void beginWorldJob() {
   world_job_progress_floor = 0;
+  world_job_token = menuPreviewToken();
 
   /* The title menu is also a world picker.  Preparing the highlighted slot
      gives the renderer a real world to orbit rather than a background image. */
@@ -221,7 +257,10 @@ static void beginWorldJob() {
     world_job_mesh_start = BAR_SHARE(WORLD_LOAD_STEPS);
     applyLoadStatus(beginLoadGame());
   } else {
-    beginWorldGeneration();
+    /* An empty slot is a fresh world made from the setup card's choices --
+       the mask the generator reads is already live, and the seed is the one
+       the card is showing the player. */
+    beginWorldGeneration(menuPendingSeed());
     world_job_mesh_start = BAR_SHARE(WORLD_GEN_STEPS);
     world_job_stage = WORLD_JOB_GENERATE;
   }
@@ -250,13 +289,8 @@ static void stepWorldJob() {
     }
     world_incomplete_message = !worldMeshBuildComplete();
     world_job_stage = WORLD_JOB_IDLE;
-    if (world_job_world == menuSelectedWorld()) {
-      beginLoadingPreview();
-      menuPreviewLoaded();
-    }
-    /* Otherwise the cursor moved while this world was building.  Leave the
-       request standing so the next callback starts the slot now highlighted;
-       the world just finished still renders until it is replaced. */
+    beginLoadingPreview();
+    menuPreviewLoaded();
   }
 }
 
@@ -396,17 +430,32 @@ void callbackGfx(int pendingGfx) {
        starve and wants the world built as fast as slices allow. */
     stream_work_deadline = 0;
     if (world_job_stage != WORLD_JOB_IDLE) {
-      stepWorldJob();
+      if (worldPreviewBuildRequested() &&
+          menuPreviewToken() != world_job_token) {
+        /* The player changed their mind.  Whatever this build has left to do
+           is work on a world nobody is going to see. */
+        cancelWorldJob();
+      } else {
+        stepWorldJob();
+      }
+    } else if (menuCommitReady()) {
+      /*
+       * The naming card's "creating world" frame has been drawn and drained,
+       * so the player can see why the console is about to stop.  This is the
+       * one remaining uninterruptible stretch in the front end.
+       */
+      diagPaintPhase(DIAG_PHASE_SAVE);
+      menuCommitWorld();
     } else if (worldGameBuildRequested()) {
       /*
-       * Nothing to build.  The picker only lets a slot be entered once its
-       * preview has finished, and that preview is now the gameplay mesh of
-       * that exact world -- same terrain, same per-column detail, same
-       * entities.  Entering it is a change of screen and lens, so naming a
-       * world drops straight into it from the shot you were just looking at.
+       * Nothing to build.  A slot can only be entered once its preview has
+       * finished, and that preview is now the gameplay mesh of that exact
+       * world -- same terrain, same per-column detail, same entities.
+       * Entering it is a change of screen and lens, so naming a world drops
+       * straight into it from the shot you were just looking at.
        */
       menuGameStarted();
-    } else if (worldPreviewBuildRequested() && previewSelectionSettled()) {
+    } else if (worldPreviewBuildRequested() && previewRequestSettled()) {
       beginWorldJob();
     } else if (current_screen == GAME || current_screen == INVENTORY) {
       int player_block_x = floor(players[0].position.x / BLOCK_SIZE);
@@ -487,8 +536,9 @@ void callbackGfx(int pendingGfx) {
 
   /* The pack is a true pause on a single-stick console.  Letting the clock
      advance while AI and the player are frozen could turn a daylight menu
-     visit into an unavoidable night ambush on close. */
-  if (current_screen == GAME) {
+     visit into an unavoidable night ambush on close.  A battle is the same
+     kind of pause and takes longer, so it holds the clock too. */
+  if (current_screen == GAME && !cobblemonBattleActive()) {
     updateDayCycle();
   } else {
     pauseDayCycle();
