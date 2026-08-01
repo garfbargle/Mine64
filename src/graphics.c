@@ -140,10 +140,25 @@ static Gfx *frame_dlp_limit;
 /* Non-zero means a frame had to shed terrain or was dropped outright.  Shown
    on the picker so this failure mode can never be silent again. */
 u32 frame_overflows;
-/* Set while compiling the menu's scenic preview, whose shell additionally
-   hides the fixed world's underground outer wall.  Gameplay LOD is chosen
-   per column instead; see MESH_LOD_* below. */
-static u8 building_scenic;
+/*
+ * Set while compiling a whole world at once, as opposed to rebuilding single
+ * columns during play.
+ *
+ * The only thing it changes is the fixed extent's border: a whole-world build
+ * is the one moment nothing has been streamed beyond that border yet, so
+ * those columns' outward faces are a cut through the map rather than a wall
+ * between neighbours, and drawing them is the "chunks below the map"
+ * silhouette.  During play the same columns have neighbours and keep their
+ * faces.
+ *
+ * It deliberately does NOT change LOD any more.  It used to force every
+ * column to the shell so the title orbit ran faster than the game it was
+ * previewing -- which flattered the frame rate and hid exactly the geometry
+ * worth judging before pressing START.  Detail now comes from meshLodFor on
+ * both paths, so the preview is the gameplay mesh and entering the world
+ * needs no second compile at all.
+ */
+static u8 building_whole_world;
 /* Surface height of each block column in the footprint being compiled, so the
    scenic pass resolves it once per column instead of rescanning the full
    height for every candidate quad. */
@@ -1582,9 +1597,9 @@ static u8 shellKeepsQuad(int cx, int cz, u8 bx, u8 column_y, u8 bz, u8 height,
 
   /* The fixed world's underground outer wall is one long greedy quad from
      bedrock to surface -- the "chunks below the map" silhouette the title
-     screen orbit used to show.  Only the scenic build has a world edge to
-     hide; a streaming shell keeps its sides. */
-  if (building_scenic &&
+     screen orbit used to show.  Only a whole-world build has a world edge to
+     hide; a column rebuilt during play has streamed neighbours. */
+  if (building_whole_world &&
       (cx == 0 || cx == CHUNKS_X - 1 || cz == 0 || cz == CHUNKS_Z - 1) &&
       face != TOP && face != BOTTOM) {
     return FALSE;
@@ -1747,13 +1762,12 @@ static Gfx *emitColumnTextureDL(u32 slot, u8 texture,
 
 static u8 mesh_build_active;
 static u16 mesh_build_cursor;
-static u8 mesh_build_surface_only;
 static u8 mesh_build_complete;
 
 static u8 makeColumnDisplayLists(int cx, int cz) {
   u8 texture;
   u32 slot = WINDOW_SLOT(cx, cz);
-  u8 lod = building_scenic ? MESH_LOD_SHELL : meshLodFor(cx, cz);
+  u8 lod = meshLodFor(cx, cz);
   /* World builds emit the incoming world's generation behind staged
      pointers; gameplay rebuilds replace the live column directly. */
   u8 generation = mesh_build_active ?
@@ -1888,15 +1902,22 @@ static void meshFreeGeneration(u8 generation) {
  * A world build emits the incoming world's columns as a new block
  * generation behind the staged pointer set, while the outgoing world keeps
  * rendering untouched from the live set -- both worlds share the one arena,
- * which a shell preview plus a full game mesh fit comfortably.  Publication
- * copies staged over live and frees the old generation.
+ * which two worlds' meshes fit comfortably at these LODs.  Publication copies
+ * staged over live and frees the old generation.
+ *
+ * There is one kind of world build now.  It used to take a flag choosing
+ * between a cheap scenic shell for the menu and the real thing for play,
+ * which meant every world was compiled twice -- once to look at and once to
+ * walk around in -- and the version you looked at was not the version you
+ * were about to get.  What this builds is the gameplay mesh, so pressing
+ * START is a screen change.
  *
  * This may only run while no graphics task is in flight; callbackGfx
  * guarantees that by stepping it only when NuSystem reports pendingGfx == 0.
  * Do not wait for the RSP here: nuGfxTaskAllEndWait() busy-spins at
  * priority 50 on a counter cleared at priority 17, which deadlocks.
  */
-void beginWorldMeshBuild(u8 surface_only) {
+void beginWorldMeshBuild(void) {
   u16 slot;
   u8 texture;
 
@@ -1916,7 +1937,6 @@ void beginWorldMeshBuild(u8 surface_only) {
     meshFreeGeneration(mesh_building_generation);
   }
   mesh_building_generation = (u8) (mesh_generation + 1);
-  mesh_build_surface_only = surface_only;
   mesh_build_cursor = 0;
   mesh_build_complete = TRUE;
   mesh_build_active = TRUE;
@@ -1938,10 +1958,9 @@ u8 stepWorldMeshBuild(u16 columns) {
   if (!mesh_build_active) {
     return TRUE;
   }
-  /* The scenic flag forces every column to the shell LOD and hides the
-     fixed world's outer wall; a gameplay build picks LOD per column from
-     player distance. */
-  building_scenic = mesh_build_surface_only;
+  /* Every column of the extent is compiled here, so its border columns have
+     no streamed neighbours to hide their outward faces behind. */
+  building_whole_world = TRUE;
   while (columns > 0 && mesh_build_cursor < CHUNKS_X * CHUNKS_Z) {
     u8 cx = mesh_build_cursor / CHUNKS_Z;
     u8 cz = mesh_build_cursor % CHUNKS_Z;
@@ -1954,7 +1973,7 @@ u8 stepWorldMeshBuild(u16 columns) {
     mesh_build_cursor++;
     columns--;
   }
-  building_scenic = FALSE;
+  building_whole_world = FALSE;
 
   if (mesh_build_cursor >= CHUNKS_X * CHUNKS_Z) {
     u8 texture;

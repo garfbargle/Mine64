@@ -20,7 +20,7 @@ void initGraphics();
 /* Sliced mesh compilation.  The build targets whichever arena is not on
    screen and publishes it only once complete, so the outgoing world keeps
    rendering for the whole rebuild. */
-void beginWorldMeshBuild(u8 surface_only);
+void beginWorldMeshBuild(void);
 u8 stepWorldMeshBuild(u16 columns);
 u8 worldMeshBuildProgress();
 u8 worldMeshBuildComplete();

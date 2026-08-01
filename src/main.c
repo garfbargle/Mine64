@@ -32,9 +32,6 @@
 #define WORLD_JOB_GENERATE 2
 #define WORLD_JOB_MESH 3
 
-#define WORLD_JOB_PREVIEW 0
-#define WORLD_JOB_GAME 1
-
 /*
  * Budgets are per graphics callback.  A terrain column costs several octave
  * samples plus a cave test for most of its height, and a mesh column costs a
@@ -97,7 +94,6 @@
 #define REBASE_SANITY_LIMIT 100000
 
 static u8 world_job_stage = WORLD_JOB_IDLE;
-static u8 world_job_kind;
 /* Which slot the running preview is for.  The cursor can move again while a
    world is still building, and the finished preview must not be mistaken for
    the slot now highlighted. */
@@ -177,14 +173,15 @@ static u8 previewSelectionSettled() {
 static void beginWorldMeshStage(u8 place_players) {
   if (place_players) {
     /* Spawn placement reads the finished terrain, so it cannot run until
-       generation has completed. */
+       generation has completed.  It also has to precede the mesh, which now
+       picks each column's detail from the player's position. */
     initPlayers();
   }
   initDroppedItems();
   initMobs();
   initGeometry();
   world_job_stage = WORLD_JOB_MESH;
-  beginWorldMeshBuild(TRUE);
+  beginWorldMeshBuild();
 }
 
 /*
@@ -210,21 +207,9 @@ static void applyLoadStatus(u8 status) {
 
 static void beginWorldJob() {
   world_job_progress_floor = 0;
-  if (worldGameBuildRequested()) {
-    /* The picked world is already generated and loaded -- only its display
-       lists are still the reduced scenic mesh, so this recompiles them at full
-       detail without touching the terrain the player chose.  The mesh is the
-       whole job here, so it gets the whole bar. */
-    world_job_kind = WORLD_JOB_GAME;
-    world_job_mesh_start = 0;
-    world_job_stage = WORLD_JOB_MESH;
-    beginWorldMeshBuild(FALSE);
-    return;
-  }
 
   /* The title menu is also a world picker.  Preparing the highlighted slot
      gives the renderer a real world to orbit rather than a background image. */
-  world_job_kind = WORLD_JOB_PREVIEW;
   world_job_world = menuSelectedWorld();
   game_file_num = world_job_world + 1;
   initDetails();
@@ -265,9 +250,7 @@ static void stepWorldJob() {
     }
     world_incomplete_message = !worldMeshBuildComplete();
     world_job_stage = WORLD_JOB_IDLE;
-    if (world_job_kind == WORLD_JOB_GAME) {
-      menuGameStarted();
-    } else if (world_job_world == menuSelectedWorld()) {
+    if (world_job_world == menuSelectedWorld()) {
       beginLoadingPreview();
       menuPreviewLoaded();
     }
@@ -415,7 +398,14 @@ void callbackGfx(int pendingGfx) {
     if (world_job_stage != WORLD_JOB_IDLE) {
       stepWorldJob();
     } else if (worldGameBuildRequested()) {
-      beginWorldJob();
+      /*
+       * Nothing to build.  The picker only lets a slot be entered once its
+       * preview has finished, and that preview is now the gameplay mesh of
+       * that exact world -- same terrain, same per-column detail, same
+       * entities.  Entering it is a change of screen and lens, so naming a
+       * world drops straight into it from the shot you were just looking at.
+       */
+      menuGameStarted();
     } else if (worldPreviewBuildRequested() && previewSelectionSettled()) {
       beginWorldJob();
     } else if (current_screen == GAME || current_screen == INVENTORY) {
