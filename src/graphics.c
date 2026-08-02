@@ -104,8 +104,13 @@ typedef struct {
 } MeshBlock;
 
 /* Two generations can coexist mid world-build: every live column plus every
-   staged replacement. */
-#define MAX_MESH_BLOCKS (WINDOW_SLOTS * 2)
+   staged replacement.  That bounds occupancy well under the window's slot
+   count -- residency caps live columns at the terrain ring's 25 x 25 = 625,
+   and a build stages at most the extent's 196 -- so 1,024 entries carry a
+   25% margin over a bound the window itself enforces.  Running out degrades
+   gracefully: meshBlockAlloc returns failure, the column keeps its old mesh
+   and its dirty mark, and the cooldown retries later. */
+#define MAX_MESH_BLOCKS WINDOW_SLOTS
 static MeshBlock mesh_blocks[MAX_MESH_BLOCKS];  /* sorted by start */
 static u16 mesh_block_count;
 static u32 mesh_arena_used;
