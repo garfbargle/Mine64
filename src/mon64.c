@@ -9,6 +9,7 @@
 #include "items.h"
 #include "menu.h"
 #include "mods.h"
+#include "rules.h"
 #include "world.h"
 
 /*
@@ -946,9 +947,11 @@ static void updateRoamer(MonRoamer *roamer, float delta) {
       roamer->state = ROAM_NOTICE;
       roamer->notice_time += delta;
     }
-    /* Aggressive middle stages take the initiative after dark, and only in
-       a world that did not ask for peace. */
-    if (species->aggressive && night && !worldModActive(MOD_PEACEFUL) &&
+    /* Aggressive middle stages take the initiative after dark, and only in a
+       world that is currently willing to hold monsters -- the same rule the
+       night's own budget reads, so peace means peace from both ecologies. */
+    if (species->aggressive && night &&
+        world_rules.monsters != RULE_MONSTERS_NONE &&
         !mon_battle.active &&
         nearest_distance > ROAM_AGGRO_RANGE * ROAM_AGGRO_RANGE) {
       roamer->state = ROAM_APPROACH;

@@ -12,6 +12,7 @@
 #include "player.h"
 #include "world.h"
 #include "mods.h"
+#include "rules.h"
 
 #define MOB_WALK_SPEED 0.82f
 #define MOB_FLEE_SPEED 1.55f
@@ -690,7 +691,10 @@ static void finishMobAttack(Mob *mob, Player *target,
   }
 }
 
-static void beginDawnRetreat(Mob *mob) {
+/* Sunrise is one reason a monster is asked to leave; the monster rule being
+   lowered under it is the other.  Both want the same walk away rather than a
+   deletion, so neither is a monster blinking out in front of the player. */
+static void beginRetreat(Mob *mob) {
   if (mob->state == MOB_RETREAT) {
     return;
   }
@@ -1514,19 +1518,32 @@ static void countMobs(u8 *passives, u8 *hostiles) {
  * night keeps at least one monster in it.
  *
  * The phase turns over at the day boundary and a night sits wholly inside
- * one (DAY_CYCLE_NIGHT_START..END), so this never shifts under a night that
- * is already running.
+ * one (DAY_CYCLE_NIGHT_START..END), so the Moon's half of this never shifts
+ * under a night that is already running.  The player's half can: the monster
+ * rule is theirs to move whenever they like, and updateMobs is what makes a
+ * mid-night drop mean something to the monsters already standing there.
  */
 static u8 nightHostileBudget(void) {
   u8 lit = dayCycleMoonlitEighths();
+  u8 budget;
 
+  if (world_rules.monsters == RULE_MONSTERS_NONE) {
+    return 0;
+  }
   if (lit >= 6) {
-    return MOB_NIGHT_HOSTILE_BUDGET;
+    budget = MOB_NIGHT_HOSTILE_BUDGET;
+  } else if (lit >= 2) {
+    budget = (u8) ((MOB_NIGHT_HOSTILE_BUDGET * 2 + 2) / 3);
+  } else {
+    budget = (u8) ((MOB_NIGHT_HOSTILE_BUDGET + 2) / 3);
   }
-  if (lit >= 2) {
-    return (u8) ((MOB_NIGHT_HOSTILE_BUDGET * 2 + 2) / 3);
+  /* FEW halves what the Moon asked for rather than naming a count of its own,
+     so the eight-day shape survives the setting: a full Moon is still the
+     worse night to be out on, there are simply fewer of them out on it. */
+  if (world_rules.monsters == RULE_MONSTERS_FEW) {
+    budget = (u8) ((budget + 1) / 2);
   }
-  return (u8) ((MOB_NIGHT_HOSTILE_BUDGET + 2) / 3);
+  return budget;
 }
 
 /*
@@ -1581,8 +1598,7 @@ static u8 spawnForBudget(u8 night) {
     (u8) (passive_budget - people_reserve) : 0;
 
   countMobs(&passives, &hostiles);
-  if (night && !worldModOn(MOD_PEACEFUL) &&
-      hostiles < nightHostileBudget()) {
+  if (night && hostiles < nightHostileBudget()) {
     /* Monsters are not a regional fauna.  Night is the same everywhere, and
        giving it a biome would only make some ground safe to sleep on.  What
        does vary is the night itself -- see nightHostileBudget: the Moon is
@@ -1607,6 +1623,14 @@ static u8 spawnForBudget(u8 night) {
 void updateMobs(float delta) {
   u8 index;
   u8 night = worldIsNight();
+  /*
+   * How many monsters the night is still entitled to, spent against the pool
+   * below.  Daylight zeroes it, which is the dawn retreat; so does dropping
+   * the monster rule mid-night, which is why that rule needs no hook of its
+   * own.  A world set to NONE while three zombies are already out sends
+   * exactly those three home, by the road the Sun would have sent them.
+   */
+  u8 hostile_allowance = night ? nightHostileBudget() : 0;
 
   for (index = 0; index < MAX_PLAYERS; index++) {
     special_cooldowns[index] = max(0, special_cooldowns[index] - delta);
@@ -1676,8 +1700,12 @@ void updateMobs(float delta) {
       mob->baby_time = max(0, mob->baby_time - delta);
     }
 
-    if (mobTypeIsHostile(mob->type) && !night) {
-      beginDawnRetreat(mob);
+    if (mobTypeIsHostile(mob->type) && mob->state != MOB_RETREAT) {
+      if (hostile_allowance > 0) {
+        hostile_allowance--;
+      } else {
+        beginRetreat(mob);
+      }
     }
     if (mob->state == MOB_RETREAT) {
       if (mob->state_time == 0) {

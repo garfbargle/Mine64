@@ -16,6 +16,7 @@
 #include "day_cycle.h"
 #include "details.h"
 #include "audio.h"
+#include "pause.h"
 
 #define CROSSHAIR_SIZE 10
 #define HOTBAR_SLOT_COUNT INVENTORY_COLUMNS
@@ -28,7 +29,11 @@
 #define INVENTORY_GRID_Y 45
 #define INVENTORY_HOTBAR_Y 105
 #define RECIPE_LIST_X 197
-#define RECIPE_LIST_Y 39
+/* Four pixels lower than it sat as a title-bar screen: the pack lost its own
+   title to the tab strip, so the workbench caption moved down to the line
+   above the recipes and the list moved out from under it.  The six rows still
+   stop exactly on the detail box below them. */
+#define RECIPE_LIST_Y 45
 #define RECIPE_ROW_HEIGHT 20
 #define RECIPE_VISIBLE_ROWS 6
 /*
@@ -5477,6 +5482,90 @@ void drawLegendIcons(const LegendEntry *entries, u8 count, u32 x, u32 y) {
   drawButtonIcons(icons, placed);
 }
 
+/* The width of one entry's icons, without its label: what a column has to
+   indent every label by if their left edges are to line up. */
+static u32 legendIconCellWidth(const LegendEntry *entry) {
+  u32 width = buttonIconWidth(entry->icon);
+
+  if (entry->icon2 != BUTTON_ICON_NONE) {
+    width += LEGEND_PAIR_GAP + buttonIconWidth(entry->icon2);
+  }
+  return width;
+}
+
+u32 legendColumnIconWidth(const LegendEntry *entries, u8 count) {
+  u32 widest = 0;
+  u8 i;
+
+  for (i = 0; i < count; i++) {
+    u32 width = legendIconCellWidth(&entries[i]);
+
+    if (width > widest) {
+      widest = width;
+    }
+  }
+  return widest;
+}
+
+u32 legendColumnWidth(const LegendEntry *entries, u8 count) {
+  u32 indent = legendColumnIconWidth(entries, count) + LEGEND_ICON_GAP;
+  u32 widest = 0;
+  u8 i;
+
+  for (i = 0; i < count; i++) {
+    u32 width = hudStringWidth(entries[i].label);
+
+    if (width > widest) {
+      widest = width;
+    }
+  }
+  return indent + widest;
+}
+
+/*
+ * A column's icons.  Each entry's icons are right-aligned within the shared
+ * indent, so a one-button row and a two-button row both finish at the same
+ * place and the labels start there.
+ */
+void drawLegendColumnIcons(const LegendEntry *entries, u8 count, u32 x, u32 y,
+    u32 pitch) {
+  ButtonPlacement icons[LEGEND_MAX_ICONS];
+  u32 indent = legendColumnIconWidth(entries, count);
+  u8 placed = 0;
+  u8 i;
+
+  for (i = 0; i < count && placed < LEGEND_MAX_ICONS; i++) {
+    u32 slot = x + indent - legendIconCellWidth(&entries[i]);
+    u32 row = y + i * pitch;
+    u8 pair;
+
+    for (pair = 0; pair < 2 && placed < LEGEND_MAX_ICONS; pair++) {
+      ButtonIconId id = pair == 0 ? entries[i].icon : entries[i].icon2;
+
+      if (id == BUTTON_ICON_NONE) {
+        continue;
+      }
+      icons[placed].style = button_icons[id];
+      icons[placed].x = slot;
+      icons[placed].y = row + (LEGEND_ROW_HEIGHT - buttonIconHeight(id)) / 2;
+      placed++;
+      slot += buttonIconWidth(id) + LEGEND_PAIR_GAP;
+    }
+  }
+  drawButtonIcons(icons, placed);
+}
+
+void drawLegendColumnLabels(const LegendEntry *entries, u8 count, u32 x, u32 y,
+    u32 pitch) {
+  u32 label_x = x + legendColumnIconWidth(entries, count) + LEGEND_ICON_GAP;
+  u8 i;
+
+  for (i = 0; i < count; i++) {
+    drawString(entries[i].label, label_x,
+      y + i * pitch + LEGEND_LABEL_DROP);
+  }
+}
+
 /*
  * The world setup card's switches.
  *
@@ -6339,19 +6428,11 @@ static void drawInventory() {
       recipe_start > recipe_count - RECIPE_VISIBLE_ROWS) {
     recipe_start = recipe_count - RECIPE_VISIBLE_ROWS;
   }
+  /* The panel and the strip above it belong to every tab, so drawPauseFrame
+     has already laid them down and left the RDP in fill mode. */
   gDPPipeSync(dlp++);
   gDPSetCycleType(dlp++, G_CYC_FILL);
   gDPSetRenderMode(dlp++, G_RM_NOOP, G_RM_NOOP2);
-  /* A single full-screen workbench with strong internal grouping survives
-     composite blur better than nested translucent boxes. */
-  setHudFillColor(7, 9, 12);
-  gDPFillRectangle(dlp++, 6, 6, SCREEN_WD - 7, SCREEN_HT - 7);
-  setHudFillColor(115, 121, 117);
-  gDPFillRectangle(dlp++, 8, 8, SCREEN_WD - 9, SCREEN_HT - 9);
-  setHudFillColor(26, 31, 33);
-  gDPFillRectangle(dlp++, 11, 11, SCREEN_WD - 12, SCREEN_HT - 12);
-  setHudFillColor(37, 43, 44);
-  gDPFillRectangle(dlp++, 12, 12, SCREEN_WD - 13, 31);
   setHudFillColor(9, 11, 13);
   gDPFillRectangle(dlp++, 190, 31, 194, 180);
   setHudFillColor(100, 106, 102);
@@ -6608,15 +6689,17 @@ static void drawInventoryText() {
   }
 
   beginText();
-  setHudTextColor(241, 195, 58);
-  drawString("PACK", 18, 18);
-  drawString(player->crafting_table_open ? "WORKBENCH" : "POCKET CRAFT",
-    200, 18);
+  /* The tab strip names this page now, so the title that used to sit up there
+     is gone and the two things it shared the bar with came down a line: which
+     player has the pack open, and which recipe book they get. */
   setHudTextColor(185, 192, 187);
   drawString("STORAGE", 18, 34);
   drawString("HOTBAR", 18, 95);
-  drawChar('P', 166, 18);
-  drawChar('1' + inventory_player, 173, 18);
+  drawChar('P', 158, 34);
+  drawChar('1' + inventory_player, 165, 34);
+  setHudTextColor(241, 195, 58);
+  drawString(player->crafting_table_open ? "WORKBENCH" : "POCKET CRAFT",
+    197, 34);
 
   if (selected->count > 0) {
     setHudTextColor(241, 241, 232);
@@ -7067,12 +7150,17 @@ void drawHUD() {
     }
     gDPPipeSync(dlp++);
   } else {
-    /* Inventory input pauses movement, so redrawing the 3D world beneath a
-     * mostly opaque panel only burns RSP/RDP time.  A stable dark backdrop is
-     * also safe with NuSystem's rotating triple framebuffer. */
+    /* Pause input stops movement, so redrawing the 3D world beneath a mostly
+     * opaque panel only burns RSP/RDP time.  A stable dark backdrop is also
+     * safe with NuSystem's rotating triple framebuffer. */
     clearBuffers(GPACK_RGBA5551(10, 16, 28, 1));
     loaded_texture = NULL;
-    drawInventory();
+    drawPauseFrame();
+    if (pause_tab == PAUSE_TAB_PACK) {
+      drawInventory();
+    } else {
+      drawPauseBody();
+    }
     gDPPipeSync(dlp++);
   }
   drawMenu();
@@ -7100,8 +7188,13 @@ void drawHUD() {
     /* drawInventory may leave an item preview bound; restore the font before
        issuing count glyph rectangles. */
     beginText();
-    drawInventoryStackCounts();
-    drawInventoryText();
+    drawPauseFrameText();
+    if (pause_tab == PAUSE_TAB_PACK) {
+      drawInventoryStackCounts();
+      drawInventoryText();
+    } else {
+      drawPauseBodyText();
+    }
   }
 
 }

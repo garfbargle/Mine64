@@ -10,6 +10,7 @@
 #include "world.h"
 #include "home.h"
 #include "mods.h"
+#include "rules.h"
 #include "day_cycle.h"
 
 static FATFS fs;
@@ -20,7 +21,7 @@ static FATFS fs;
 #define LEGACY_COOP_HEADER_SIZE 256
 #define LEGACY_MAX_PLAYERS 2
 #define BUFFER_LEN 512
-#define SAVE_VERSION 12
+#define SAVE_VERSION 13
 
 /*
  * v11 appends the world seed, and changes nothing else.
@@ -59,6 +60,20 @@ static FATFS fs;
  * versions could have made.
  */
 #define SAVE_VERSION_MODS 12
+
+/*
+ * v13 appends the world rules -- see rules.h -- on exactly the same terms
+ * again, and for the opposite reason to the mods.
+ *
+ * The mask above has to be recorded because the generator reads it; these are
+ * recorded because nothing does.  The monster level and the survival switch
+ * exist only in RAM while the world is played, so a world left peaceful would
+ * come back full of monsters, and a world being built in would come back
+ * hungry.  A pre-v13 file reads as zero, which is neither of those defaults,
+ * so the restore ignores the value and asks resetWorldRules -- the same
+ * answer a fresh world of those mods would have given.
+ */
+#define SAVE_VERSION_RULES 13
 /* The first version using the four-player Header layout.  v10 onwards share
    it, so the load path keys on this rather than on SAVE_VERSION. */
 #define SAVE_VERSION_HEADER 10
@@ -100,6 +115,8 @@ typedef struct {
   u32 world_seed;
   /* Appended by v12; see SAVE_VERSION_MODS.  Same rule. */
   u32 world_mods;
+  /* Appended by v13; see SAVE_VERSION_RULES.  Same rule again. */
+  u32 world_rules;
 } Header;
 
 /* Version 8 is the current four-player header before the world clock.  Keep
@@ -207,6 +224,14 @@ typedef char TreeRecordV5MustBeCompact[
   sizeof(TreeRecordV5) == 20 ? 1 : -1
 ];
 
+/*
+ * Three appends in, this has almost no slack left: v13 puts the header at 504
+ * of the 512 bytes a page holds.  The next scalar the world wants to remember
+ * fits; the one after it does not, and whoever writes it will find out here
+ * rather than by corrupting the first slab of blocks.  The way out when that
+ * happens is a second header page, not a wider buffer -- the payload's slab
+ * offsets are all measured from one page.
+ */
 typedef char HeaderMustFitBuffer[
   sizeof(Header) <= BUFFER_LEN ? 1 : -1
 ];
@@ -247,6 +272,7 @@ static struct {
   u32 saved_world_ticks;
   u32 saved_world_seed;
   u32 saved_world_mods;
+  u32 saved_world_rules;
   u32 expected_checksum;
   u32 checksum;
   int block_x;      /* next x-slab of packed blocks to read */
@@ -340,6 +366,18 @@ static void restoreWorldSeed(u32 version, const Header *saved) {
  */
 static void restoreWorldMods(u32 version, const Header *saved) {
   setWorldMods(version >= SAVE_VERSION_MODS ? (u16) saved->world_mods : 0);
+}
+
+/*
+ * And the rules this world was last played under.  resetWorldRules reads the
+ * mask, so this must follow restoreWorldMods -- a pre-v13 world that asked
+ * for peace on its setup card still comes back peaceful.
+ */
+static void restoreWorldRules(u32 version, const Header *saved) {
+  resetWorldRules();
+  if (version >= SAVE_VERSION_RULES) {
+    setWorldRules(saved->world_rules);
+  }
 }
 
 /* The on-disk tree payload is frozen at the original 96 records even though
@@ -850,8 +888,9 @@ static u8 finishSaveGame(u8 write_ok) {
        totalling the world before writing it, which is a second full pass
        over every block for a number four bytes long. */
     save_header.checksum = checksumWord(checksumWord(checksumWord(
-      save_job.checksum, save_header.world_ticks), save_header.world_seed),
-      save_header.world_mods);
+      checksumWord(save_job.checksum, save_header.world_ticks),
+      save_header.world_seed), save_header.world_mods),
+      save_header.world_rules);
     write_ok = f_lseek(&save_job.file, 0) == FR_OK && writeSaveHeaderPage();
   }
   if (write_ok) {
@@ -933,6 +972,9 @@ u8 beginSaveGame(void) {
      mods decide what the generator does with it. */
   save_header.world_seed = world_seed;
   save_header.world_mods = world_mods;
+  /* And what is only ever held in RAM while the world is played, which is why
+     losing it costs a peaceful world its peace.  See SAVE_VERSION_RULES. */
+  save_header.world_rules = packedWorldRules();
   for (player_num = 0; player_num < active_player_count; player_num++) {
     savePlayerState(&save_header.player[player_num], &players[player_num]);
   }
@@ -1050,6 +1092,7 @@ u8 beginLoadGame(void) {
   u32 saved_world_ticks = 0;
   u32 saved_world_seed = 0;
   u32 saved_world_mods = 0;
+  u32 saved_world_rules = 0;
   u32 wood_count[2] = {0, 0};
   u32 planks_count[2] = {0, 0};
   u32 crafting_table_count[2] = {0, 0};
@@ -1147,6 +1190,7 @@ u8 beginLoadGame(void) {
   /* Before windowClaimFixedExtent below, and long before any streaming: the
      mask decides what every regenerated column outside the save will be. */
   restoreWorldMods(version, header);
+  restoreWorldRules(version, header);
 
   if (version >= SAVE_VERSION_HEADER) {
     /* The scalars the checksum folds in after the world data.  Copy them
@@ -1155,6 +1199,7 @@ u8 beginLoadGame(void) {
     saved_world_ticks = header->world_ticks;
     saved_world_seed = header->world_seed;
     saved_world_mods = header->world_mods;
+    saved_world_rules = header->world_rules;
     expected_checksum = header->checksum;
     computed_checksum = checksumPlayers(header->player, header->player_count,
       MAX_PLAYERS);
@@ -1359,6 +1404,7 @@ u8 beginLoadGame(void) {
   load_job.saved_world_ticks = saved_world_ticks;
   load_job.saved_world_seed = saved_world_seed;
   load_job.saved_world_mods = saved_world_mods;
+  load_job.saved_world_rules = saved_world_rules;
   load_job.expected_checksum = expected_checksum;
   load_job.checksum = computed_checksum;
   load_job.full_inventory_saved = full_inventory_saved;
@@ -1396,6 +1442,10 @@ static u8 finishLoadGame(void) {
   if (load_job.version >= SAVE_VERSION_MODS) {
     load_job.checksum = checksumWord(load_job.checksum,
       load_job.saved_world_mods);
+  }
+  if (load_job.version >= SAVE_VERSION_RULES) {
+    load_job.checksum = checksumWord(load_job.checksum,
+      load_job.saved_world_rules);
   }
   if (load_job.read_ok &&
       (!load_job.full_inventory_saved ||

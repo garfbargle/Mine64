@@ -186,6 +186,9 @@ u8 playerRecipeCount(Player *player);
 u8 recipeCraftableCount(Player *player, u8 recipe);
 u8 craftSelectedRecipe(Player *player, u8 craft_all);
 void damagePlayer(u8 player_num, u8 damage, Vector3 source);
+/* Called when the survival rule changes; see the definition for why turning
+   it off has to fill the meters rather than just stop them. */
+void applySurvivalRule(void);
 const char *playerObjectiveTitle(Player *player);
 const char *playerObjectiveHint(Player *player);
 

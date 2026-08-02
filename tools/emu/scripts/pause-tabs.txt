@@ -1,0 +1,62 @@
+# The pause screen's four pages, one shot each, plus the two rows on the
+# world page that actually change something.
+#
+# The pages navigate with the stick, like every other list in the game, so the
+# short stick pushes below are single presses -- the repeat delay is longer
+# than any of them.  Values are pushed left rather than right because the
+# stick clamps at the ends of a scale and both rows start at their maximum.
+#
+# The two long waits at the top are the world preview: menuAct ignores START
+# until the flyover terrain behind the menu is ready.
+
+wait 400
+wait 500
+
+press START 8           # world setup card
+wait 60
+press START 8           # naming card
+wait 60
+press START 8           # into the world
+wait 240
+
+press START 8
+wait 90
+shot pack               # the pack, with the tab strip above it
+
+press R 8
+wait 60
+shot options            # sound, picture and control settings
+
+stick 0 -70 6           # down one row, to EFFECTS
+wait 20
+stick -70 0 6           # and one step quieter
+wait 30
+shot options-effects
+
+press R 8
+wait 60
+shot world              # world identity, live rules, and what it was made with
+
+stick -70 0 6           # MONSTERS one step quieter
+wait 30
+shot world-monsters
+
+stick 0 -70 6           # down to SURVIVAL
+wait 20
+stick -70 0 6           # and switch it off
+wait 30
+shot world-survival
+
+press R 8
+wait 60
+shot controls           # how to play, back from the deleted title card
+
+press R 8
+wait 60
+shot wrapped            # the strip wraps round to the pack again
+
+press B 8
+wait 60
+shot back-in-world      # and B leaves the pause from any page
+
+stop

@@ -15,6 +15,8 @@
 #include "audio.h"
 #include "world.h"
 #include "mods.h"
+#include "rules.h"
+#include "pause.h"
 #include "main.h"
 #include "details.h"
 #include "edits.h"
@@ -759,6 +761,13 @@ void damagePlayer(u8 player_num, u8 damage, Vector3 source) {
   if (!playerAlive(player) || player->hurt_time > 0) {
     return;
   }
+  /* Every way a player loses health arrives here -- monsters, falls, drowning
+     -- so the building rule needs one gate rather than one per source.  The
+     knockback goes with it: being shoved off a roof by a zombie that cannot
+     hurt you is still being shoved off a roof. */
+  if (!world_rules.survival) {
+    return;
+  }
   player->health = player->health > damage ? player->health - damage : 0;
   player->hurt_time = PLAYER_ATTACK_DURATION;
   /* Nobody sleeps through being hit, and in co-op nobody else's night should
@@ -775,6 +784,34 @@ void damagePlayer(u8 player_num, u8 damage, Vector3 source) {
   playSound(SOUND_PUNCH);
   if (player->health == 0) {
     killPlayer(player);
+  }
+}
+
+/*
+ * Bring every living player's meters into line with the survival rule.
+ *
+ * Switching the rule off has to fill them, not merely freeze them: a player
+ * who opens the world tab because they are starving would otherwise get a
+ * hunger bar stuck at two and a heart row stuck at four, for the rest of the
+ * world, with nothing able to move either again.  Switching it back on
+ * changes nothing -- a full meal is a fair place to resume from, and it is
+ * where a fresh world starts anyway.
+ */
+void applySurvivalRule(void) {
+  u8 player_num;
+
+  if (world_rules.survival) {
+    return;
+  }
+  for (player_num = 0; player_num < active_player_count; player_num++) {
+    Player *player = &players[player_num];
+
+    if (!playerAlive(player)) {
+      continue;
+    }
+    player->health = PLAYER_MAX_HEALTH;
+    player->hunger = PLAYER_MAX_HUNGER;
+    player->hunger_progress = 0;
   }
 }
 
@@ -1414,6 +1451,14 @@ static void updateSurvival(Player *player, float delta, u8 moving,
     u8 sprinting, u8 jumped, u8 attacked) {
   float cost = HUNGER_IDLE_COST;
 
+  /* The building rule.  Nothing drains and nothing regenerates, because
+     applySurvivalRule already filled both meters and they cannot move while
+     this is off -- so the HUD is honest rather than showing a full bar that
+     is quietly still counting down. */
+  if (!world_rules.survival) {
+    return;
+  }
+
   if (moving) {
     cost += HUNGER_WALK_COST;
   }
@@ -1677,6 +1722,9 @@ static void openInventory(u8 player_num) {
   player->look_rate_yaw = 0;
   player->look_rate_pitch = 0;
   resetInventoryNavigation();
+  /* START has always opened the pack; the other pages are somewhere to go
+     from it, not somewhere it can land. */
+  beginPause();
   current_screen = INVENTORY;
 }
 
@@ -2350,6 +2398,19 @@ void updatePlayers() {
       returnCraftingItems(player);
       resetInventoryNavigation();
       current_screen = GAME;
+      return;
+    }
+    /* The shoulders belong to the strip rather than to any page on it, so
+       they are spent before the page ever sees the frame. */
+    if (inventory_cont->trigger & L_TRIG) {
+      pauseTabPrevious();
+      return;
+    }
+    if (inventory_cont->trigger & R_TRIG) {
+      pauseTabNext();
+      return;
+    }
+    if (pauseTabInput(inventory_cont, navigation)) {
       return;
     }
     if (inventory_cont->trigger & A_BUTTON) {

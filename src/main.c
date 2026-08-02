@@ -14,6 +14,7 @@
 #include "day_cycle.h"
 #include "details.h"
 #include "edits.h"
+#include "rules.h"
 
 /*
  * Replacing the world rewrites every column display list in the mesh arena the
@@ -239,6 +240,11 @@ static void beginWorldMeshStage(u8 place_players) {
        generation has completed.  It also has to precede the mesh, which now
        picks each column's detail from the player's position. */
     initPlayers();
+    /* A generated world has no saved rules to restore, so it starts at what
+       its mask asked for.  A loaded one skips this: restoreWorldRules has
+       already put back whatever the player last chose, which is usually not
+       the mask any more -- that being the entire point of a rule. */
+    resetWorldRules();
   }
   initDroppedItems();
   initMobs();

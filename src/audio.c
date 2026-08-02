@@ -130,6 +130,22 @@ static ALSndId active_music = -1;
 static MusicTrack *current_track = NULL;
 static u16 warmup_frames = 60;
 
+/*
+ * The step tables.  The top entry of each is the level the game shipped at,
+ * so a console left alone sounds exactly as it always did; the rest are not a
+ * linear ramp, because loudness is not -- halving the amplitude is nothing
+ * like halving the perceived volume, and evenly spaced numbers make the lower
+ * pips indistinguishable from each other.
+ */
+static const s32 music_volume_table[AUDIO_VOLUME_STEPS] = {
+  0, 5000, 9500, 15000, 22000
+};
+static const s32 sound_volume_table[AUDIO_VOLUME_STEPS] = {
+  0, 4800, 9000, 14500, 21000
+};
+static u8 music_volume_step = AUDIO_VOLUME_DEFAULT;
+static u8 sound_volume_step = AUDIO_VOLUME_DEFAULT;
+
 static void prepareTrack(
   MusicTrack *track,
   u8 *rom_start,
@@ -191,9 +207,34 @@ static void playTrack(MusicTrack *track) {
   alSndpSetSound(&nuAuSndPlayer, active_music);
   alSndpSetPitch(&nuAuSndPlayer, 1.0f);
   alSndpSetPan(&nuAuSndPlayer, AL_PAN_CENTER);
-  alSndpSetVol(&nuAuSndPlayer, 22000);
+  alSndpSetVol(&nuAuSndPlayer, music_volume_table[music_volume_step]);
   alSndpPlay(&nuAuSndPlayer);
   current_track = track;
+}
+
+void setMusicVolume(u8 step) {
+  music_volume_step = step < AUDIO_VOLUME_STEPS ? step : AUDIO_VOLUME_DEFAULT;
+  if (active_music == -1) {
+    return;
+  }
+  /* The player is a single cursor: point it at the music voice before setting
+     the level, or the number lands on whichever effect was played last. */
+  alSndpSetSound(&nuAuSndPlayer, active_music);
+  alSndpSetVol(&nuAuSndPlayer, music_volume_table[music_volume_step]);
+}
+
+void setSoundVolume(u8 step) {
+  /* Effects are allocated per shot, so there is nothing live to retune; the
+     next punch reads the new number. */
+  sound_volume_step = step < AUDIO_VOLUME_STEPS ? step : AUDIO_VOLUME_DEFAULT;
+}
+
+u8 musicVolume(void) {
+  return music_volume_step;
+}
+
+u8 soundVolume(void) {
+  return sound_volume_step;
 }
 
 void initAudio(void) {
@@ -249,6 +290,11 @@ void playSound(enum SoundEffect effect) {
   if (effect < SOUND_PICKUP || effect > SOUND_PLACE) {
     return;
   }
+  /* Silence costs a voice allocation and a DMA otherwise, several times a
+     second while mining. */
+  if (sound_volume_step == 0) {
+    return;
+  }
   track = &sfx_tracks[effect];
 
   /* Reuse the effect's slot. This keeps rapid punches responsive without
@@ -266,7 +312,7 @@ void playSound(enum SoundEffect effect) {
   alSndpSetSound(&nuAuSndPlayer, track->id);
   alSndpSetPitch(&nuAuSndPlayer, 1.0f);
   alSndpSetPan(&nuAuSndPlayer, AL_PAN_CENTER);
-  alSndpSetVol(&nuAuSndPlayer, 21000);
+  alSndpSetVol(&nuAuSndPlayer, sound_volume_table[sound_volume_step]);
   alSndpPlay(&nuAuSndPlayer);
 }
 

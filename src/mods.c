@@ -24,8 +24,12 @@ const WorldMod world_mod_table[WORLD_MOD_COUNT] = {
     "TREES GROW ACROSS THE LAND"},
   {MOD_CRITTERS,  0, FALSE, "CRITTERS",
     "CREATURES GATHER AND FOLLOW YOU"},
+  /* The starting value of the monster rule rather than a permanent state of
+     the world; see rules.h.  The blurb says "starts" because the world tab
+     can argue with this one after the fact, and none of the rows around it
+     can. */
   {MOD_PEACEFUL,  0, FALSE, "PEACEFUL",
-    "NOTHING HOSTILE AFTER DARK"},
+    "STARTS WITH NOTHING HOSTILE AT NIGHT"},
   {MOD_BONUS_KIT, 0, FALSE, "BONUS KIT",
     "START WITH TOOLS AND TORCHES"},
   /* Behaviour, not terrain: it spawns creatures where the animals would have
