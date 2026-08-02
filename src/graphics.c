@@ -2105,11 +2105,13 @@ static u8 meshLodFor(int cx, int cz) {
  * emitting per texture from this flat array replaced sixteen full rescans of
  * the scratch per column.
  *
- * The cap covers every realistic column several times over (a typical column
- * is 110-270 quads); a pathological player-built column loses its excess
- * faces, which is the same degradation the arena-space check always had.
+ * The cap covers every realistic column about three times over (a typical
+ * column is 110-270 quads); a pathological player-built column loses its
+ * excess faces, which is the same degradation the arena-space check always
+ * had.  It was 1536 -- six times a typical worst column -- and the resolve
+ * array plus its permutation pay 10 bytes per entry of BSS.
  */
-#define COLUMN_QUAD_CAP 1536
+#define COLUMN_QUAD_CAP 768
 typedef struct {
   u8 x;       /* block offsets in column space; y spans the full 0..31 */
   u8 y;
