@@ -1,0 +1,36 @@
+# SKYLANDS: the sea under the islands, and what the sea does to you.
+#
+# The setup card's orbiting preview is the whole world at shell LOD, which is
+# the view the missing sea showed up in -- islands hanging over a hole with
+# the skybox through it.  So the preview shot is the one that settles it, and
+# it costs nothing extra: the card has to build the world anyway.
+#
+# Durations are rendered frames.  A full generation is roughly 900.
+
+wait 400
+wait 560                # CLASSIC preview finishes and starts orbiting
+
+press A 8
+wait 40                 # the setup card, CLASSIC selected
+
+press DDOWN 8           # ISLANDS row
+wait 10
+press DDOWN 8           # SKYLANDS row
+wait 10
+press A 8
+wait 900
+shot preview-skylands   # islands over open sea, from outside the world
+
+press START 8
+wait 60                 # naming keyboard
+press START 8
+wait 300
+shot spawn              # standing on the spawn island
+
+stick 0 70 240          # walk until the island runs out
+wait 30
+shot falling
+wait 150
+shot sea                # the water, and whatever it did
+
+stop

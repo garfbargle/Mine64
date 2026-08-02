@@ -17,6 +17,7 @@
 #include "details.h"
 #include "audio.h"
 #include "pause.h"
+#include "mods.h"
 
 #define CROSSHAIR_SIZE 10
 #define HOTBAR_SLOT_COUNT INVENTORY_COLUMNS
@@ -2157,6 +2158,23 @@ static u8 shellKeepsQuad(int cx, int cz, u8 bx, u8 column_y, u8 bz, u8 height,
       face != TOP && face != BOTTOM) {
     return FALSE;
   }
+  /*
+   * A sky column has two skins, not one: the island, and the sea a dozen
+   * blocks below it.  A single surface height cannot describe both -- it
+   * lands on the island's grass, and everything under it, the whole sea
+   * included, falls below the cutoff and is dropped.  That was the hole in
+   * the water under every island, with the skybox showing through it.
+   *
+   * There is nothing here worth filtering anyway.  A sky column is mostly
+   * air, a few island layers, and a flat seabed whose side faces are all
+   * hidden by the identical seabed next door, so the shell costs about what
+   * a filtered one would.  Undersides come with it, which is what the mode
+   * wants: an island's keel is the one bottom face any world shows from a
+   * distance, and culling it left the islands hollow from below.
+   */
+  if (worldModOn(MOD_SKYLANDS)) {
+    return TRUE;
+  }
   if (face == BOTTOM) {
     return FALSE;
   }
@@ -2419,7 +2437,9 @@ static u8 makeColumnDisplayLists(int cx, int cz) {
     (float) (cx * CHUNK_SIZE - render_origin_x) * BLOCK_SIZE, 0,
     (float) (cz * CHUNK_SIZE - render_origin_z) * BLOCK_SIZE);
 
-  if (lod == MESH_LOD_SHELL) {
+  /* A sky shell keeps every quad, so the heights it would be filtered
+     against are up to 2,048 blockGets nobody reads. */
+  if (lod == MESH_LOD_SHELL && !worldModOn(MOD_SKYLANDS)) {
     u8 bx, bz;
     for (bx = 0; bx < CHUNK_SIZE; bx++) {
       for (bz = 0; bz < CHUNK_SIZE; bz++) {

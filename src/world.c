@@ -202,6 +202,7 @@ static int clampHeight(int height) {
 #define HASH_SALT_STRUCTURE_VARIANT 0xD1B54A35UL
 #define HASH_SALT_STRUCTURE_BLOCK 0x94D049BBUL
 #define HASH_SALT_SKY_ISLAND 0x6C078965UL
+#define HASH_SALT_SKY_TREE 0x27220A95UL
 
 static u32 coordinateHash(int x, int y, int z, u32 salt) {
   u32 value = (u32) x * 0x8DA6B343UL;
@@ -1438,14 +1439,33 @@ static float treeDensityScale(float climate) {
   return climate > CLIMATE_FOREST_MIN ? 1.3f : 1.f;
 }
 
+/* Defined with the rest of the sky generator, far below. */
+static u8 skyIslandTreeColumn(int x, int z);
+
 /*
  * TRUE when a tree roots at this column.  The perlin field sets the local
  * density, the climate band scales it, and the hash decides whether this
  * particular column draws one.  Which species that tree is remains
  * spawnTree's business; this stage only decides how many.
+ *
+ * A sky island's own tree is the exception, and answers before any of that:
+ * it is chosen rather than drawn, and it is the one tree in the game the
+ * FORESTS switch does not own.
  */
 static u8 treeSeededAt(int x, int z) {
-  float density = (perlin2d(x, z, 0.02f, 2) * 8.f - 2.f) *
+  float density;
+
+  /* An island's own tree is placed, not rolled, and it is not FORESTS' to
+     switch off: it is the only wood in a sky world, and a world whose player
+     cannot reach a plank is not a world.  Everything past it is the ordinary
+     field, so an island wide enough still grows a stand. */
+  if (worldModOn(MOD_SKYLANDS) && skyIslandTreeColumn(x, z)) {
+    return TRUE;
+  }
+  if (!worldModOn(MOD_FORESTS)) {
+    return FALSE;
+  }
+  density = (perlin2d(x, z, 0.02f, 2) * 8.f - 2.f) *
     treeDensityScale(climateAt(x, z));
 
   return (float) (coordinateHash(x, 0, z, HASH_SALT_TREE) % 1000u) < density &&
@@ -1645,14 +1665,21 @@ static void carveTerrainColumn(int x, int z, int height, int dirt_depth) {
  * generation, so an island regenerates identically after its column has been
  * evicted and walked back to.
  */
-#define SKY_CELL_SIZE 24
+/* Cell size is the spacing, and the spacing is the whole feel of the mode.
+   At 24 the decorated ring carried a dozen islands: the sky read as ordinary
+   ground with gaps punched in it, and the next island was always a short hop
+   away.  At 48 two or three are in view at once and each is somewhere the
+   player has to build a way to, which is the point of a sky world. */
+#define SKY_CELL_SIZE 48
 #define SKY_ISLAND_MIN_RADIUS 4
 #define SKY_ISLAND_RADIUS_RANGE 6
 /* The lowest island sits a block clear of the sea below: MIN_TOP minus the
    deepest keel (THICKNESS_RANGE + MIN_THICKNESS - 1) must stay above
-   SEA_LEVEL. */
+   SEA_LEVEL.  The highest has to leave headroom for the tree every island
+   now carries -- the tallest species is eight logs under two more of crown,
+   so a top above MAX_Y - 11 grows a decapitated one. */
 #define SKY_ISLAND_MIN_TOP 14
-#define SKY_ISLAND_TOP_RANGE 12
+#define SKY_ISLAND_TOP_RANGE 8
 #define SKY_ISLAND_MIN_THICKNESS 3
 #define SKY_ISLAND_THICKNESS_RANGE 4
 /* The island the world starts on, fixed rather than drawn: waking up in
@@ -1723,6 +1750,38 @@ static void skyIslandFor(int x, int z, SkyIsland *island) {
   island->top = SKY_ISLAND_MIN_TOP + (int) ((hash >> 18) % SKY_ISLAND_TOP_RANGE);
   island->thickness = SKY_ISLAND_MIN_THICKNESS +
     (int) ((hash >> 24) % SKY_ISLAND_THICKNESS_RANGE);
+}
+
+/*
+ * The one column on an island that is guaranteed a tree.
+ *
+ * On the ground a bare patch is scenery.  On an island it is the end of the
+ * world: the tree is the only wood there is, and without it the island has no
+ * planks, no crafting table, no tools and no way to build across to the next
+ * one.  So the first tree is placed rather than rolled -- the density field
+ * is noise, and noise leaves small islands bare.
+ *
+ * Near the centre rather than on it, so a stand of islands does not read as a
+ * row of bullseyes.  The offset is a third of the radius, which keeps the
+ * trunk on the thick part of the island with its crown clear of the rim, and
+ * it is drawn from the island's own centre so every column of that island
+ * agrees on which one of them carries it.
+ */
+static u8 skyIslandTreeColumn(int x, int z) {
+  SkyIsland island;
+  u32 hash;
+  u32 span;
+  int reach;
+
+  skyIslandFor(x, z, &island);
+  if (!island.present) {
+    return FALSE;
+  }
+  hash = coordinateHash(island.center_x, 0, island.center_z, HASH_SALT_SKY_TREE);
+  reach = island.radius / 3;
+  span = (u32) (2 * reach + 1);
+  return x == island.center_x + (int) (hash % span) - reach &&
+    z == island.center_z + (int) ((hash >> 8) % span) - reach;
 }
 
 /*
@@ -1997,7 +2056,10 @@ u8 worldAdvanceColumnDecoration(int cx, int cz) {
     if (!neighboursReached(cx, cz, COLUMN_STRUCTURED)) {
       return FALSE;
     }
-    if (worldModOn(MOD_FORESTS)) {
+    /* SKYLANDS runs this stage with FORESTS off as well, because its islands
+       carry a guaranteed tree the switch does not reach.  treeSeededAt is
+       what tells the two apart; the stage only has to be entered. */
+    if (worldModOn(MOD_FORESTS) || worldModOn(MOD_SKYLANDS)) {
       u8 seeded = FALSE;
 
       /* Canopy from this column reaches into its neighbours, so any of them

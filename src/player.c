@@ -1954,6 +1954,21 @@ static u8 updatePlayer(u8 player_num, float delta, float look_delta) {
     return FALSE;
   }
 
+  /*
+   * The sea under a sky world is a floor, not a place.  Everything the mode
+   * is about happens on the islands, and a swimmable sea undoes that: a fall
+   * off an island stops being a fall and becomes a swim to a seabed the
+   * player can then mine, stand on and build up from, with the islands
+   * overhead beside the point.  So the water kills on contact -- the same
+   * verdict as the void, reached a few blocks earlier.  Every other world
+   * keeps its swimming.
+   */
+  if (swimming && worldModOn(MOD_SKYLANDS)) {
+    killPlayer(player);
+    playSound(SOUND_PUNCH);
+    return FALSE;
+  }
+
   if (cont->trigger & U_CBUTTONS) {
     /* Z already means "the camera is mine", so it is the natural modifier for
        changing what the stick does with the camera. */

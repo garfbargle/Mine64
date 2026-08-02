@@ -1,0 +1,45 @@
+# SKYLANDS with FORESTS switched off.
+#
+# The switch is what decides whether trees grow across a world, and turning it
+# off in a sky world used to leave the islands bare -- which is a world with
+# no wood, so no planks, no table, no tools and no way off the island you woke
+# up on.  The island tree is not the switch's to take, and this is the run
+# that shows it: same card, FORESTS unchecked, tree still there.
+#
+# Rows are not skipped when a mod is unavailable or when a terrain shape is
+# not the selected one, so SKYLANDS -> FORESTS is four presses: FLAT, then
+# CAVES and RUINS dimmed, then FORESTS.
+
+wait 400
+wait 560
+
+press A 8
+wait 40
+
+press DDOWN 8           # ISLANDS
+wait 10
+press DDOWN 8           # SKYLANDS
+wait 10
+press A 8
+wait 900
+
+press DDOWN 8           # FLAT
+wait 8
+press DDOWN 8           # CAVES (dimmed)
+wait 8
+press DDOWN 8           # RUINS (dimmed)
+wait 8
+press DDOWN 8           # FORESTS
+wait 8
+shot forests-row        # cursor on FORESTS, still checked
+press A 8
+wait 900
+shot forests-off        # unchecked, world rebuilt without its stands
+
+press START 8
+wait 60
+press START 8
+wait 300
+shot spawn              # the island's own tree, which the switch does not own
+
+stop
