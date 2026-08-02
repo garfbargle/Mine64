@@ -48,6 +48,13 @@ lead so a fresh team is never mauled and a veteran is never farming level
 threes. This costs nothing to store and makes a direction of travel a
 decision.
 
+The level is rolled *before* the species, and gates it: a middle stage may
+only stand on a pad whose level has passed the threshold its own young form
+evolves at. Weight alone used to decide this, which put full-grown GRIZZLEs in
+starting meadows at level four while the player's own EMBEAR still had twelve
+levels to go — and an evolution threshold you can walk past in the grass is a
+threshold that means nothing.
+
 **Battles** are turn-based, four commands wide: FIGHT, TEAM, BAG, RUN. They
 happen where you are standing — your own view, your own terrain, the pair
 squaring up a few blocks in front of you — with the world paused behind them.
@@ -67,10 +74,27 @@ save at once.
 is announced. Each family's final stage never spawns wild, so a fully grown
 creature is something you raised rather than something you found.
 
+Growing up mid-battle re-derives the fighter but does not restock it: a
+knockout is not a rest, so remaining power and any ATTACK or DEFENCE the fight
+has built up survive it. Rebuilding the fighter outright — which is what used
+to happen — handed back a full bar after every faint in a trainer battle and
+threw away the CHARGE you had just won with. A move carried across keeps what
+is left of it; one that arrives with the new level or the new species arrives
+full.
+
 **Trainers** are one spawn in seven. Their team is a pure function of the
 coordinate and world seed they were spawned from, so the same trainer is the
 same fight every time without a byte being written down. They pick their moves
-by what those moves would actually do; wild creatures roll.
+by what those moves would actually do; wild creatures roll — and neither side
+may spend a move that has no power left, which used to be a rule the player
+alone was held to.
+
+A trainer fields nothing you could not be holding at the same level: a drawn
+species walks back down its family until its own threshold is one that level
+has passed. A single step used to do this, and one step off a final stage
+lands on a middle stage — which is exactly the thing a low-level trainer
+should not have either, so two thirds of an early team came out a stage too
+old.
 
 A trainer is drawn as a person, not as a creature -- and not by 64MON at all
 any more. The body, the gait, the hair and the matrices come from
@@ -93,7 +117,8 @@ standing behind them.
 
 **Player versus player** is **Z + A** while facing another local player. Each
 side's commands come from that side's controller, and the battle takes the
-whole screen.
+whole screen. Both sides earn from what they knock out; only the challenger
+used to, so player two could win the whole fight and come away with nothing.
 
 **Recovery** is automatic: one health point per team member every four
 seconds. There is nowhere to rest in a world you may be a thousand blocks from
@@ -143,10 +168,29 @@ the owl grows ear tufts and then a chest ruff, the eel grows side fins and
 then a tail fan. A cub is a simple round shape; an elder is the same shape
 with age on it.
 
+Bulk moves the parts it widens. An offset left on plain scale puts a box where
+the unbulked body used to be, which is inside the bulked one — and because
+nothing about that is visible in the table, the two most heavily built elders
+in the game spent their whole existence with no eyes: TOADSTOOL's and
+WHIRLEEL's had been swallowed by their own bodies. THUNDOWL's chest ruff was
+a plainer miss, authored at `z -9` inside a body whose front face is at `-14`,
+so no owl ever wore the one feature that was supposed to make an old one look
+old. `tools/preview/mon.py --audit` now fails on any part fully inside
+another, on any rig that does not stand on the floor, and on any move levelled
+past its own species' evolution.
+
 Habitats come from the block a creature is standing on — grass, sand, stone,
 or a shore with water within two cells — plus time of day. There is no biome
 map anywhere; a beach and a cave floor draw from different rosters because the
 pad they spawned on answers a different question.
+
+The owl line is the one that uses the clock: all three stages are nocturnal,
+so spark is a type you go out after dark for. That flag used to sit on the
+hatchling alone and on no other creature in the game, which made the whole
+night half of the habitat system dead weight and left the adults of a family
+of owls wandering around at noon. It is also the one change here a player will
+feel as balance rather than as a fix — spark is the answer to water and stone,
+and it is now a nightly errand. One flag per row reverses it.
 
 ## What it costs
 
@@ -177,8 +221,19 @@ eighty-eight vertex writes per creature per frame, there are never more than
 two on screen, and it buys per-species size, bulk and colour for nothing. The draw path itself is exactly the mob path — two
 matrices, one `gSPVertex`, one shared display list per box.
 
-Measured cost of the whole feature: about 55 KiB of the link, of which roughly
-30 KiB is code, 11 KiB is the render slots' matrices and vertex scratch, and
+**Creatures cast shadows.** Trees, players, mobs and even dropped items all
+had a ground blob and creatures had none, which reads as pasted on rather than
+as standing there. This is what each rig's authored height has always been
+for — it was written down six times and never once read, and all six values
+had drifted as much as thirty per cent below the model they described. The
+blob is sized from the same scale and bulk the model is, so a cub's shrinks
+with the cub. It costs no slots the pass was not already spending: the ones
+creatures take here are the mob slots `mon64RoamerReserve` took out of the
+pool, which is the same trade the whole feature is built on. A trainer casts a
+person's blob, because a person is what is drawn.
+
+Measured cost of the whole feature: about 57 KiB of the link, of which roughly
+32 KiB is code, 11 KiB is the render slots' matrices and vertex scratch, and
 under 2 KiB is tables and live state. It ate into the headroom the audio
 variant is waiting on, and that variant no longer links; the current figures
 for both builds are in [RAM budget](ram-budget.md).
@@ -228,6 +283,21 @@ the tables, so a save written by a build with a different roster loads
 without indexing off the end of anything.
 
 ## Looking at it
+
+`tools/preview/mon.py` draws creatures from the roster tables on the host, in
+about a quarter of a second, applying the same scale, bulk and maturity
+arithmetic `drawCreature` does and the same box shading `buildBox` does:
+
+```sh
+tools/preview/mon.py thundowl          # one creature
+tools/preview/mon.py --family bird     # a family, side by side
+tools/preview/mon.py --roster          # all eighteen
+tools/preview/mon.py --audit           # the invariants, no picture
+```
+
+Reach for it before the emulator for anything about proportion, palette or
+which boxes a stage wears. Every geometry bug listed above was invisible in
+the table, invisible in a battle, and obvious in one strip of frames.
 
 `tools/emu/scripts/64mon.txt` walks the setup card down to the 64MON
 row, turns it on, and enters the world. `tools/emu/scripts/64mon-ui.txt`

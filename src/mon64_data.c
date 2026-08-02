@@ -84,7 +84,7 @@
 const MonRig mon_rigs[MON_RIG_COUNT] = {
   /* Bear.  Ears from the first day -- a cub without them is not cute -- then
      a shoulder hump at the second stage and a heavy brow at the third. */
-  {11, 46, {
+  {11, 47, {
     {  0, 30,   0, 16, 11, 22, MON_TONE_PRIMARY,   MON_ROLE_BODY,   1},
     {  0, 34, -26, 11, 10, 10, MON_TONE_PRIMARY,   MON_ROLE_HEAD,   1},
     {  0, 30, -38,  6,  5,  5, MON_TONE_ACCENT,    MON_ROLE_HEAD,   1},
@@ -99,7 +99,7 @@ const MonRig mon_rigs[MON_RIG_COUNT] = {
   }},
   /* Iguana.  Upright and long-tailed, with a crest along its head and back
      frills an adult has grown into. */
-  {11, 60, {
+  {11, 68, {
     {  0, 30,   0, 12, 14,  8, MON_TONE_PRIMARY,   MON_ROLE_BODY,   1},
     {  0, 52,  -2, 12, 11, 11, MON_TONE_PRIMARY,   MON_ROLE_HEAD,   1},
     {  0, 64,  -2,  5,  4, 12, MON_TONE_ACCENT,    MON_ROLE_HEAD,   1},
@@ -114,7 +114,7 @@ const MonRig mon_rigs[MON_RIG_COUNT] = {
   }},
   /* Frog.  Two stacked volumes and a pair of eyes do all the work; the leaves
      on its back and the crown above them arrive with age. */
-  {10, 40, {
+  {10, 48, {
     {  0, 18,   0, 18, 18, 18, MON_TONE_PRIMARY,   MON_ROLE_BODY,   1},
     {  0, 34,   0, 11,  8, 11, MON_TONE_PRIMARY,   MON_ROLE_HEAD,   1},
     { -8, 24, -19,  3,  4,  2, MON_TONE_ACCENT,    MON_ROLE_HEAD,   1},
@@ -127,23 +127,31 @@ const MonRig mon_rigs[MON_RIG_COUNT] = {
     {  0, 50,   0,  8,  3,  8, MON_TONE_ACCENT,    MON_ROLE_HEAD,   3}
   }},
   /* Eel.  Tapering segments, authored low on purpose -- it is long, not
-     tall.  Side fins come with the second stage, a tail fan with the third. */
-  {11, 34, {
-    {  0, 22, -30, 10,  9, 10, MON_TONE_PRIMARY,   MON_ROLE_HEAD,   1},
-    {  0, 18, -14,  9,  9,  9, MON_TONE_PRIMARY,   MON_ROLE_BODY,   1},
-    {  0, 16,   2,  8,  8,  9, MON_TONE_PRIMARY,   MON_ROLE_BODY,   1},
-    {  0, 14,  18,  7,  7,  9, MON_TONE_SECONDARY, MON_ROLE_TAIL,   1},
-    {  0, 12,  32,  5,  5,  8, MON_TONE_SECONDARY, MON_ROLE_TAIL,   1},
-    { -5, 25, -39,  2,  3,  2, MON_TONE_ACCENT,    MON_ROLE_HEAD,   1},
-    {  5, 25, -39,  2,  3,  2, MON_TONE_ACCENT,    MON_ROLE_HEAD,   1},
-    {  0, 30,  -8,  2,  7,  8, MON_TONE_ACCENT,    MON_ROLE_BODY,   1},
-    {-11, 17,  -6,  6,  2,  7, MON_TONE_SECONDARY, MON_ROLE_BODY,   2},
-    { 11, 17,  -6,  6,  2,  7, MON_TONE_SECONDARY, MON_ROLE_BODY,   2},
-    {  0, 12,  42,  2,  7,  6, MON_TONE_ACCENT,    MON_ROLE_TAIL,   3}
+     tall.  Side fins come with the second stage, a tail fan with the third.
+     Every y sits seven lower than it once did: the whole animal was authored
+     hovering a tenth of a block off the floor, which is not a swimming pose,
+     it is a rig that never touched the ground the offsets are measured
+     from. */
+  {11, 30, {
+    {  0, 15, -30, 10,  9, 10, MON_TONE_PRIMARY,   MON_ROLE_HEAD,   1},
+    {  0, 11, -14,  9,  9,  9, MON_TONE_PRIMARY,   MON_ROLE_BODY,   1},
+    {  0,  9,   2,  8,  8,  9, MON_TONE_PRIMARY,   MON_ROLE_BODY,   1},
+    {  0,  7,  18,  7,  7,  9, MON_TONE_SECONDARY, MON_ROLE_TAIL,   1},
+    {  0,  5,  32,  5,  5,  8, MON_TONE_SECONDARY, MON_ROLE_TAIL,   1},
+    { -5, 18, -39,  2,  3,  2, MON_TONE_ACCENT,    MON_ROLE_HEAD,   1},
+    {  5, 18, -39,  2,  3,  2, MON_TONE_ACCENT,    MON_ROLE_HEAD,   1},
+    {  0, 23,  -8,  2,  7,  8, MON_TONE_ACCENT,    MON_ROLE_BODY,   1},
+    {-11, 10,  -6,  6,  2,  7, MON_TONE_SECONDARY, MON_ROLE_BODY,   2},
+    { 11, 10,  -6,  6,  2,  7, MON_TONE_SECONDARY, MON_ROLE_BODY,   2},
+    /* Two higher than the segment it trails, so the fan clears the floor
+       rather than sinking two units into it. */
+    {  0,  7,  42,  2,  7,  6, MON_TONE_ACCENT,    MON_ROLE_TAIL,   3}
   }},
   /* Owl.  The wings are what make it readable from across a field; the ear
-     tufts and chest ruff are what make an old one look old. */
-  {11, 44, {
+     tufts and chest ruff are what make an old one look old.  The ruff was
+     authored at z -9 inside a body whose front face is at -14, so no THUNDOWL
+     has ever worn it; it now straddles that face and stands proud of it. */
+  {11, 48, {
     {  0, 24,   0, 10, 11, 14, MON_TONE_PRIMARY,   MON_ROLE_BODY,   1},
     {  0, 40,  -8,  8,  8,  8, MON_TONE_PRIMARY,   MON_ROLE_HEAD,   1},
     {  0, 38, -18,  3,  3,  6, MON_TONE_ACCENT,    MON_ROLE_HEAD,   1},
@@ -154,11 +162,11 @@ const MonRig mon_rigs[MON_RIG_COUNT] = {
     {  5,  6,   0,  3,  6,  3, MON_TONE_ACCENT,    MON_ROLE_LEG_B,  1},
     { -6, 48,  -6,  3,  4,  3, MON_TONE_PRIMARY,   MON_ROLE_HEAD,   2},
     {  6, 48,  -6,  3,  4,  3, MON_TONE_PRIMARY,   MON_ROLE_HEAD,   2},
-    {  0, 30,  -9,  9,  4,  4, MON_TONE_ACCENT,    MON_ROLE_BODY,   3}
+    {  0, 32, -14,  9,  5,  4, MON_TONE_ACCENT,    MON_ROLE_BODY,   3}
   }},
   /* Ape.  Heavy arms swing instead of legs, so it is obviously slower than
      everything else; stone shoulders and a back slab pile on with age. */
-  {11, 62, {
+  {11, 70, {
     {  0, 34,   0, 20, 16, 14, MON_TONE_PRIMARY,   MON_ROLE_BODY,   1},
     {  0, 58,  -6, 13, 11, 12, MON_TONE_PRIMARY,   MON_ROLE_HEAD,   1},
     {  0, 67, -10, 14,  3,  6, MON_TONE_ACCENT,    MON_ROLE_HEAD,   1},
@@ -246,13 +254,22 @@ const char *mon_type_name[MON_TYPE_COUNT + 1] = {
  * mean something in a world with no fixed size and no gym badges.  The
  * middle stages are aggressive after dark, so a PEACEFUL world is genuinely
  * a gentler world here too rather than an unrelated switch.
+ *
+ * A middle stage is additionally gated on the level the pad rolled, against
+ * the level its own young form evolves at -- see monMinLevel.  Weight alone
+ * used to let a GRIZZLE stand in a starting meadow at level four, which is
+ * the one thing that makes an evolution threshold read as decoration.
+ *
+ * The fourth move of every young form is levelled at most one below that same
+ * threshold, because a move it learns after it has already evolved is a move
+ * no creature can ever be holding.
  */
 const MonSpecies mon_species[MON_SPECIES_COUNT] = {
   {"TADPOLLEN", RIG_BLOB, MON_GRASS, 68, 100, 1,
     45, 40, 42, 38, 200, 18, 30,
     MON_HAB_GRASS, SP_LEAFROG, 14, FALSE,
     {124, 186,  92}, { 86, 140,  66}, {232, 214, 110},
-    {MV_TACKLE, MV_LEAFCUT, MV_SAPROOT, MV_SEEDSHOT}, {1, 1, 9, 17}},
+    {MV_TACKLE, MV_LEAFCUT, MV_SAPROOT, MV_SEEDSHOT}, {1, 1, 9, 13}},
 
   {"LEAFROG", RIG_BLOB, MON_GRASS, 95, 106, 2,
     60, 58, 58, 52, 110, 34, 8,
@@ -270,7 +287,7 @@ const MonSpecies mon_species[MON_SPECIES_COUNT] = {
     40, 48, 36, 50, 195, 19, 22,
     MON_HAB_SAND | MON_HAB_STONE, SP_GRIZZLE, 16, FALSE,
     {232, 140,  66}, {186,  96,  48}, {255, 214, 110},
-    {MV_TACKLE, MV_EMBER, MV_SEAR, MV_HEADBUTT}, {1, 1, 11, 19}},
+    {MV_TACKLE, MV_EMBER, MV_SEAR, MV_HEADBUTT}, {1, 1, 11, 15}},
 
   {"GRIZZLE", RIG_QUADRUPED, MON_FIRE, 96, 108, 2,
     55, 66, 48, 66, 105, 35, 6,
@@ -288,7 +305,7 @@ const MonSpecies mon_species[MON_SPECIES_COUNT] = {
     46, 36, 44, 40, 200, 18, 26,
     MON_HAB_SHORE, SP_TIDEEL, 15, FALSE,
     { 98, 176, 220}, { 62, 124, 178}, {226, 244, 250},
-    {MV_TACKLE, MV_SPLASH, MV_MISTVEIL, MV_TIDEWAVE}, {1, 1, 10, 18}},
+    {MV_TACKLE, MV_SPLASH, MV_MISTVEIL, MV_TIDEWAVE}, {1, 1, 10, 14}},
 
   {"TIDEEL", RIG_SERPENT, MON_WATER, 98, 106, 2,
     60, 52, 58, 60, 108, 34, 7,
@@ -306,7 +323,7 @@ const MonSpecies mon_species[MON_SPECIES_COUNT] = {
     52, 38, 50, 28, 205, 18, 24,
     MON_HAB_GRASS | MON_HAB_STONE, SP_MUDGUANA, 15, FALSE,
     {156, 120,  82}, {110,  84,  56}, {196, 168, 118},
-    {MV_TACKLE, MV_MUDSLAP, MV_PEBBLE, MV_QUAKE}, {1, 1, 12, 20}},
+    {MV_TACKLE, MV_MUDSLAP, MV_PEBBLE, MV_QUAKE}, {1, 1, 12, 14}},
 
   {"MUDGUANA", RIG_BIPED, MON_EARTH, 96, 108, 2,
     68, 56, 66, 40, 106, 34, 7,
@@ -322,19 +339,19 @@ const MonSpecies mon_species[MON_SPECIES_COUNT] = {
 
   {"SPAROWLET", RIG_BIRD, MON_SPARK, 68, 100, 1,
     38, 44, 34, 58, 190, 19, 18,
-    MON_HAB_GRASS | MON_HAB_DAY, SP_SPAROWL, 16, FALSE,
+    MON_HAB_GRASS | MON_HAB_NIGHT, SP_SPAROWL, 16, FALSE,
     {240, 214,  88}, {196, 166,  54}, { 86,  78,  52},
-    {MV_TACKLE, MV_JOLT, MV_GUST, MV_CHARGE}, {1, 1, 10, 18}},
+    {MV_TACKLE, MV_JOLT, MV_GUST, MV_CHARGE}, {1, 1, 10, 15}},
 
   {"SPAROWL", RIG_BIRD, MON_SPARK, 96, 108, 2,
     52, 60, 46, 78, 100, 36, 5,
-    MON_HAB_GRASS, SP_THUNDOWL, 33, TRUE,
+    MON_HAB_GRASS | MON_HAB_NIGHT, SP_THUNDOWL, 33, TRUE,
     {238, 202,  64}, {190, 150,  38}, { 72,  66,  44},
     {MV_JOLT, MV_GUST, MV_CHARGE, MV_OVERLOAD}, {1, 1, 1, 25}},
 
   {"THUNDOWL", RIG_BIRD, MON_SPARK, 120, 122, 3,
     70, 82, 60, 96, 42, 66, 0,
-    MON_HAB_GRASS, MON_NONE, 0, FALSE,
+    MON_HAB_GRASS | MON_HAB_NIGHT, MON_NONE, 0, FALSE,
     {232, 190,  52}, {158, 118,  28}, { 60,  56,  40},
     {MV_OVERLOAD, MV_JOLT, MV_RUSH, MV_CHARGE}, {1, 1, 1, 1}},
 
@@ -342,7 +359,7 @@ const MonSpecies mon_species[MON_SPECIES_COUNT] = {
     50, 42, 56, 26, 205, 18, 26,
     MON_HAB_STONE, SP_GRANILLA, 15, FALSE,
     {152, 156, 150}, {110, 114, 110}, { 86,  90,  86},
-    {MV_TACKLE, MV_PEBBLE, MV_RUBBLE, MV_BOULDER}, {1, 1, 12, 21}},
+    {MV_TACKLE, MV_PEBBLE, MV_RUBBLE, MV_BOULDER}, {1, 1, 12, 14}},
 
   {"GRANILLA", RIG_BRUTE, MON_STONE, 94, 108, 2,
     64, 58, 72, 38, 104, 35, 7,

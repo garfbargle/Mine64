@@ -390,6 +390,15 @@ static char *name_file_names[] = {
   "mine64/w112_3.nam"
 };
 
+/* Where a file that failed validation goes instead of being destroyed.  See
+   discardInvalidCurrent.  Nothing reads these; initStorage looks only at the
+   world, backup and temporary names, so a rejected file is inert. */
+static char *rejected_file_names[] = {
+  "mine64/w112_1.bad",
+  "mine64/w112_2.bad",
+  "mine64/w112_3.bad"
+};
+
 static void setDefaultWorldName(u8 slot) {
   char *name = world_names[slot];
 
@@ -481,8 +490,21 @@ static void discardInvalidCurrent(u8 slot) {
    * A file that failed format, state, or checksum validation must not keep
    * occupying the final filename.  Otherwise the fresh fallback world cannot
    * complete its first transactional rename when no usable backup exists.
+   *
+   * Freeing the name is the requirement; deleting the bytes never was.  This
+   * used to unlink, which meant one false rejection was the end of a world --
+   * and the tree pool the load path forgot to reset made that rejection
+   * certain, so the deletion is how a recoverable bug ate every save on the
+   * card.  Moving the file aside costs one rename and keeps the evidence: a
+   * .bad file can be pulled off the SD card and read, and if the rejection
+   * was the game's fault rather than the file's, the world is still there.
+   * Only the last rejection per slot is kept; unlinking is the fallback when
+   * the rename itself will not go through.
    */
-  f_unlink(file_names[slot]);
+  f_unlink(rejected_file_names[slot]);
+  if (f_rename(file_names[slot], rejected_file_names[slot]) != FR_OK) {
+    f_unlink(file_names[slot]);
+  }
 }
 
 static void restoreInventoryItem(Player *player, u8 item, u32 count) {
@@ -1300,6 +1322,28 @@ u8 beginLoadGame(void) {
     files_present[game_file_num - 1] = FALSE;
     return LOAD_GENERATE;
   }
+
+  /*
+   * Clear the derived pools this load is about to refill.
+   *
+   * beginWorldGeneration does this for a fresh world and the load path never
+   * did, which cost every save on the cartridge.  The file carries only the
+   * frozen TREE_SAVE_COUNT records, so trees[TREE_SAVE_COUNT..] keeps
+   * whatever was in RAM -- and on a cold boot that is bss, where base_y is 0
+   * rather than TREE_INACTIVE_Y, so every one of those records reads as a
+   * live tree rooted at (0, 0).  treesValid walks the whole live pool, so the
+   * second of them fails the duplicate-root test, the load calls the file
+   * corrupt, and discardInvalidCurrent takes the world away.  The menu
+   * previews the highlighted slot as soon as it comes up, so the first boot
+   * after the first save was enough: saving worked, and nothing ever survived
+   * being loaded back.
+   *
+   * The home store has the milder version of the same problem -- the payload
+   * pass overwrites every cell of the extent, so it only shows if a load
+   * fails part-way and leaves another world's blocks behind as this one's.
+   */
+  initTrees();
+  initHome();
 
   /* Every column of the saved extent needs a slot before blockSet will take
      the incoming terrain, and each one counts as fully built once it has.

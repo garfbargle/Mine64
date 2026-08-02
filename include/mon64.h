@@ -154,10 +154,16 @@ typedef struct {
 
 typedef struct {
   u8 part_count;
-  /* Standing height in model units, for the camera framing and the ground
-     shadow.  Authored rather than derived so a rig can lie about it (a
-     serpent is longer than it is tall and should not be framed as if it
-     towered). */
+  /*
+   * Standing height in model units, measured over the boxes the young form
+   * wears -- read by mon64ShadowCaster to size a creature's blob.
+   *
+   * It is the silhouette's height rather than the tallest box's: a crown or a
+   * tail fan an elder grew is not what its shadow is.  A serpent therefore
+   * still comes out shortest of the six without the field having to lie about
+   * it, which is what it used to do -- back when nothing read it at all, all
+   * six values had drifted as much as thirty per cent below the model.
+   */
   u8 height;
   MonPart parts[MON_MAX_PARTS];
 } MonRig;
@@ -406,6 +412,19 @@ u8 mon64RoamerReserve(void);
 
 /* TRUE when the mod is on for this world. */
 u8 mon64Enabled(void);
+
+/*
+ * One creature's ground shadow: where it stands, how tall it is and how wide
+ * a blob it should cast.  FALSE for an empty slot.
+ *
+ * graphics.c's shadow pass walks 0..MON_MAX_ROAMERS through this rather than
+ * reading the pool itself, so which creature casts what stays a 64MON
+ * decision: a trainer is a person and casts a person's blob, and during a
+ * battle the two fighters stand in for the roamers entirely.  Neither is
+ * something the caller could work out.
+ */
+u8 mon64ShadowCaster(u8 index, Vector3 *position, float *height,
+  float *radius);
 
 /* One simulation slice: roamer AI and spawning, party regeneration, and the
    battle step when one is running.  Called from updatePlayers beside

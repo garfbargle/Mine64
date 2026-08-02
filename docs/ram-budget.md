@@ -40,12 +40,13 @@ boots; on real hardware the picture or the sound quietly corrupts, because two
 things are writing the same bytes. `tools/check_ram.py` runs after every link
 precisely because the linker will not tell you.
 
-Current state, after the structure pass:
+Current state, after the structure pass merged with the 64MON fixes
+(`f4029b6`, which cost the ~2 KiB its own message predicted):
 
-- `make` — the program ends at `0x803598B0`, **215 KiB** below the
+- `make` — the program ends at `0x8035A1B0`, **213 KiB** below the
   framebuffers. Comfortable: the guard warns under 64 KiB.
-- `make audio` — the image ends at `0x80361130` and the heap begins at
-  `0x8037E000`: **115 KiB free**. For the first time it clears the guard's
+- `make audio` — the image ends at `0x80361A50` and the heap begins at
+  `0x8037E000`: **113 KiB free**. For the first time it clears the guard's
   warning threshold — see *Where this leaves each build*.
 
 Before that pass, at `d953a71`, the figures were 117 KiB and 17 KiB, and the
