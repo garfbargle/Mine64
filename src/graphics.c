@@ -2017,16 +2017,32 @@ static u8 staged_mesh_lod[WINDOW_SLOTS];
 
 /* Chebyshev chunk distance from a column to the nearest active player --
    every LOD and compaction decision keys off this, so split-screen terrain
-   follows all players rather than only player one. */
+   follows all players rather than only player one.
+
+   The players' chunk coordinates are memoized per callback, keyed on the
+   heartbeat that already ticks once at the top of callbackGfx: the callers
+   -- the dirty-column scan, the needs-mesh ring scan, every LOD decision --
+   can ask hundreds of times a frame, and each ask paid a float divide and
+   floor per player.  Positions are settled before any caller runs
+   (updatePlayers precedes streaming and draw), so one resolve per callback
+   is exact. */
 static int columnPlayerDistance(int cx, int cz) {
+  static u32 cached_heartbeat = 0xFFFFFFFFu;
+  static int player_pcx[MAX_PLAYERS];
+  static int player_pcz[MAX_PLAYERS];
   int best = 1000;
   u8 i;
 
+  if (cached_heartbeat != diag_heartbeat) {
+    cached_heartbeat = diag_heartbeat;
+    for (i = 0; i < active_player_count; i++) {
+      player_pcx[i] = floor(players[i].position.x / (BLOCK_SIZE * CHUNK_SIZE));
+      player_pcz[i] = floor(players[i].position.z / (BLOCK_SIZE * CHUNK_SIZE));
+    }
+  }
   for (i = 0; i < active_player_count; i++) {
-    int pcx = floor(players[i].position.x / (BLOCK_SIZE * CHUNK_SIZE));
-    int pcz = floor(players[i].position.z / (BLOCK_SIZE * CHUNK_SIZE));
-    int dx = cx - pcx;
-    int dz = cz - pcz;
+    int dx = cx - player_pcx[i];
+    int dz = cz - player_pcz[i];
     int d;
 
     if (dx < 0) dx = -dx;
