@@ -69,6 +69,10 @@ enum CameraViewMode {
 
 /* Indexed by window slot, matching the per-column tables in graphics.c. */
 u8 visible_columns[MAX_PLAYERS][WINDOW_SLOTS];
+/* See camera.h: the visible slots as a compact list for the terrain pass.
+   Rebuilt alongside the array every time visibility is computed. */
+u16 visible_slot_list[MAX_PLAYERS][VISIBLE_SLOT_LIST_MAX];
+u16 visible_slot_count[MAX_PLAYERS];
 u8 third_person_avatar_visible[MAX_PLAYERS];
 
 /* Runtime copy of the solo cap, the other half of the Z + C-left LOD and
@@ -349,11 +353,12 @@ static void updateVisibleColumnsFor(u8 player_num, Player *player,
   }
 
   /* Visibility is recorded per window slot, so clear every slot first: one the
-     extent below never visits must not keep a stale mark and send the draw
-     loop to a column that is no longer resident. */
+     extent below never visits must not keep a stale mark and send a
+     point-visibility reader to a column that is no longer resident. */
   for (slot = 0; slot < WINDOW_SLOTS; slot++) {
     visible_columns[player_num][slot] = FALSE;
   }
+  visible_slot_count[player_num] = 0;
 
   for (cx = 0; cx < CULL_SPAN; cx++) {
     for (cz = 0; cz < CULL_SPAN; cz++) {
@@ -400,7 +405,14 @@ static void updateVisibleColumnsFor(u8 player_num, Player *player,
         visible_columns[player_num][WINDOW_SLOT(world_cx, world_cz)] =
           visible ? COLUMN_VISIBLE_NEAR : FALSE;
       }
-      if (visible) visible_count++;
+      if (visible) {
+        /* Cannot overflow: the scan visits CULL_SPAN * CULL_SPAN cells --
+           the list's exact size -- and the span is narrower than the window,
+           so no two cells share a slot. */
+        visible_slot_list[player_num][visible_slot_count[player_num]++] =
+          (u16) WINDOW_SLOT(world_cx, world_cz);
+        visible_count++;
+      }
     }
   }
 
@@ -443,6 +455,20 @@ static void updateVisibleColumnsFor(u8 player_num, Player *player,
       visible_columns[player_num][trim_slots[farthest]] = FALSE;
       trim_distance[farthest] = -2;
       visible_count--;
+    }
+
+    /* The trim marked slots invisible behind the list's back; drop them. */
+    {
+      u16 kept = 0;
+
+      for (i = 0; i < visible_slot_count[player_num]; i++) {
+        u16 s = visible_slot_list[player_num][i];
+
+        if (visible_columns[player_num][s]) {
+          visible_slot_list[player_num][kept++] = s;
+        }
+      }
+      visible_slot_count[player_num] = kept;
     }
   }
   visible_far_count[player_num] = far_count;

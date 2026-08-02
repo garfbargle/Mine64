@@ -2758,21 +2758,23 @@ static void processColumnDisplayListUpdates(int can_reclaim_mesh_arena) {
 /* class_mask selects which fog classes draw: COLUMN_VISIBLE_NEAR,
    COLUMN_VISIBLE_FAR, or their OR for a single unfogged pass. */
 void drawTextured(u8 texture, u8 player_num, u8 class_mask) {
-  u16 slot;
+  u16 i, count = visible_slot_count[player_num];
 
   /*
-   * Walks slots now rather than a world extent, because with the window
-   * scrolling there is no longer a fixed range of columns to iterate -- and
-   * visible_columns, which culling already filled in per slot, is the only
-   * authority on what is on screen.
+   * Walks the compact list culling gathered rather than every window slot:
+   * this loop runs sixteen times per viewer -- thirty-two when fog splits
+   * the pass -- and at most ~120 of the 1,024 slots are ever visible, so
+   * the full scan was over 16,000 slot tests a frame answering "no".
    *
-   * This does change the order terrain is emitted in, which is not purely
-   * cosmetic: water is alpha blended, and the budget below sheds whatever has
-   * not been emitted yet, so order decides what gets dropped.  Slot order is
-   * still spatially coherent -- the high bits are x -- so it degrades the same
-   * way, just about a different axis.
+   * The list is in cull-scan order (world x-major) where the slot scan was
+   * wrapped-slot order.  That order is not purely cosmetic -- water is alpha
+   * blended, and the budget below sheds whatever has not been emitted yet,
+   * so order decides what gets dropped -- but both orders are spatially
+   * coherent, so it degrades the same way, just about a different axis.
    */
-  for (slot = 0; slot < WINDOW_SLOTS; slot++) {
+  for (i = 0; i < count; i++) {
+    u16 slot = visible_slot_list[player_num][i];
+
     if (visible_columns[player_num][slot] & class_mask) {
       Gfx *start = column_starts[texture][slot];
 
