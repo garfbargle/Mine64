@@ -193,6 +193,30 @@ static Gfx menu_setup_display_list[] = {
   gsSPEndDisplayList()
 };
 
+/*
+ * The same font, drawn through the blender instead of straight into the
+ * framebuffer.
+ *
+ * The list above writes the glyph cell whole: an I4 texel of 0 is black, so
+ * every word arrives in its own opaque box.  That is invisible on the dark
+ * cards, which were coloured to hide it (see drawWorldSetup), but the picker
+ * has a live world behind it and there the boxes are the only thing on screen
+ * that looks pasted on.  MODULATEIA takes the alpha the I format already
+ * carries -- the atlas is a hard 0-or-15 bitmap, so it is a clean cutout with
+ * nothing to antialias -- and XLU_SURF leaves memory alone wherever that alpha
+ * is zero.  No alpha compare: the blender needs no register the rest of the
+ * frame would have to put back.
+ */
+static Gfx menu_text_blend_display_list[] = {
+  gsSPDisplayList(menu_setup_display_list),
+  /* The tile load above is still in the pipe; the hazard the setup list
+     documents applies just as much to a mode change chasing it. */
+  gsDPPipeSync(),
+  gsDPSetCombineMode(G_CC_MODULATEIA_PRIM, G_CC_MODULATEIA_PRIM),
+  gsDPSetRenderMode(G_RM_XLU_SURF, G_RM_XLU_SURF2),
+  gsSPEndDisplayList()
+};
+
 u32 charWidth(char chr) {
   if (chr == 'i' || chr == ':' || chr == '.' || chr == ' ' ||
       chr == '\'' || chr == ',') {
@@ -246,7 +270,7 @@ void drawLargeString(const char *text, u32 x, u32 y, u8 scale) {
 
 static void drawMenuTitle() {
   const char *title = "MINE64";
-  const char *version = "v0.4";
+  const char *version = "v2";
   u32 width = 0;
   u32 i = 0;
 
@@ -963,6 +987,12 @@ void beginText() {
   gSPDisplayList(dlp++, menu_setup_display_list);
 }
 
+/* Text for the picker, which is the one screen whose backdrop is the world
+   itself.  Every label there goes through this rather than beginText. */
+static void beginPickerText() {
+  gSPDisplayList(dlp++, menu_text_blend_display_list);
+}
+
 static void drawWorldJobBar(u32 y) {
   u32 width = (worldJobProgress() * 120) / 100;
 
@@ -1170,7 +1200,11 @@ void drawMenu() {
     world_file_message_timer--;
   }
 
-  beginText();
+  if (current_screen == MENU) {
+    beginPickerText();
+  } else {
+    beginText();
+  }
 
   for (i = 0; i < n_lines; i++) {
     if (current_screen == MENU && i == 0) {
@@ -1224,7 +1258,7 @@ void drawMenu() {
       /* The bar occupies the status line's own row, so the two are drawn
          alternately rather than together. */
       drawWorldJobBar(147);
-      beginText();
+      beginPickerText();
     } else if (world_incomplete_message) {
       drawCenteredString("TERRAIN TOO DETAILED TO DRAW", 148);
     } else if (frame_overflows > 0) {
@@ -1268,12 +1302,14 @@ void drawMenu() {
     {
       const LegendEntry *slot_entry = menuSlotLegend();
 
-      setMenuTextColor(150, 155, 142);
+      /* White, like every other word on this screen.  The row used to be a
+         muted grey because it sat on a black cell of its own; over the world
+         it is grey text on grass, which is the one line here nobody could
+         read. */
       if (slot_entry != NULL) {
         drawLegendLabels(slot_entry, 1, MENU_LEGEND_LEFT, MENU_LEGEND_Y);
       }
       drawLegendLabels(menuActLegend(), 1, menuActLegendX(), MENU_LEGEND_Y);
-      setMenuTextColor(255, 255, 255);
     }
   }
 }
