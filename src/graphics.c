@@ -3964,9 +3964,8 @@ static u8 shadowNearAnyPlayer(float wx, float wz) {
  * conflating them faded a tree's shadow out precisely because the tree was
  * tall enough to cast a good one.
  */
-static void addGroundShadow(Vector3 position, float body_height,
-    float radius, float strength) {
-  Vector3 light;
+static void addGroundShadow(Vector3 position, Vector3 light,
+    float body_height, float radius, float strength) {
   float ground, airborne, height, offset_x, offset_z, spread, reach, alpha;
   Vtx *verts;
   u8 i;
@@ -4005,8 +4004,9 @@ static void addGroundShadow(Vector3 position, float body_height,
 
   /* Opposite the light, displaced by the caster's height over the tangent of
      the light's altitude.  The floor under the vertical term is what keeps a
-     grazing light from projecting to infinity. */
-  light = dayCycleLightDirection();
+     grazing light from projecting to infinity.  The light arrives from the
+     caller: it is a property of the frame, not of any one caster, and
+     resolving it here cost three trig calls per accepted shadow. */
   reach = height / max(light.y, .30f);
   offset_x = -light.x * reach;
   offset_z = -light.z * reach;
@@ -4050,12 +4050,14 @@ static void addGroundShadow(Vector3 position, float body_height,
  */
 static void buildGroundShadows(void) {
   float strength = dayCycleShadowStrength();
+  Vector3 light;
   u16 i;
 
   shadow_count = 0;
   if (strength <= .02f) {
     return;
   }
+  light = dayCycleLightDirection();
 
   for (i = 0; i < MAX_TREES && shadow_count < SHADOW_SLOTS; i++) {
     TreeRecord *tree = &trees[i];
@@ -4076,7 +4078,8 @@ static void buildGroundShadows(void) {
     /* Measured from the canopy, not the trunk: the canopy is what actually
        blocks the light, and it is what the player expects to see on the
        ground. */
-    addGroundShadow(position, height, BLOCK_SIZE * 1.35f, strength * .85f);
+    addGroundShadow(position, light, height, BLOCK_SIZE * 1.35f,
+      strength * .85f);
   }
 
   for (i = 0; i < active_player_count && shadow_count < SHADOW_SLOTS; i++) {
@@ -4085,8 +4088,8 @@ static void buildGroundShadows(void) {
     if (players[i].dead) {
       continue;
     }
-    addGroundShadow(players[i].position, BLOCK_SIZE * .9f, BLOCK_SIZE * .42f,
-      strength);
+    addGroundShadow(players[i].position, light, BLOCK_SIZE * .9f,
+      BLOCK_SIZE * .42f, strength);
   }
 
   for (i = 0; i < MAX_MOBS && shadow_count < SHADOW_SLOTS; i++) {
@@ -4103,7 +4106,7 @@ static void buildGroundShadows(void) {
     if (!mobs[i].active) {
       continue;
     }
-    addGroundShadow(mobs[i].position, BLOCK_SIZE * height * size,
+    addGroundShadow(mobs[i].position, light, BLOCK_SIZE * height * size,
       BLOCK_SIZE * radius * size, strength);
   }
 
@@ -4111,7 +4114,7 @@ static void buildGroundShadows(void) {
     if (!dropped_items[i].active) {
       continue;
     }
-    addGroundShadow(dropped_items[i].position, BLOCK_SIZE * .2f,
+    addGroundShadow(dropped_items[i].position, light, BLOCK_SIZE * .2f,
       BLOCK_SIZE * .18f, strength * .8f);
   }
 }
