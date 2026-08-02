@@ -288,7 +288,7 @@ static void updateVisibleColumnsFor(u8 player_num, Player *player,
   u16 visible_count = 0;
   u16 far_count = 0;
   float nearest_hole_sq = VISIBLE_HOLE_NONE;
-  float dx, dz, farthest_distance;
+  float dx, dz;
   u8 multiplayer = view_mode == CAMERA_VIEW_TWO_PLAYER ||
     view_mode == CAMERA_VIEW_FOUR_PLAYER;
   u16 max_visible_columns = view_mode == CAMERA_VIEW_LOADING ?
@@ -417,47 +417,68 @@ static void updateVisibleColumnsFor(u8 player_num, Player *player,
   }
 
   /* Shed the farthest columns down to the cap.  The wider ring can pass a
-     few hundred columns through the frustum, so the trim works from a
-     compact list gathered once rather than rescanning every window slot per
-     removal -- that rescan was quadratic in the overage. */
+     few hundred columns through the frustum, and re-scanning for the strict
+     farthest per removal made the shed quadratic in the overage -- up to
+     ~320 removals against ~440 candidates.  A distance histogram finds the
+     cut in one pass instead: every band strictly beyond the boundary is
+     shed whole, and the boundary band sheds just enough of its members, in
+     list order, to reach the cap.  A band spans 256 of squared-block
+     distance -- under two blocks of range where shedding happens -- so
+     "farthest first" now holds to within a band where it held exactly, for
+     three linear passes instead of the quadratic rescan. */
   if (visible_count > max_visible_columns) {
-    static u16 trim_slots[CULL_SPAN * CULL_SPAN];
-    static float trim_distance[CULL_SPAN * CULL_SPAN];
-    u16 trim_count = 0;
+    static u8 trim_bucket[VISIBLE_SLOT_LIST_MAX];
+    u16 bucket_count[256];
+    u16 overage = visible_count - max_visible_columns;
+    u16 above = 0;
+    u16 from_boundary;
     u16 i;
+    int boundary;
 
-    for (slot = 0; slot < WINDOW_SLOTS && trim_count < CULL_SPAN * CULL_SPAN;
-        slot++) {
-      if (visible_columns[player_num][slot]) {
-        dx = windowSlotChunkX(slot) * CHUNK_SIZE + CHUNK_SIZE / 2 -
-          camera_position.x / BLOCK_SIZE;
-        dz = windowSlotChunkZ(slot) * CHUNK_SIZE + CHUNK_SIZE / 2 -
-          camera_position.z / BLOCK_SIZE;
-        trim_slots[trim_count] = slot;
-        trim_distance[trim_count] = dx * dx + dz * dz;
-        trim_count++;
-      }
+    for (i = 0; i < 256; i++) {
+      bucket_count[i] = 0;
     }
-    while (visible_count > max_visible_columns) {
-      u16 farthest = 0;
+    for (i = 0; i < visible_slot_count[player_num]; i++) {
+      u32 band;
 
-      farthest_distance = -1;
-      for (i = 0; i < trim_count; i++) {
-        if (trim_distance[i] > farthest_distance) {
-          farthest_distance = trim_distance[i];
-          farthest = i;
-        }
+      slot = visible_slot_list[player_num][i];
+      dx = windowSlotChunkX(slot) * CHUNK_SIZE + CHUNK_SIZE / 2 -
+        camera_position.x / BLOCK_SIZE;
+      dz = windowSlotChunkZ(slot) * CHUNK_SIZE + CHUNK_SIZE / 2 -
+        camera_position.z / BLOCK_SIZE;
+      band = (u32) (dx * dx + dz * dz) >> 8;
+      if (band > 255) {
+        band = 255;
       }
-      if (visible_columns[player_num][trim_slots[farthest]] ==
-          COLUMN_VISIBLE_FAR) {
+      trim_bucket[i] = (u8) band;
+      bucket_count[band]++;
+    }
+    for (boundary = 255; boundary > 0; boundary--) {
+      if (above + bucket_count[boundary] >= overage) {
+        break;
+      }
+      above += bucket_count[boundary];
+    }
+    from_boundary = overage - above;
+    for (i = 0; i < visible_slot_count[player_num]; i++) {
+      if (trim_bucket[i] < boundary) {
+        continue;
+      }
+      if (trim_bucket[i] == boundary) {
+        if (from_boundary == 0) {
+          continue;
+        }
+        from_boundary--;
+      }
+      slot = visible_slot_list[player_num][i];
+      if (visible_columns[player_num][slot] == COLUMN_VISIBLE_FAR) {
         far_count--;
       }
-      visible_columns[player_num][trim_slots[farthest]] = FALSE;
-      trim_distance[farthest] = -2;
+      visible_columns[player_num][slot] = FALSE;
       visible_count--;
     }
 
-    /* The trim marked slots invisible behind the list's back; drop them. */
+    /* The shed marked slots invisible behind the list's back; drop them. */
     {
       u16 kept = 0;
 
