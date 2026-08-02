@@ -986,48 +986,71 @@ static void drawWorldJobBar(u32 y) {
  * two different things depending on what is in the slot.  The row is also the
  * only place the deleted world is offered back, so it is not decoration: it
  * is where the undo lives.
+ *
+ * The two are pushed into opposite corners rather than sat side by side in a
+ * centred row.  They are not a pair of adjacent choices: one goes into the
+ * world and the other takes it away, and a thumb travelling toward the first
+ * should not pass over the second.  The gap is the point of the layout.
  */
-static const LegendEntry menu_world_legend[] = {
-  { BUTTON_ICON_A, BUTTON_ICON_NONE, "PLAY" },
-  { BUTTON_ICON_Z, BUTTON_ICON_NONE, "DELETE" }
+static const LegendEntry menu_play_legend[] = {
+  { BUTTON_ICON_A, BUTTON_ICON_NONE, "PLAY" }
 };
 
-static const LegendEntry menu_empty_legend[] = {
+static const LegendEntry menu_create_legend[] = {
   { BUTTON_ICON_A, BUTTON_ICON_NONE, "CREATE" }
 };
 
+static const LegendEntry menu_delete_legend[] = {
+  { BUTTON_ICON_Z, BUTTON_ICON_NONE, "DELETE" }
+};
+
 static const LegendEntry menu_restore_legend[] = {
-  { BUTTON_ICON_A, BUTTON_ICON_NONE, "CREATE" },
   { BUTTON_ICON_Z, BUTTON_ICON_NONE, "RESTORE" }
 };
 
 #define MENU_LEGEND_Y 216
+/* Inside the safe area at both ends, so neither corner is the one a CRT eats.
+   The Z entry starts at the left edge; the A entry ends at the right one. */
+#define MENU_LEGEND_LEFT 20
+#define MENU_LEGEND_RIGHT 300
 
-static const LegendEntry *menuSlotLegend(u8 *count) {
+/* What A does: go into the world in this slot, or make one where there is
+   none.  Always present, always in the right-hand corner. */
+static const LegendEntry *menuActLegend(void) {
+  return files_present[selected_option] ? menu_play_legend :
+    menu_create_legend;
+}
+
+/* And what Z does, which on a slot that is simply empty is nothing -- so the
+   left corner stays bare rather than carrying a button that does not
+   answer. */
+static const LegendEntry *menuSlotLegend(void) {
   if (files_present[selected_option]) {
-    *count = LEGEND_COUNT(menu_world_legend);
-    return menu_world_legend;
+    return menu_delete_legend;
   }
   if (deleted_files_present[selected_option]) {
-    *count = LEGEND_COUNT(menu_restore_legend);
     return menu_restore_legend;
   }
-  *count = LEGEND_COUNT(menu_empty_legend);
-  return menu_empty_legend;
+  return NULL;
+}
+
+static u32 menuActLegendX(void) {
+  return MENU_LEGEND_RIGHT - legendWidth(menuActLegend(), 1);
 }
 
 /* Icons are fill sprites and the picker's own drawing is all text, so the row
    is split the way every legend in the game is: this half runs before
    beginText, the labels run after it. */
 static void drawMenuLegendIcons() {
-  u8 count;
-  const LegendEntry *entries = menuSlotLegend(&count);
+  const LegendEntry *slot_entry = menuSlotLegend();
 
   gDPPipeSync(dlp++);
   gDPSetCycleType(dlp++, G_CYC_FILL);
   gDPSetRenderMode(dlp++, G_RM_NOOP, G_RM_NOOP2);
-  drawLegendIcons(entries, count, centredLegendX(entries, count),
-    MENU_LEGEND_Y);
+  if (slot_entry != NULL) {
+    drawLegendIcons(slot_entry, 1, MENU_LEGEND_LEFT, MENU_LEGEND_Y);
+  }
+  drawLegendIcons(menuActLegend(), 1, menuActLegendX(), MENU_LEGEND_Y);
   gDPPipeSync(dlp++);
 }
 
@@ -1243,12 +1266,13 @@ void drawMenu() {
       setMenuTextColor(255, 255, 255);
     }
     {
-      u8 count;
-      const LegendEntry *entries = menuSlotLegend(&count);
+      const LegendEntry *slot_entry = menuSlotLegend();
 
       setMenuTextColor(150, 155, 142);
-      drawLegendLabels(entries, count, centredLegendX(entries, count),
-        MENU_LEGEND_Y);
+      if (slot_entry != NULL) {
+        drawLegendLabels(slot_entry, 1, MENU_LEGEND_LEFT, MENU_LEGEND_Y);
+      }
+      drawLegendLabels(menuActLegend(), 1, menuActLegendX(), MENU_LEGEND_Y);
       setMenuTextColor(255, 255, 255);
     }
   }
