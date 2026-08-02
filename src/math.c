@@ -165,20 +165,27 @@ float dot(Vector3 a, Vector3 b) {
   return a.x * b.x + a.y * b.y + a.z * b.z;
 }
 
+/* One sine and one cosine, not two of each: the library calls are opaque to
+   the compiler, so it cannot fold the duplicates itself, and these helpers
+   sit under every entity part, camera vector and cull line built per frame. */
 Vector3 rotateX(Vector3 v, float angle) {
+  float s = sinf(angle * M_DTOR);
+  float c = cosf(angle * M_DTOR);
   Vector3 out = {
     v.x,
-    v.y * cosf(angle * M_DTOR) - v.z * sinf(angle * M_DTOR),
-    v.y * sinf(angle * M_DTOR) + v.z * cosf(angle * M_DTOR)
+    v.y * c - v.z * s,
+    v.y * s + v.z * c
   };
   return out;
 }
 
 Vector3 rotateY(Vector3 v, float angle) {
+  float s = sinf(angle * M_DTOR);
+  float c = cosf(angle * M_DTOR);
   Vector3 out = {
-    v.x * cosf(angle * M_DTOR) - v.z * sinf(angle * M_DTOR),
-    v.y, 
-    v.x * sinf(angle * M_DTOR) + v.z * cosf(angle * M_DTOR)
+    v.x * c - v.z * s,
+    v.y,
+    v.x * s + v.z * c
   };
   return out;
 }
