@@ -136,9 +136,32 @@ static u8 mesh_building_generation;
  * from the live pointers while the incoming one is emitted, and a completed
  * build publishes by copying staged over live and freeing the old
  * generation's blocks.
+ *
+ * The staged tables are indexed by extent position, not window slot.  A
+ * build only ever compiles the fixed MAX_X x MAX_Z extent --
+ * stepWorldMeshBuild is the sole caller of makeColumnDisplayLists while a
+ * build is active, and it walks exactly those columns -- so slot-sized
+ * staged tables were 52 KiB of pointers that could never be occupied
+ * outside 196 entries.  An extent column's slot decodes straight back to
+ * its coordinates because the extent is narrower than the window, which is
+ * what stagedIndexForSlot relies on.
  */
+#define STAGED_COLUMNS (CHUNKS_X * CHUNKS_Z)
+#if CHUNKS_X > WINDOW_COLUMNS || CHUNKS_Z > WINDOW_COLUMNS
+#error "stagedIndexForSlot needs the extent to fit the window unaliased"
+#endif
 static Gfx *column_starts[NUM_TEXTURES][WINDOW_SLOTS];
-static Gfx *staged_starts[NUM_TEXTURES][WINDOW_SLOTS];
+static Gfx *staged_starts[NUM_TEXTURES][STAGED_COLUMNS];
+
+static u32 stagedIndexForColumn(int cx, int cz) {
+  return (u32) cx * CHUNKS_Z + (u32) cz;
+}
+
+/* Valid only for a slot bound to an extent column, which every staged mesh
+   block's slot is. */
+static u32 stagedIndexForSlot(u32 slot) {
+  return (slot >> WINDOW_SHIFT) * CHUNKS_Z + (slot & WINDOW_MASK);
+}
 /* Hard ceiling for terrain branches within one frame list.  Release builds
    compile out assert(), so an overflow here would silently run past this
    frame's buffer into the next one and hand the RSP a corrupt list -- which
@@ -189,7 +212,7 @@ static u8 mesh_alloc_cooldown;
 /* Whether a slot has compiled geometry behind the live pointers, and the
    staged equivalent a world build publishes. */
 static u8 column_meshed[WINDOW_SLOTS];
-static u8 staged_meshed[WINDOW_SLOTS];
+static u8 staged_meshed[STAGED_COLUMNS];
 
 static Gfx empty_column_display_list[] = {
   gsSPEndDisplayList()
@@ -1912,14 +1935,21 @@ static void meshDefragStep(void) {
         }
       }
     }
-    /* Re-aim whichever pointer set references this block. */
-    {
-      Gfx *(*starts)[WINDOW_SLOTS] =
-        block->generation == mesh_generation ? column_starts : staged_starts;
+    /* Re-aim whichever pointer set references this block.  A staged block
+       belongs to a world build, whose columns all sit inside the fixed
+       extent, so its pointers live in the extent-indexed staged tables. */
+    if (block->generation == mesh_generation) {
+      for (texture = 0; texture < NUM_TEXTURES; texture++) {
+        if (column_starts[texture][block->slot] != empty_column_display_list) {
+          column_starts[texture][block->slot] -= gap;
+        }
+      }
+    } else {
+      u32 index = stagedIndexForSlot(block->slot);
 
       for (texture = 0; texture < NUM_TEXTURES; texture++) {
-        if (starts[texture][block->slot] != empty_column_display_list) {
-          starts[texture][block->slot] -= gap;
+        if (staged_starts[texture][index] != empty_column_display_list) {
+          staged_starts[texture][index] -= gap;
         }
       }
     }
@@ -2012,7 +2042,7 @@ static void buildFaceTextureTable(void) {
 u8 mesh_lod_promote_radius = MESH_LOD_PROMOTE_RADIUS;
 u8 mesh_lod_demote_radius = MESH_LOD_DEMOTE_RADIUS;
 static u8 column_mesh_lod[WINDOW_SLOTS];
-static u8 staged_mesh_lod[WINDOW_SLOTS];
+static u8 staged_mesh_lod[STAGED_COLUMNS];
 
 /* Chebyshev chunk distance from a column to the nearest active player --
    every LOD and compaction decision keys off this, so split-screen terrain
@@ -2342,11 +2372,16 @@ static u8 makeColumnDisplayLists(int cx, int cz) {
   u32 slot = WINDOW_SLOT(cx, cz);
   u8 lod = meshLodFor(cx, cz);
   /* World builds emit the incoming world's generation behind staged
-     pointers; gameplay rebuilds replace the live column directly. */
+     pointers; gameplay rebuilds replace the live column directly.  The
+     staged tables are extent-indexed (see their declaration), so the two
+     sets differ in shape as well as identity: base, stride and index are
+     chosen together here. */
   u8 generation = mesh_build_active ?
     mesh_building_generation : mesh_generation;
-  Gfx *(*starts)[WINDOW_SLOTS] =
-    mesh_build_active ? staged_starts : column_starts;
+  u32 table_index = mesh_build_active ? stagedIndexForColumn(cx, cz) : slot;
+  Gfx **starts_base = mesh_build_active ?
+    &staged_starts[0][0] : &column_starts[0][0];
+  u32 starts_stride = mesh_build_active ? STAGED_COLUMNS : WINDOW_SLOTS;
   u8 *meshed = mesh_build_active ? staged_meshed : column_meshed;
   u8 *lods = mesh_build_active ? staged_mesh_lod : column_mesh_lod;
   u32 old_start = 0;
@@ -2357,6 +2392,12 @@ static u8 makeColumnDisplayLists(int cx, int cz) {
   Vtx *verts_cursor;
   Gfx *cmds_cursor;
   int old_index;
+
+  /* The staged index is only meaningful for extent columns; while a build
+     is active, stepWorldMeshBuild is the sole caller and walks exactly the
+     extent.  If a second staged caller is ever added, it must honour this. */
+  assert(!mesh_build_active ||
+    ((u32) cx < CHUNKS_X && (u32) cz < CHUNKS_Z));
 
   /* The slot may have held a different column until now, so its translation
      is rewritten here rather than prebaked once for a fixed world.  Doing it
@@ -2442,18 +2483,19 @@ static u8 makeColumnDisplayLists(int cx, int cz) {
 
   if (total_cmds == 0) {
     for (texture = 0; texture < NUM_TEXTURES; texture++) {
-      starts[texture][slot] = empty_column_display_list;
+      starts_base[texture * starts_stride + table_index] =
+        empty_column_display_list;
     }
   } else {
     verts_cursor = (Vtx *) (mesh_arena + block_start);
     cmds_cursor = mesh_arena + block_start + total_verts;
     for (texture = 0; texture < NUM_TEXTURES; texture++) {
-      starts[texture][slot] =
+      starts_base[texture * starts_stride + table_index] =
         emitColumnTextureDL(slot, texture, &verts_cursor, &cmds_cursor);
     }
   }
-  meshed[slot] = TRUE;
-  lods[slot] = lod;
+  meshed[table_index] = TRUE;
+  lods[table_index] = lod;
   return TRUE;
 }
 
@@ -2497,10 +2539,12 @@ void beginWorldMeshBuild(void) {
   mesh_alloc_cooldown = 0;
   for (slot = 0; slot < WINDOW_SLOTS; slot++) {
     dirty_columns[slot] = FALSE;
+  }
+  for (slot = 0; slot < STAGED_COLUMNS; slot++) {
     staged_meshed[slot] = FALSE;
   }
   for (texture = 0; texture < NUM_TEXTURES; texture++) {
-    for (slot = 0; slot < WINDOW_SLOTS; slot++) {
+    for (slot = 0; slot < STAGED_COLUMNS; slot++) {
       staged_starts[texture][slot] = empty_column_display_list;
     }
   }
@@ -2567,15 +2611,34 @@ u8 stepWorldMeshBuild(u16 columns) {
 
     /* Publish: the staged set becomes the world on screen, and the old
        generation's blocks go back to the allocator.  Runs with no task in
-       flight, so the swap is invisible. */
+       flight, so the swap is invisible.  Wipe the live set first, then
+       place each staged extent column at its window slot -- the staged set
+       held nothing outside the extent, so this is exactly the whole-table
+       copy it replaces. */
     for (texture = 0; texture < NUM_TEXTURES; texture++) {
       for (slot = 0; slot < WINDOW_SLOTS; slot++) {
-        column_starts[texture][slot] = staged_starts[texture][slot];
+        column_starts[texture][slot] = empty_column_display_list;
       }
     }
     for (slot = 0; slot < WINDOW_SLOTS; slot++) {
-      column_meshed[slot] = staged_meshed[slot];
-      column_mesh_lod[slot] = staged_mesh_lod[slot];
+      column_meshed[slot] = FALSE;
+      column_mesh_lod[slot] = MESH_LOD_SHELL;
+    }
+    {
+      u8 cx, cz;
+
+      for (cx = 0; cx < CHUNKS_X; cx++) {
+        for (cz = 0; cz < CHUNKS_Z; cz++) {
+          u32 window_slot = WINDOW_SLOT(cx, cz);
+          u32 index = stagedIndexForColumn(cx, cz);
+
+          for (texture = 0; texture < NUM_TEXTURES; texture++) {
+            column_starts[texture][window_slot] = staged_starts[texture][index];
+          }
+          column_meshed[window_slot] = staged_meshed[index];
+          column_mesh_lod[window_slot] = staged_mesh_lod[index];
+        }
+      }
     }
     mesh_generation = mesh_building_generation;
     meshFreeGeneration(old_generation);
@@ -7213,6 +7276,8 @@ void initGraphics() {
     for (texture = 0; texture < NUM_TEXTURES; texture++) {
       for (slot = 0; slot < WINDOW_SLOTS; slot++) {
         column_starts[texture][slot] = empty_column_display_list;
+      }
+      for (slot = 0; slot < STAGED_COLUMNS; slot++) {
         staged_starts[texture][slot] = empty_column_display_list;
       }
     }
