@@ -4,7 +4,8 @@ Where Mine64's 4 MiB goes, in plain terms, and what can be got back.
 
 Measured by parsing the linked ELFs (`mine64.out`, `mine64-audio.out`) directly
 — section headers and symbol tables, no toolchain needed. Figures are from
-2026-08-01, at `d953a71`, and the treemap in *Visualising it* comes out of the
+2026-08-01, after the structure pass (item 5 under *What was reclaimed*), and
+the treemap in *Visualising it* comes out of the
 same pass: `tools/ram_report.py` prints every number quoted below and rewrites
 the treemap's data from the same two files. Re-measure after anything large
 moves — one command, both builds:
@@ -39,19 +40,20 @@ boots; on real hardware the picture or the sound quietly corrupts, because two
 things are writing the same bytes. `tools/check_ram.py` runs after every link
 precisely because the linker will not tell you.
 
-Current state, at `d953a71`:
+Current state, after the structure pass:
 
-- `make` — the program ends at `0x803720B0`, **117 KiB** (120,656 bytes) below
-  the framebuffers. Comfortable: the guard warns under 64 KiB.
-- `make audio` — the image ends at `0x80379950` and the heap begins at
-  `0x8037E000`: **17 KiB free** (18,096 bytes). It passes, and still trips the
-  warning, which is correct — see *Where this leaves each build*.
+- `make` — the program ends at `0x803598B0`, **215 KiB** below the
+  framebuffers. Comfortable: the guard warns under 64 KiB.
+- `make audio` — the image ends at `0x80361130` and the heap begins at
+  `0x8037E000`: **115 KiB free**. For the first time it clears the guard's
+  warning threshold — see *Where this leaves each build*.
 
-The audio figure is newer than it looks. Two commits ago, at `cc5dd2d`, that
-build was 208 bytes *over*; sizing the heap from a hardware reading rather than
-the SDK's formula (`5aee62a`) returned 18 KiB and is what put it back under.
-The story is in *An audio heap sized for this game* and *What was spent since
-the last measurement*.
+Before that pass, at `d953a71`, the figures were 117 KiB and 17 KiB, and the
+audio figure was newer than it looked: two commits earlier, at `cc5dd2d`, that
+build was 208 bytes *over*, and sizing the heap from a hardware reading rather
+than the SDK's formula (`5aee62a`) is what put it back under.  The story is in
+*An audio heap sized for this game* and *What was spent since the last
+measurement*.
 
 One thing worth knowing about the failure mode, since the audio build has now
 hit it twice: when the guard fails, `make audio` exits non-zero, but
@@ -326,6 +328,38 @@ frame-time claim here it wants hardware to confirm.
 **Measured:** `make` went from 114 KiB free to 138 KiB, and `make audio` from
 12 KiB over to 12 KiB free.
 
+### 5. Structures sized to their real bounds — ~98 KiB, both builds
+
+One pass, committed as individually revertable steps (`66cbbdd..1b12e07`),
+returning memory that was reserved for occupancies the code already ruled out:
+
+- **Staged mesh tables, extent-indexed — 54 KiB.** A world build only ever
+  compiles the fixed extent's 196 columns, but `staged_starts` and friends
+  were sized for all 1,024 window slots.  *Narrow the index* below proposed
+  halving both pointer tables at a per-frame indirection cost; this takes
+  more than that saving from the staged half alone, for free, because only
+  the build path indexes it.
+- **The merged-quad vertex table, computed instead of stored — 24 KiB.**
+  Every entry of the generated `quads.h` was a unit corner scaled by the
+  quad's spans; baking now computes the fields it used to copy.  Checked
+  bit-for-bit against the table before it was removed.
+- **The mesh-block ledger — 16 KiB.** Sized at two entries per window slot;
+  residency caps real occupancy at 821 (625 ring columns + 196 staged), so
+  1,024 entries keep a 25% margin.
+- **The per-column quad cap — 7.5 KiB.** 1536 was six times a typical worst
+  column; 768 is still nearly three.
+- **The noise hash table — 0.75 KiB**, `int` .data to `const u8` rodata.
+
+Against that, the pass spends 3.5 KiB on per-viewer visible-slot lists and
+1.5 KiB on a per-column texture permutation — both bought as part of frame-time
+work (the same commits cut the terrain pass's slot scans by ~90% and the mesh
+compile's redundant reads; hardware's W/B rows have the final word on those).
+
+**Verified:** `tools/gentest` and `tools/edittest` pass; 12 whole worlds hash
+byte-identical across every terrain shape before and after; both ROMs build;
+and the emulator GUI tour renders title, setup, HUD, pack and camera correctly
+from the new mesh path.
+
 ### Verified how
 
 All three changes were applied together in a throwaway worktree at the same
@@ -434,13 +468,15 @@ itself and does not have this problem. Fixing the other three means widening
 them to per-viewport ranges, which is about 13 KiB of the 24 the collapse just
 returned.
 
-### Narrow the index — up to 64 KiB, both builds
+### Narrow the index — up to 32 KiB, both builds
 
-`column_starts` and `staged_starts` store a full 32-bit pointer per texture per
-slot, and most of those point at the same shared "nothing here" list — a typical
-column uses five or six of the sixteen textures. Because a column's mesh is one
-contiguous block, a slot only really needs its block number plus a 16-bit offset
-within that block, which halves both tables.
+`column_starts` stores a full 32-bit pointer per texture per slot, and most of
+those point at the same shared "nothing here" list — a typical column uses five
+or six of the sixteen textures. Because a column's mesh is one contiguous
+block, a slot only really needs its block number plus a 16-bit offset within
+that block, which halves the table.  (This entry used to cover
+`staged_starts` too; the structure pass took that half — and more — for free
+by extent-indexing it, so what remains is the live table alone.)
 
 The cost is an extra indirection per texture per column in the draw loop, and
 that loop is already the bulk of a standing frame. Measure before committing.
@@ -498,26 +534,26 @@ exactly where the Z buffer ends. Nothing is wasted between them.
 
 Measured, not projected — every column is a real build in the container.
 
-| | before | + microcodes | + fifo & heap | + matrix | `cc5dd2d` | now (`d953a71`) |
-|---|---|---|---|---|---|---|
-| `make` | 35 KiB free ⚠ | 64 KiB free ✓ | 128 KiB free ✓ | 138 KiB free ✓ | 117 KiB free ✓ | **117 KiB free** ✓ |
-| `make audio` | 310 KiB over ✗ | 285 KiB over ✗ | 2 KiB free ⚠ | 12 KiB free ⚠ | 208 B over ✗ | **17 KiB free** ⚠ |
+| | before | + microcodes | + fifo & heap | + matrix | `cc5dd2d` | `d953a71` | now (+ structures) |
+|---|---|---|---|---|---|---|---|
+| `make` | 35 KiB free ⚠ | 64 KiB free ✓ | 128 KiB free ✓ | 138 KiB free ✓ | 117 KiB free ✓ | 117 KiB free ✓ | **215 KiB free** ✓ |
+| `make audio` | 310 KiB over ✗ | 285 KiB over ✗ | 2 KiB free ⚠ | 12 KiB free ⚠ | 208 B over ✗ | 17 KiB free ⚠ | **115 KiB free** ✓ |
 
-The default build went from tripping the headroom warning to nearly twice the
-margin the guard asks for, and it has absorbed 21 KiB of ordinary feature
-growth on top of that without complaint. It is not the build to worry about.
+The default build went from tripping the headroom warning to over three times
+the margin the guard asks for. It is not the build to worry about.
 
-The audio build is. It reached 2 KiB free, drifted to zero on ordinary feature
-growth, went 12 KiB over when the people work landed, came back to 12 KiB free
-on the matrix collapse that work turned up, gained 8 KiB when the reserve went
-to 88 KiB, went 208 bytes over on five gameplay commits, and is at 17 KiB free
-now that the heap is sized from a hardware reading instead of a formula.
+The audio build was. It reached 2 KiB free, drifted to zero on ordinary
+feature growth, went 12 KiB over when the people work landed, came back to 12
+KiB free on the matrix collapse that work turned up, went 208 bytes over on
+five gameplay commits, reached 17 KiB when the heap was sized from a hardware
+reading — and the structure pass then took it to 115 KiB, the first time it
+has ever cleared the guard's 64 KiB warning.
 
-Seventeen KiB is the most real margin it has ever had — the earlier figures
-were headroom against a heap reserve that was itself padded guesswork, and this
-one is not. It is still under the guard's warning threshold, and the warning
-should stay. Five gameplay commits cost 19 KiB. This buys about one more round
-of features, and the levers left after that all cost frame time.
+That margin is real in the same sense the 17 was: headroom against a heap
+reserve sized from a measurement, not a formula.  At the measured rate of
+ordinary feature growth (19 KiB per five gameplay commits), it is several
+rounds of features rather than one — and the levers still listed above remain
+unspent, though everything left costs frame time.
 
 ## How to measure it yourself
 

@@ -212,14 +212,14 @@ Biomes made it obvious — a desert became a forest between sessions.
   seed and mod mask on the next visit. Per-chunk diff saves are the fix.
 * **Details are not persisted.** Torches, stairs, doors and windows reload as
   the crafting tables that proxy them in the terrain.
-* **Audio fits, with 17 KiB to spare.** It had gone 208 bytes over NuSystem's
-  audio heap at `cc5dd2d`; reading the `U` row on hardware (peak 64 KiB) and
-  sizing the reserve at 70 KiB rather than the SDK formula's padded 88 returned
-  18 KiB. That was the last free lever — the reserve is now 6 KiB over a
-  measurement, and the next options (a narrower per-slot index, a pooled block
-  window, post-diff-save trimming) all cost frame time. Five gameplay commits
-  cost 19 KiB, so treat this as one round of features, not a solved problem.
-  See [RAM budget](ram-budget.md).
+* **Audio fits, with 115 KiB to spare.** It had gone 208 bytes over NuSystem's
+  audio heap at `cc5dd2d`; sizing the reserve from a hardware reading of the
+  `U` row (peak 64 KiB, reserve 70 KiB) brought it to 17 KiB, and the
+  structure pass — extent-indexed staged tables, computed quad vertices, and
+  pools resized to the bounds residency already enforces — took it to 115,
+  clear of the headroom warning for the first time. Feature growth measured
+  ~19 KiB per five gameplay commits, so this is several rounds of headroom,
+  not a solved problem. See [RAM budget](ram-budget.md).
 * **64MON teams are not saved.** `mon64SaveBlob` and `mon64LoadBlob` exist and
   nothing calls them, deliberately: the per-chunk diff format will move every
   offset in the file, and the party belongs in that version bump. See *Not
