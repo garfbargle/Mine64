@@ -1,4 +1,4 @@
-# Modern N64 SDK-compatible build for Mine64 v0.4.
+# Modern N64 SDK-compatible build for Mine64 v2.
 #
 # ROOT defaults to the compatibility tree supplied by the build container.
 # Set ROOT to a locally installed Modern N64 SDK root when building elsewhere.

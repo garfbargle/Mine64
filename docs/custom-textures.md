@@ -64,5 +64,3 @@ With the console not running a ROM, upload `build/mine64.n64` to:
 ```text
 /games/Mine64.n64
 ```
-
-The preserved pre-v0.2 ROM is `/games/Mine64_original.64`.
