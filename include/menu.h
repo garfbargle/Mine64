@@ -9,6 +9,9 @@ enum Screen {
      card.  Everything on it is locked once the world is created. */
   WORLD_SETUP,
   WORLD_NAMING,
+  /* Standing over a world with a hand on the switch.  The world being deleted
+     is the one orbiting behind the card, which is the point of it. */
+  WORLD_DELETE,
   GAME,
   INVENTORY
 };
@@ -27,7 +30,8 @@ extern enum Screen current_screen;
  */
 static __inline__ __attribute__((unused)) u8 screenShowsPreview(
     enum Screen screen) {
-  return screen == MENU || screen == WORLD_SETUP || screen == WORLD_NAMING;
+  return screen == MENU || screen == WORLD_SETUP || screen == WORLD_NAMING ||
+    screen == WORLD_DELETE;
 }
 extern u32 save_message_cooldown;
 extern u8 save_failed_message;
@@ -87,6 +91,44 @@ u8 menuActPending();
 u8 menuCommitReady();
 /* Called by the job driver when a sliced save ends, either way. */
 void menuSaveFinished(u8 ok);
+
+/*
+ * The delete card.
+ *
+ * Three things stand in for the "ARE YOU SURE?" box a player answers YES to
+ * without reading:
+ *
+ *  - The world is on screen.  The picker has already loaded and meshed the
+ *    highlighted slot in order to orbit it, so the card can refuse to arm
+ *    until the world it is about to delete is the world behind it.  You
+ *    cannot delete a world you have not looked at.
+ *  - The button is held, not pressed.  A tap is worth nothing here, which is
+ *    exactly what a tap is worth to a player mashing A.
+ *  - It can be undone.  Deleting renames (see deleteWorldFile), so the title
+ *    screen goes on offering the world back until the slot is built in again
+ *    -- across a power cycle, because the offer is a file on the card rather
+ *    than a memory of one.
+ */
+void beginWorldDelete(void);
+/* Z on the picker: the door out of a slot that has a world in it, and the way
+   back into one whose world was deleted.  Does nothing on a slot that is
+   simply empty. */
+void menuSlotDeleteOrRestore(void);
+/* One callback of the hold, in 60 Hz frames so PAL takes the same second and
+   a half NTSC does.  Fires the deletion when the hold completes. */
+void worldDeleteHoldStep(u8 held, float delta);
+/* 0..100 across the hold. */
+u8 worldDeleteProgress(void);
+
+/*
+ * A rename is waiting to happen.  Deleting and restoring both touch the same
+ * files a load holds open, so they run from the job driver's gated slot with
+ * no job in flight -- never from a frame's drawing, and never beside the
+ * loader.  The driver reaches this on the same callback the button was read,
+ * so from the player's side it is still instant.
+ */
+u8 menuWorldFilePending(void);
+void menuStepWorldFile(void);
 
 void beginWorldNaming();
 void worldNameKeyboardLeft();

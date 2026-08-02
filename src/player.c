@@ -202,6 +202,20 @@ const CraftRecipe craft_recipes[CRAFT_RECIPE_COUNT] = {
   {COOKED_CHICKEN, 3, {RAW_CHICKEN, COAL}, {3, 1}}
 };
 
+/*
+ * Treat whatever is currently down as already spent.
+ *
+ * The picker acts on the rising edge of A, and the delete card ends with A
+ * held down -- that is what deleting *is*.  Without this, the frame the card
+ * hands back to the picker sees a press it never saw begin, and answers it by
+ * entering the empty slot: hold A to delete a world, get a brand new one.
+ */
+void resetMenuPressLatch(void) {
+  down_held = TRUE;
+  up_held = TRUE;
+  act_held = TRUE;
+}
+
 static void resetInventoryNavigation(void) {
   inventory_nav_previous = 0;
   inventory_nav_repeat = 0;
@@ -2525,6 +2539,20 @@ void updatePlayers() {
     return;
   }
 
+  if (current_screen == WORLD_DELETE) {
+    /* B and Z both leave.  Z because Z is what opened the card, and pressing
+       a button twice to undo it is the first thing anyone tries. */
+    if (cont_data[0].trigger & (B_BUTTON | Z_TRIG)) {
+      menuBack();
+    } else {
+      /* The level of the button, not its edge: this one is measured by how
+         long it is down for.  delta is already normalised to 60 Hz frames, so
+         the hold lasts the same second and a half on a PAL console. */
+      worldDeleteHoldStep((cont_data[0].button & A_BUTTON) != 0, delta);
+    }
+    return;
+  }
+
   if (current_screen == WORLD_NAMING) {
     u8 name_navigation = inventoryNavigation(&cont_data[0]);
 
@@ -2569,6 +2597,9 @@ void updatePlayers() {
     if (down_pressed && !down_held) menuDown();
     if (up_pressed && !up_held) menuUp();
     if (act_pressed && !act_held) menuAct();
+    /* Under the controller rather than under a thumb, which is where the one
+       button on this screen that can lose a world belongs. */
+    if (cont_data[0].trigger & Z_TRIG) menuSlotDeleteOrRestore();
     down_held = down_pressed;
     up_held = up_pressed;
     act_held = act_pressed;

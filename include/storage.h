@@ -11,6 +11,25 @@ extern u32 game_file_num;
 extern char world_names[3][WORLD_NAME_LENGTH + 1];
 
 /*
+ * A slot whose world was deleted and is still on the card, waiting to be
+ * asked back.  See deleteWorldFile: deleting renames rather than erases, on
+ * the same reasoning discardInvalidCurrent already applies to a save that
+ * failed validation -- freeing the name is the requirement, destroying the
+ * bytes never was.  Surviving a power cycle costs nothing extra, because the
+ * flag is only ever the answer to "is the set-aside file there", which
+ * initStorage asks at boot.
+ */
+extern u8 deleted_files_present[3];
+
+/* Set the slot's world aside.  The slot reads empty afterwards and its name
+   goes back to the default; FALSE means the cart refused and nothing
+   changed. */
+u8 deleteWorldFile(u8 slot);
+/* Put it back, name and all.  Only legal on an empty slot with a set-aside
+   file -- a slot that has been built in again keeps its new world. */
+u8 restoreWorldFile(u8 slot);
+
+/*
  * Why storage came up unavailable.  initStorage has four distinct ways to
  * fail and every one of them used to return silently behind a single blanket
  * "NO CART SAVE DEVICE", which cannot tell a cart that was never detected

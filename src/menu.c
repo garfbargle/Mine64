@@ -6,6 +6,8 @@
 #include "math.h"
 #include "mods.h"
 #include "main.h"
+#include "day_cycle.h"
+#include "world.h"
 
 enum Screen current_screen = MENU;
 u32 save_message_cooldown = 0;
@@ -82,6 +84,54 @@ static u8 world_commit_stage;
    than timed: there is no world until a write succeeds, so the card has to go
    on saying so for as long as the player is standing on it. */
 static u8 world_commit_failed;
+
+/*
+ * The delete card's hold, counted in 60 Hz frames.
+ *
+ * A second and a half is long enough that nobody arrives at the end of it by
+ * accident and short enough that somebody who means it does not feel argued
+ * with.  It drains three times faster than it fills: changing your mind is
+ * allowed to be quick, going through with it is not.
+ */
+#define DELETE_HOLD_FRAMES 90.f
+#define DELETE_DRAIN_RATE 3.f
+static float delete_hold;
+/*
+ * A hold only counts once the button has been seen up.
+ *
+ * The card is opened with Z rather than A, so this is not about the press
+ * that opened it -- it is about the player who was leaning on A to enter the
+ * world, hit Z instead, and would otherwise watch the card delete it while
+ * they worked out what they were looking at.
+ */
+static u8 delete_hold_armed;
+/* The cart refused the rename.  Latched: the world is still there, and the
+   card has to stop claiming otherwise. */
+static u8 delete_failed;
+
+/*
+ * The rename the card asked for, waiting for the job driver's gated slot.
+ * Deleting the file a load has open is the one way this could corrupt
+ * something, and the driver only reaches these with no job in flight.
+ */
+#define WORLD_FILE_NONE 0
+#define WORLD_FILE_DELETE 1
+#define WORLD_FILE_RESTORE 2
+static u8 world_file_request;
+/* Which slot the card is standing on, and which one the pending rename is
+   for -- the same slot, because the card cannot move off it. */
+static u8 world_file_slot;
+
+/* What the picker has to say about the rename that just happened, and for how
+   many frames.  Long enough to read from a couch, short enough not to sit on
+   top of the world the slot is already rebuilding. */
+#define WORLD_FILE_MESSAGE_NONE 0
+#define WORLD_FILE_MESSAGE_DELETED 1
+#define WORLD_FILE_MESSAGE_RESTORED 2
+#define WORLD_FILE_MESSAGE_FAILED 3
+#define WORLD_FILE_MESSAGE_FRAMES 150
+static u8 world_file_message;
+static u16 world_file_message_timer;
 
 static char world_name_edit[WORLD_NAME_LENGTH + 1];
 static u8 world_name_cursor;
@@ -552,6 +602,240 @@ static void drawWorldSetup() {
   setMenuTextColor(255, 255, 255);
 }
 
+/*
+ * The delete card.
+ *
+ * Same silhouette as the setup card -- a tall panel down the left with the
+ * world beside it -- because it is the same kind of screen: what matters is
+ * to the right of the panel, not on it.  On the setup card that is a world
+ * being decided on.  Here it is a world being taken away, and having it there,
+ * turning, is the argument the card is really making.
+ */
+#define DELETE_PANEL_LEFT SETUP_PANEL_LEFT
+#define DELETE_PANEL_RIGHT SETUP_PANEL_RIGHT
+#define DELETE_PANEL_TOP SETUP_PANEL_TOP
+#define DELETE_PANEL_BOTTOM 186
+#define DELETE_TEXT_X SETUP_TEXT_X
+#define DELETE_SLOT_LEFT 18
+#define DELETE_SLOT_RIGHT 134
+#define DELETE_NAME_TOP 46
+#define DELETE_FACT_TOP 70
+/* Label, then value under it.  Side by side does not fit: a 114-pixel panel
+   holds "TERRAIN" or "ARCHIPELAGO", never both. */
+#define DELETE_FACT_PITCH 24
+#define DELETE_FACT_VALUE_DROP 10
+
+/*
+ * The hold, drawn as ground rather than as a bar.
+ *
+ * A progress bar fills, and filling is what a bar does when something is
+ * being made.  This one empties: twelve blocks go, left to right, and the
+ * hold is over when the last of them does.  It costs two fills a block and
+ * says which direction the card runs in without a word.
+ */
+#define DELETE_BAR_CELLS 12
+#define DELETE_BAR_LEFT 22
+#define DELETE_BAR_PITCH 9
+/* A fill rectangle covers both its edges, so a block is one pixel wider than
+   this and the pitch above leaves two between them.  Drawn flush they read as
+   one bar, which is the one thing the row must not look like. */
+#define DELETE_BAR_WIDTH 6
+#define DELETE_BAR_TOP 152
+#define DELETE_BAR_BOTTOM 168
+
+#define DELETE_STRIP_LEFT SETUP_STRIP_LEFT
+#define DELETE_STRIP_RIGHT SETUP_STRIP_RIGHT
+#define DELETE_STRIP_TOP 192
+#define DELETE_STRIP_BOTTOM 234
+#define DELETE_MESSAGE_Y 196
+#define DELETE_LEGEND_Y 214
+
+static const LegendEntry world_delete_legend[] = {
+  { BUTTON_ICON_A, BUTTON_ICON_NONE, "HOLD TO DELETE" },
+  { BUTTON_ICON_B, BUTTON_ICON_NONE, "KEEP" }
+};
+
+/* TRUE when the world on screen is this slot's world.  Until then the facts
+   below belong to whatever was orbiting before and the hold does nothing --
+   see beginWorldDelete. */
+static u8 worldDeleteArmed(void) {
+  return !worldJobActive() && !menuPreviewRequested() && !delete_failed;
+}
+
+static void formatUnsigned(char *out, u32 value) {
+  char digits[10];
+  u8 count = 0;
+  u8 i;
+
+  do {
+    digits[count++] = (char) ('0' + value % 10);
+    value /= 10;
+  } while (value > 0 && count < sizeof(digits));
+  for (i = 0; i < count; i++) {
+    out[i] = digits[count - i - 1];
+  }
+  out[count] = 0;
+}
+
+/* What the strip says, which is the card's whole tone of voice: it never asks
+   the player whether they are sure, because it has nothing to add to a world
+   they can see and a button they are holding.  It says what the game is about
+   to do to the file instead. */
+static const char *worldDeleteMessage(void) {
+  if (delete_failed) {
+    return "THE CART REFUSED IT - THE WORLD IS STILL THERE";
+  }
+  if (!worldDeleteArmed()) {
+    /* Not a hedge.  The card genuinely will not delete a world the player has
+       not been shown, and the row of blocks below is filling with that world
+       as the sentence is read. */
+    return "WAITING FOR THE WORLD";
+  }
+  if (delete_hold > 0.f) {
+    return "KEEP HOLDING";
+  }
+  /* No comma: the font's comma is three pixels wide and drawString advances a
+     space by three more, so a comma followed by a word reads as ",NOT". */
+  return "THE WORLD IS SET ASIDE ON THE CARD - NOT ERASED";
+}
+
+static void drawWorldDelete() {
+  u8 armed = worldDeleteArmed();
+  /*
+   * The same row of blocks, running whichever way the card currently is.
+   * Holding empties it.  Waiting fills it, because what the card is waiting
+   * for is the world itself arriving -- so the wait gets a real answer to
+   * "how much longer" instead of a grey rectangle and a sentence.
+   */
+  u8 remaining = armed ?
+    (u8) (DELETE_BAR_CELLS -
+      (worldDeleteProgress() * DELETE_BAR_CELLS) / 100) :
+    (worldJobActive() ?
+      (u8) ((worldJobProgress() * DELETE_BAR_CELLS) / 100) :
+      (u8) DELETE_BAR_CELLS);
+  u8 index;
+  char seed_text[9];
+  char day_text[11];
+
+  formatSeed(seed_text, world_seed);
+  formatUnsigned(day_text, dayCycleWorldTicks() / DAY_CYCLE_TICKS + 1);
+
+  /* Fills first, then every string, for the reason menu_setup_display_list
+     gives: swapping the RDP between fill and text configuration mid-card is
+     the hazard that locks the console. */
+  gDPPipeSync(dlp++);
+  gDPSetCycleType(dlp++, G_CYC_FILL);
+  gDPSetRenderMode(dlp++, G_RM_NOOP, G_RM_NOOP2);
+
+  setMenuFillColor(16, 17, 15);
+  gDPFillRectangle(dlp++, DELETE_PANEL_LEFT, DELETE_PANEL_TOP,
+    DELETE_PANEL_RIGHT, DELETE_PANEL_BOTTOM);
+  setMenuFillColor(143, 148, 133);
+  gDPFillRectangle(dlp++, DELETE_PANEL_LEFT, DELETE_PANEL_TOP,
+    DELETE_PANEL_RIGHT, DELETE_PANEL_TOP + 2);
+  gDPFillRectangle(dlp++, DELETE_PANEL_LEFT, DELETE_PANEL_TOP,
+    DELETE_PANEL_LEFT + 2, DELETE_PANEL_BOTTOM);
+  setMenuFillColor(24, 27, 23);
+  gDPFillRectangle(dlp++, DELETE_PANEL_LEFT, DELETE_PANEL_BOTTOM - 2,
+    DELETE_PANEL_RIGHT, DELETE_PANEL_BOTTOM);
+  gDPFillRectangle(dlp++, DELETE_PANEL_RIGHT - 2, DELETE_PANEL_TOP,
+    DELETE_PANEL_RIGHT, DELETE_PANEL_BOTTOM);
+
+  /* The setup card puts a wood plank behind its title.  This one puts
+     something the rest of the front end never shows: the only red on it. */
+  setMenuFillColor(104, 34, 30);
+  gDPFillRectangle(dlp++, DELETE_PANEL_LEFT + 4, 17,
+    DELETE_PANEL_RIGHT - 4, 30);
+  setMenuFillColor(176, 68, 58);
+  gDPFillRectangle(dlp++, DELETE_PANEL_LEFT + 4, 17,
+    DELETE_PANEL_RIGHT - 4, 18);
+  setMenuFillColor(52, 18, 16);
+  gDPFillRectangle(dlp++, DELETE_PANEL_LEFT + 4, 29,
+    DELETE_PANEL_RIGHT - 4, 30);
+
+  /* The name gets the seed slot's treatment, one size up: on this card it is
+     not a field, it is the answer to which world this is. */
+  setMenuFillColor(70, 74, 64);
+  gDPFillRectangle(dlp++, DELETE_SLOT_LEFT, DELETE_NAME_TOP,
+    DELETE_SLOT_RIGHT, DELETE_NAME_TOP + 16);
+  setMenuFillColor(0, 0, 0);
+  gDPFillRectangle(dlp++, DELETE_SLOT_LEFT + 1, DELETE_NAME_TOP + 1,
+    DELETE_SLOT_RIGHT - 1, DELETE_NAME_TOP + 15);
+
+  /*
+   * The ground already gone, then the ground still there: grass on dirt, in
+   * the tile set's own colours, because the row is not a gauge of an abstract
+   * quantity.  Three fill colours for the whole thing rather than three per
+   * block.  A card that cannot arm draws it grey -- the same "this row is not
+   * yours to use" the setup card's unavailable switches get.
+   */
+  setMenuFillColor(armed ? 46 : 30, armed ? 18 : 32, armed ? 16 : 28);
+  gDPFillRectangle(dlp++, DELETE_BAR_LEFT, DELETE_BAR_TOP,
+    DELETE_BAR_LEFT + DELETE_BAR_CELLS * DELETE_BAR_PITCH - 1,
+    DELETE_BAR_BOTTOM);
+  setMenuFillColor(armed ? 105 : 62, armed ? 65 : 66, armed ? 35 : 58);
+  for (index = 0; index < remaining; index++) {
+    u32 x = DELETE_BAR_LEFT + index * DELETE_BAR_PITCH;
+
+    gDPFillRectangle(dlp++, x, DELETE_BAR_TOP + 4,
+      x + DELETE_BAR_WIDTH, DELETE_BAR_BOTTOM);
+  }
+  setMenuFillColor(armed ? 58 : 84, armed ? 123 : 88, armed ? 50 : 78);
+  for (index = 0; index < remaining; index++) {
+    u32 x = DELETE_BAR_LEFT + index * DELETE_BAR_PITCH;
+
+    gDPFillRectangle(dlp++, x, DELETE_BAR_TOP, x + DELETE_BAR_WIDTH,
+      DELETE_BAR_TOP + 4);
+  }
+
+  setMenuFillColor(20, 22, 18);
+  gDPFillRectangle(dlp++, DELETE_STRIP_LEFT, DELETE_STRIP_TOP,
+    DELETE_STRIP_RIGHT, DELETE_STRIP_BOTTOM);
+  setMenuFillColor(50, 54, 47);
+  gDPFillRectangle(dlp++, DELETE_STRIP_LEFT, DELETE_STRIP_TOP,
+    DELETE_STRIP_RIGHT, DELETE_STRIP_TOP + 1);
+  drawLegendIcons(world_delete_legend, LEGEND_COUNT(world_delete_legend),
+    centredLegendX(world_delete_legend, LEGEND_COUNT(world_delete_legend)),
+    DELETE_LEGEND_Y);
+  gDPPipeSync(dlp++);
+
+  beginText();
+  setMenuTextColor(255, 226, 218);
+  drawString("DELETE WORLD",
+    (DELETE_PANEL_LEFT + DELETE_PANEL_RIGHT - stringWidth("DELETE WORLD")) / 2,
+    20);
+
+  setMenuTextColor(181, 148, 96);
+  drawString("WORLD", DELETE_TEXT_X, 38);
+  drawString("TERRAIN", DELETE_TEXT_X, DELETE_FACT_TOP);
+  drawString("SEED", DELETE_TEXT_X, DELETE_FACT_TOP + DELETE_FACT_PITCH);
+  drawString("DAY", DELETE_TEXT_X, DELETE_FACT_TOP + DELETE_FACT_PITCH * 2);
+
+  setMenuTextColor(240, 226, 198);
+  drawString(world_names[world_file_slot],
+    (DELETE_SLOT_LEFT + DELETE_SLOT_RIGHT -
+      stringWidth(world_names[world_file_slot])) / 2, DELETE_NAME_TOP + 5);
+  /* The facts a player weighs, and one they can act on: a world made from a
+     recorded seed and shape can be made again, which is worth knowing before
+     rather than after. */
+  drawString(worldTerrainName(), DELETE_TEXT_X,
+    DELETE_FACT_TOP + DELETE_FACT_VALUE_DROP);
+  drawString(day_text, DELETE_TEXT_X,
+    DELETE_FACT_TOP + DELETE_FACT_PITCH * 2 + DELETE_FACT_VALUE_DROP);
+  setMenuTextColor(216, 191, 77);
+  drawString(seed_text, DELETE_TEXT_X,
+    DELETE_FACT_TOP + DELETE_FACT_PITCH + DELETE_FACT_VALUE_DROP);
+
+  setMenuTextColor(delete_failed ? 236 : 200, delete_failed ? 106 : 204,
+    delete_failed ? 96 : 190);
+  drawCenteredString(worldDeleteMessage(), DELETE_MESSAGE_Y);
+  setMenuTextColor(150, 155, 142);
+  drawLegendLabels(world_delete_legend, LEGEND_COUNT(world_delete_legend),
+    centredLegendX(world_delete_legend, LEGEND_COUNT(world_delete_legend)),
+    DELETE_LEGEND_Y);
+  setMenuTextColor(255, 255, 255);
+}
+
 static void drawWorldNaming() {
   u8 i;
   u8 row;
@@ -694,6 +978,59 @@ static void drawWorldJobBar(u32 y) {
   gDPPipeSync(dlp++);
 }
 
+/*
+ * What the highlighted slot's buttons do.
+ *
+ * The title screen listed no controls at all until now, which was survivable
+ * while A was the only one -- and stops being survivable the moment Z means
+ * two different things depending on what is in the slot.  The row is also the
+ * only place the deleted world is offered back, so it is not decoration: it
+ * is where the undo lives.
+ */
+static const LegendEntry menu_world_legend[] = {
+  { BUTTON_ICON_A, BUTTON_ICON_NONE, "PLAY" },
+  { BUTTON_ICON_Z, BUTTON_ICON_NONE, "DELETE" }
+};
+
+static const LegendEntry menu_empty_legend[] = {
+  { BUTTON_ICON_A, BUTTON_ICON_NONE, "CREATE" }
+};
+
+static const LegendEntry menu_restore_legend[] = {
+  { BUTTON_ICON_A, BUTTON_ICON_NONE, "CREATE" },
+  { BUTTON_ICON_Z, BUTTON_ICON_NONE, "RESTORE" }
+};
+
+#define MENU_LEGEND_Y 216
+
+static const LegendEntry *menuSlotLegend(u8 *count) {
+  if (files_present[selected_option]) {
+    *count = LEGEND_COUNT(menu_world_legend);
+    return menu_world_legend;
+  }
+  if (deleted_files_present[selected_option]) {
+    *count = LEGEND_COUNT(menu_restore_legend);
+    return menu_restore_legend;
+  }
+  *count = LEGEND_COUNT(menu_empty_legend);
+  return menu_empty_legend;
+}
+
+/* Icons are fill sprites and the picker's own drawing is all text, so the row
+   is split the way every legend in the game is: this half runs before
+   beginText, the labels run after it. */
+static void drawMenuLegendIcons() {
+  u8 count;
+  const LegendEntry *entries = menuSlotLegend(&count);
+
+  gDPPipeSync(dlp++);
+  gDPSetCycleType(dlp++, G_CYC_FILL);
+  gDPSetRenderMode(dlp++, G_RM_NOOP, G_RM_NOOP2);
+  drawLegendIcons(entries, count, centredLegendX(entries, count),
+    MENU_LEGEND_Y);
+  gDPPipeSync(dlp++);
+}
+
 void drawMenu() {
   u32 i, j, x, center;
   char chr;
@@ -707,7 +1044,11 @@ void drawMenu() {
     case MENU:
       text = menu_text;
       n_lines = sizeof(menu_text) / sizeof(char *);
-      y_start = 170;
+      /* Twelve pixels higher than the list used to sit, which is what the
+         legend row below it costs.  Everything above -- the title, the status
+         line, the held-press notice -- is pinned where it was. */
+      y_start = 158;
+      drawMenuLegendIcons();
       break;
     case WORLD_SETUP:
       drawWorldSetup();
@@ -748,6 +1089,9 @@ void drawMenu() {
         return;
       }
       drawWorldNaming();
+      return;
+    case WORLD_DELETE:
+      drawWorldDelete();
       return;
     case GAME:
       if (worldJobActive()) {
@@ -798,6 +1142,9 @@ void drawMenu() {
   }
   if (stick_turns_message > 0) {
     stick_turns_message--;
+  }
+  if (world_file_message_timer > 0) {
+    world_file_message_timer--;
   }
 
   beginText();
@@ -876,6 +1223,33 @@ void drawMenu() {
      */
     if (menuActPending()) {
       drawCenteredString("ENTERING WHEN READY", 132);
+    } else if (world_file_message_timer > 0) {
+      /*
+       * The confirmation, and only the confirmation.  What to do about it is
+       * on the legend row, where it will still be long after this line has
+       * gone -- a message that says "press Z to undo" and then times out is a
+       * safety net with a hole in it.
+       */
+      if (world_file_message == WORLD_FILE_MESSAGE_DELETED) {
+        setMenuTextColor(236, 106, 96);
+        drawCenteredString("WORLD DELETED", 132);
+      } else if (world_file_message == WORLD_FILE_MESSAGE_RESTORED) {
+        setMenuTextColor(216, 191, 77);
+        drawCenteredString("WORLD RESTORED", 132);
+      } else {
+        setMenuTextColor(236, 106, 96);
+        drawCenteredString("THE CART REFUSED IT", 132);
+      }
+      setMenuTextColor(255, 255, 255);
+    }
+    {
+      u8 count;
+      const LegendEntry *entries = menuSlotLegend(&count);
+
+      setMenuTextColor(150, 155, 142);
+      drawLegendLabels(entries, count, centredLegendX(entries, count),
+        MENU_LEGEND_Y);
+      setMenuTextColor(255, 255, 255);
     }
   }
 }
@@ -949,6 +1323,14 @@ void menuBack() {
   if (current_screen == WORLD_SETUP) {
     menu_act_pending = FALSE;
     current_screen = MENU;
+  } else if (current_screen == WORLD_DELETE) {
+    /* Only until the rename is queued.  After that the card is describing a
+       world the driver is already moving, and there is nothing to keep. */
+    if (world_file_request == WORLD_FILE_NONE) {
+      delete_hold = 0.f;
+      resetMenuPressLatch();
+      current_screen = MENU;
+    }
   } else if (current_screen == WORLD_NAMING) {
     /* Only until the world is committed; after that there is a file on the
        cart and nothing to go back to.  A commit that *failed* left the stage
@@ -1040,6 +1422,112 @@ void worldSetupReroll() {
 
 u8 worldSetupRow() {
   return setup_row;
+}
+
+void beginWorldDelete(void) {
+  world_file_slot = selected_option;
+  delete_hold = 0.f;
+  delete_hold_armed = FALSE;
+  delete_failed = FALSE;
+  /* A press held over from the picker was a request to play this world, and
+     the player has just asked for the opposite. */
+  menu_act_pending = FALSE;
+  current_screen = WORLD_DELETE;
+}
+
+void menuSlotDeleteOrRestore(void) {
+  if (current_screen != MENU || world_file_request != WORLD_FILE_NONE) {
+    return;
+  }
+  if (files_present[selected_option]) {
+    beginWorldDelete();
+  } else if (deleted_files_present[selected_option]) {
+    /*
+     * No card and no hold on the way back in.  Destroying is held because a
+     * slip costs a world; restoring is pressed because a slip costs one press
+     * of B in the picker, and making the two feel alike would only teach the
+     * player that the holding is theatre.
+     */
+    world_file_slot = selected_option;
+    world_file_request = WORLD_FILE_RESTORE;
+  }
+}
+
+void worldDeleteHoldStep(u8 held, float delta) {
+  if (current_screen != WORLD_DELETE) {
+    return;
+  }
+  /*
+   * The slot emptied underneath the card, which is not hypothetical: a save
+   * that fails validation with no usable backup is set aside by the load path
+   * itself, and the preview this card is waiting on is exactly the load that
+   * would do it.  There is nothing here to delete any more.
+   */
+  if (!files_present[world_file_slot]) {
+    resetMenuPressLatch();
+    current_screen = MENU;
+    return;
+  }
+  if (!held) {
+    delete_hold_armed = TRUE;
+  }
+  if (held && delete_hold_armed && worldDeleteArmed() &&
+      world_file_request == WORLD_FILE_NONE) {
+    delete_hold += delta;
+    if (delete_hold >= DELETE_HOLD_FRAMES) {
+      delete_hold = DELETE_HOLD_FRAMES;
+      world_file_request = WORLD_FILE_DELETE;
+    }
+    return;
+  }
+  delete_hold -= delta * DELETE_DRAIN_RATE;
+  if (delete_hold < 0.f) {
+    delete_hold = 0.f;
+  }
+}
+
+u8 worldDeleteProgress(void) {
+  return (u8) ((delete_hold * 100.f) / DELETE_HOLD_FRAMES);
+}
+
+u8 menuWorldFilePending(void) {
+  return world_file_request != WORLD_FILE_NONE;
+}
+
+void menuStepWorldFile(void) {
+  u8 request = world_file_request;
+
+  world_file_request = WORLD_FILE_NONE;
+  if (request == WORLD_FILE_DELETE) {
+    if (!deleteWorldFile(world_file_slot)) {
+      /* The world is still on the cart and the card must stop implying
+         otherwise.  Backing out and asking again is the retry. */
+      delete_hold = 0.f;
+      delete_failed = TRUE;
+      return;
+    }
+    world_file_message = WORLD_FILE_MESSAGE_DELETED;
+    /* The card is left with A still down -- holding it is what got here -- and
+       the picker acts on a press it never saw begin. */
+    resetMenuPressLatch();
+    current_screen = MENU;
+    /* The slot is a candidate world now, so draw it one -- the same thing
+       moving the cursor onto an empty slot does.  It is also the plainest
+       statement the picker can make: the terrain behind the list is not that
+       world any more. */
+    pending_seed = (u32) osGetTime();
+  } else if (request == WORLD_FILE_RESTORE) {
+    world_file_message = restoreWorldFile(world_file_slot) ?
+      WORLD_FILE_MESSAGE_RESTORED : WORLD_FILE_MESSAGE_FAILED;
+    if (world_file_message == WORLD_FILE_MESSAGE_FAILED) {
+      /* The set-aside file is still there and still offered; nothing about
+         the slot changed, so the preview standing on it is still right. */
+      world_file_message_timer = WORLD_FILE_MESSAGE_FRAMES;
+      return;
+    }
+  }
+  world_file_message_timer = WORLD_FILE_MESSAGE_FRAMES;
+  invalidatePreview();
 }
 
 u8 menuCommitReady() {

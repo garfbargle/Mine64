@@ -1,0 +1,30 @@
+# The delete-a-world flow, end to end: the picker's new legend row, the card
+# with the world it is about to remove standing beside it, the hold part way
+# through, the confirmation, and the offer to put it back.
+#
+# Emulation has no flashcart, so this script only runs against a build with
+# the storage preview hack applied -- see docs/emulator-screenshots.md on why
+# nothing that touches a save can be tested here.
+
+wait 900
+shot world-select       # picker with [A] PLAY / [Z] DELETE under the list
+
+press Z 8
+wait 30
+shot delete-card        # the card, armed, world orbiting beside it
+
+stick 0 0 10 A
+shot delete-holding     # ground part way gone
+
+stick 0 0 100 A
+wait 20
+shot deleted            # back on the picker: WORLD DELETED, [Z] RESTORE
+
+wait 180
+shot restore-offer      # the toast has gone; the offer has not
+
+press Z 8
+wait 30
+shot restored
+
+stop

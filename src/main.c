@@ -153,8 +153,8 @@ static u8 worldGameBuildRequested() {
    standing beside it, which is the only way to judge a choice before making
    it. */
 static u8 worldPreviewBuildRequested() {
-  return (current_screen == MENU || current_screen == WORLD_SETUP) &&
-    menuPreviewRequested();
+  return (current_screen == MENU || current_screen == WORLD_SETUP ||
+    current_screen == WORLD_DELETE) && menuPreviewRequested();
 }
 
 u8 worldJobActive() {
@@ -529,10 +529,20 @@ void callbackGfx(int pendingGfx) {
        starve and wants the world built as fast as slices allow. */
     stream_work_deadline = 0;
     if (world_job_stage != WORLD_JOB_IDLE) {
-      if (worldPreviewBuildRequested() &&
-          menuPreviewToken() != world_job_token) {
-        /* The player changed their mind.  Whatever this build has left to do
-           is work on a world nobody is going to see. */
+      if (menuWorldFilePending() ||
+          (worldPreviewBuildRequested() &&
+           menuPreviewToken() != world_job_token)) {
+        /*
+         * The player changed their mind.  Whatever this build has left to do
+         * is work on a world nobody is going to see.
+         *
+         * A waiting delete or restore says the same thing more forcefully: it
+         * is a rename of the file this build may well be reading, and the
+         * build is the only reason the rename cannot happen yet.  Dropping it
+         * is what makes RESTORE answer on the press rather than fifteen
+         * seconds later, when the fresh world it was competing with finally
+         * finished arriving.
+         */
         cancelWorldJob();
       } else {
         stepWorldJob();
@@ -549,6 +559,16 @@ void callbackGfx(int pendingGfx) {
       world_job_progress_floor = 0;
       diagPaintPhase(DIAG_PHASE_SAVE);
       applySaveStatus(saving_available ? beginSaveGame() : SAVE_DONE);
+    } else if (menuWorldFilePending()) {
+      /*
+       * Delete or restore.  Both are a rename and take no measurable time --
+       * the reason they are here rather than in the input handler is the
+       * loader, which holds the world's file open for the whole of a sliced
+       * load.  Reaching this branch at all means no job is in flight, so
+       * there is nothing holding it.
+       */
+      diagPaintPhase(DIAG_PHASE_SAVE);
+      menuStepWorldFile();
     } else if (worldGameBuildRequested()) {
       /*
        * Nothing to build.  A slot can only be entered once its preview has

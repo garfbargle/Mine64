@@ -178,6 +178,10 @@ extern const CraftRecipe craft_recipes[CRAFT_RECIPE_COUNT];
 
 void initPlayers();
 void updatePlayers();
+/* Spend the buttons the front end's picker is holding, so a card that ends
+   with one down does not hand the press straight to the screen underneath.
+   See the definition. */
+void resetMenuPressLatch(void);
 void updateTargetBlock(u8 player_num);
 void resetPlayerInventory(Player *player);
 void resetStartingInventories(void);

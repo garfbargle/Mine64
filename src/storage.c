@@ -389,6 +389,7 @@ static void restoreWorldRules(u32 version, const Header *saved) {
 u8 saving_available;
 u8 storage_status = STORAGE_NO_CART;
 u8 files_present[3];
+u8 deleted_files_present[3];
 u32 game_file_num;
 char world_names[3][WORLD_NAME_LENGTH + 1];
 
@@ -435,6 +436,23 @@ static char *rejected_file_names[] = {
   "mine64/w112_1.bad",
   "mine64/w112_2.bad",
   "mine64/w112_3.bad"
+};
+
+/*
+ * Where a deleted world goes.  Unlike the rejected names above this one is
+ * read: initStorage stats it, and the title screen offers to rename it back.
+ * A deletion the player regrets after the console has been off for a week is
+ * still one rename from being undone, and a deletion they never regret costs
+ * one file per slot on a card holding gigabytes.
+ *
+ * Only the most recent deletion per slot is kept, the same rule the rejected
+ * names follow: building a new world in the slot and deleting that one puts
+ * the older set-aside file out of reach of the game, though not off the card.
+ */
+static char *deleted_file_names[] = {
+  "mine64/w112_1.del",
+  "mine64/w112_2.del",
+  "mine64/w112_3.del"
 };
 
 static void setDefaultWorldName(u8 slot) {
@@ -543,6 +561,54 @@ static void discardInvalidCurrent(u8 slot) {
   if (f_rename(file_names[slot], rejected_file_names[slot]) != FR_OK) {
     f_unlink(file_names[slot]);
   }
+}
+
+/*
+ * Delete a world, which is to say stop the game from being able to see it.
+ *
+ * The rename is the whole operation and it is what makes the front end's undo
+ * possible; see deleted_file_names.  It is also why deleting is instant while
+ * saving takes two seconds -- a directory entry changes and 200 KB of blocks
+ * stay exactly where they are.
+ *
+ * The rotation copy has to go, and that is not a detail.  initStorage promotes
+ * a lone .bak into the world name to recover a save interrupted by power loss,
+ * so a deletion that left one behind would be undone by the console's next
+ * cold boot -- the world would simply come back, one save older, with nothing
+ * on screen having asked for it.  Unlinking it destroys no unique world: the
+ * file set aside above is the same world one save newer, and it is kept.
+ */
+u8 deleteWorldFile(u8 slot) {
+  if (!saving_available || slot >= 3 || !files_present[slot]) {
+    return FALSE;
+  }
+  f_unlink(deleted_file_names[slot]);
+  if (f_rename(file_names[slot], deleted_file_names[slot]) != FR_OK) {
+    return FALSE;
+  }
+  f_unlink(backup_file_names[slot]);
+  f_unlink(temporary_file_names[slot]);
+  files_present[slot] = FALSE;
+  deleted_files_present[slot] = TRUE;
+  /* The name file stays where it is: nothing reads it while the slot is
+     empty, and leaving it is what lets a restore bring back the name the
+     player chose rather than "World N". */
+  setDefaultWorldName(slot);
+  return TRUE;
+}
+
+u8 restoreWorldFile(u8 slot) {
+  if (!saving_available || slot >= 3 || files_present[slot] ||
+      !deleted_files_present[slot]) {
+    return FALSE;
+  }
+  if (f_rename(deleted_file_names[slot], file_names[slot]) != FR_OK) {
+    return FALSE;
+  }
+  deleted_files_present[slot] = FALSE;
+  files_present[slot] = TRUE;
+  loadWorldName(slot);
+  return TRUE;
 }
 
 static void restoreInventoryItem(Player *player, u8 item, u32 count) {
@@ -715,6 +781,7 @@ void initStorage() {
   saving_available = FALSE;
   for (i = 0; i < 3; i++) {
     files_present[i] = FALSE;
+    deleted_files_present[i] = FALSE;
     setDefaultWorldName(i);
   }
 
@@ -770,6 +837,13 @@ void initStorage() {
     files_present[i] = res == FR_OK && !(info.fattrib & AM_DIR);
     if (files_present[i]) {
       loadWorldName(i);
+    } else {
+      /* An empty slot may be empty because somebody deleted what was in it.
+         The offer to put it back outlives the session that made it, because
+         the thing being offered is a file rather than a memory of one. */
+      deleted_files_present[i] =
+        f_stat(deleted_file_names[i], &info) == FR_OK &&
+        !(info.fattrib & AM_DIR);
     }
     f_unlink(temporary_file_names[i]);
   }
@@ -916,6 +990,11 @@ static u8 finishSaveGame(u8 write_ok) {
   if (write_ok) {
     save_count++;
     files_present[slot] = TRUE;
+    /* Whatever was deleted here is not what is in the slot now, and putting
+       it back would take the new world with it.  The set-aside file is left
+       on the card -- it can still be recovered by hand -- but the game stops
+       offering it. */
+    deleted_files_present[slot] = FALSE;
     saveWorldName(slot);
   } else {
     f_unlink(temporary_file_names[slot]);
