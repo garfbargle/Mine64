@@ -11,7 +11,6 @@
 #include "camera.h"
 #include "player.h"
 #include "menu.h"
-#include "quads.h"
 #include "cube.h"
 #include "textures.h"
 #include "day_cycle.h"
@@ -2207,6 +2206,55 @@ static void resolveColumnQuads(int cx, int cz, u8 lod) {
   }
 }
 
+/*
+ * A merged quad's vertices, computed at bake time.
+ *
+ * These used to be copied out of quads.h, a generated 24 KiB table holding
+ * all 6 faces x 8 x 8 sizes -- but every entry is a unit quad's corner
+ * scaled by the quad's spans, with texture coordinates that are the spans
+ * again and a fixed per-face normal.  Baking already writes every vertex by
+ * hand, so computing the fields costs a few multiplies per quad at mesh
+ * time and returns the whole table's ROM and cache footprint.  The face
+ * order and winding are exactly gen_quads.py's, and a host harness checked
+ * the computed vertices against the table bit-for-bit before it was
+ * removed.  Water tops keep their own runtime table: their height and
+ * texture flow are not derivable from a span.
+ */
+static const struct {
+  u8 unit[4][3];   /* the four corners of the unit quad, 0/1 per axis */
+  s8 normal[3];
+  u8 width_axis;   /* which ob component spans the quad's width... */
+  u8 height_axis;  /* ...and which its height; the third stays one block */
+} quad_face[6] = {
+  /* FRONT  */ {{{0,1,1},{1,1,1},{1,0,1},{0,0,1}}, {0, 0, 127},   0, 1},
+  /* LEFT   */ {{{1,1,0},{1,1,1},{1,0,1},{1,0,0}}, {127, 0, 0},   2, 1},
+  /* BACK   */ {{{1,1,1},{0,1,1},{0,0,1},{1,0,1}}, {0, 0, -127},  0, 1},
+  /* RIGHT  */ {{{1,1,1},{1,1,0},{1,0,0},{1,0,1}}, {-127, 0, 0},  2, 1},
+  /* TOP    */ {{{0,1,0},{1,1,0},{1,1,1},{0,1,1}}, {0, 127, 0},   0, 2},
+  /* BOTTOM */ {{{0,1,1},{1,1,1},{1,1,0},{0,1,0}}, {0, -127, 0},  0, 2}
+};
+static const u8 quad_tex_corner[4][2] = {{0, 0}, {1, 0}, {1, 1}, {0, 1}};
+
+static void writeBakedQuadVertex(Vtx *out, u8 face, u8 width, u8 height,
+    u8 corner) {
+  s16 span[3];
+  u8 axis;
+
+  span[0] = span[1] = span[2] = BLOCK_SIZE;
+  span[quad_face[face].width_axis] = (s16) ((width + 1) * BLOCK_SIZE);
+  span[quad_face[face].height_axis] = (s16) ((height + 1) * BLOCK_SIZE);
+  for (axis = 0; axis < 3; axis++) {
+    out->v.ob[axis] = quad_face[face].unit[corner][axis] ? span[axis] : 0;
+  }
+  out->v.flag = 0;
+  out->v.tc[0] = (s16) ((width + 1) * quad_tex_corner[corner][0] * 1024);
+  out->v.tc[1] = (s16) ((height + 1) * quad_tex_corner[corner][1] * 1024);
+  out->v.cn[0] = (u8) quad_face[face].normal[0];
+  out->v.cn[1] = (u8) quad_face[face].normal[1];
+  out->v.cn[2] = (u8) quad_face[face].normal[2];
+  out->v.cn[3] = 255;
+}
+
 /* Quads per gSPVertex batch: 8 quads' 32 vertices fill the F3DEX2 vertex
    buffer exactly. */
 #define BAKED_QUADS_PER_BATCH 8
@@ -2249,15 +2297,16 @@ static Gfx *emitColumnTextureDL(u32 slot, u8 texture,
   for (emitted = 0; emitted < n; emitted++) {
     BakedQuad *q =
       &column_baked[column_baked_order[column_baked_first[texture] + emitted]];
-    const Vtx *src;
     u8 v;
 
-    src = q->water_top ? WATER_TOP_QUAD_ADDR(q->width, q->height) :
-      QUAD_ADDR(q->face, q->width, q->height);
     for (v = 0; v < 4; v++) {
       Vtx *out = &verts[(u32) emitted * 4 + v];
 
-      *out = src[v];
+      if (q->water_top) {
+        *out = WATER_TOP_QUAD_ADDR(q->width, q->height)[v];
+      } else {
+        writeBakedQuadVertex(out, q->face, q->width, q->height, v);
+      }
       out->v.ob[0] += (s16) ((s16) q->x * BLOCK_SIZE);
       out->v.ob[1] += (s16) ((s16) q->y * BLOCK_SIZE);
       out->v.ob[2] += (s16) ((s16) q->z * BLOCK_SIZE);
