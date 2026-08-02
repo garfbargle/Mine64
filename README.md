@@ -3,15 +3,11 @@
 **An infinite-world block-building game for the Nintendo 64.** Runs on a stock
 console — no Expansion Pak, no Minecraft assets, terrain generated as you walk.
 
-<p align="center">
-  <img src="mine64.png" width="40%" alt="Mine64 box art">
-</p>
+![Mine64 box art](mine64.png)
 
-<p align="center">
-  <img src="docs/shots/world.png" width="32%" alt="Sheep grazing under a conifer">
-  <img src="docs/shots/ruins.png" width="32%" alt="A mossy ruin over a lake">
-  <img src="docs/shots/forest.png" width="32%" alt="Deep forest at sunset">
-</p>
+| | | |
+| --- | --- | --- |
+| ![Sheep grazing under a conifer](docs/shots/world.png) | ![A mossy ruin over a lake](docs/shots/ruins.png) | ![Deep forest at sunset](docs/shots/forest.png) |
 
 ## Features
 
@@ -42,11 +38,9 @@ console — no Expansion Pak, no Minecraft assets, terrain generated as you walk
 - Three save slots on flashcart SD, checksummed with backup-on-write
 - **64MON**: optional creature-collecting mod with turn-based battles fought in-world, no battle screen — see [docs/64mon.md](docs/64mon.md)
 
-<p align="center">
-  <img src="docs/shots/animals.png" width="32%" alt="A chicken, a sheep and a pig">
-  <img src="docs/shots/create-world.png" width="32%" alt="The create-world card">
-  <img src="docs/shots/pack.png" width="32%" alt="The pack and crafting list">
-</p>
+| | | |
+| --- | --- | --- |
+| ![A chicken, a sheep and a pig](docs/shots/animals.png) | ![The create-world card](docs/shots/create-world.png) | ![The pack and crafting list](docs/shots/pack.png) |
 
 ## Controls
 
