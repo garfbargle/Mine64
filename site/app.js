@@ -1,15 +1,16 @@
 const launchButton = document.querySelector('#launch-game');
+const overlay = document.querySelector('#player-overlay');
+const closeButton = document.querySelector('#close-game');
 const emulatorStatus = document.querySelector('#emulator-status');
-const bezel = document.querySelector('#emulator-bezel');
-const placeholder = document.querySelector('#emulator-placeholder');
+const backdrop = document.querySelector('.world-backdrop');
 
 function launchGame() {
+  overlay.classList.add('open');
+  overlay.setAttribute('aria-hidden', 'false');
+  document.body.style.overflow = 'hidden';
   if (window.mine64Launching) return;
-  window.mine64Launching = true;
-  launchButton.disabled = true;
-  launchButton.textContent = 'LOADING ROM…';
-  emulatorStatus.textContent = 'LOADING CARTRIDGE';
 
+  window.mine64Launching = true;
   window.EJS_player = '#game';
   window.EJS_core = 'n64';
   window.EJS_gameUrl = new URL('rom/mine64.bin', window.location.href).href;
@@ -20,18 +21,25 @@ function launchGame() {
   const emulatorScript = document.createElement('script');
   emulatorScript.src = 'https://cdn.emulatorjs.org/stable/data/loader.js';
   emulatorScript.async = true;
-  emulatorScript.onload = () => {
-    bezel.classList.add('ejs-loaded');
-    placeholder.remove();
-    emulatorStatus.textContent = 'RUNNING';
-  };
-  emulatorScript.onerror = () => {
-    window.mine64Launching = false;
-    launchButton.disabled = false;
-    launchButton.innerHTML = 'TRY AGAIN <span>▶</span>';
-    emulatorStatus.textContent = 'PLAYER UNAVAILABLE';
-  };
+  emulatorScript.onload = () => { emulatorStatus.textContent = 'RUNNING'; };
+  emulatorScript.onerror = () => { emulatorStatus.textContent = 'PLAYER UNAVAILABLE'; };
   document.body.append(emulatorScript);
 }
 
+function closeGame() {
+  overlay.classList.remove('open');
+  overlay.setAttribute('aria-hidden', 'true');
+  document.body.style.overflow = '';
+}
+
+document.querySelectorAll('.shot').forEach((shot) => {
+  shot.addEventListener('click', () => {
+    document.querySelector('.shot.active').classList.remove('active');
+    shot.classList.add('active');
+    backdrop.style.backgroundImage = `url("${shot.dataset.image}")`;
+  });
+});
+
 launchButton.addEventListener('click', launchGame);
+closeButton.addEventListener('click', closeGame);
+document.addEventListener('keydown', (event) => { if (event.key === 'Escape') closeGame(); });
