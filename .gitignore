@@ -18,3 +18,5 @@ __pycache__/
 !tools/emu/build.sh
 !tools/emu/run.sh
 /tools/emu/*.dylib
+.wrangler/
+node_modules/

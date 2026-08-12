@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="Mine64 — an infinite block-building world made for Nintendo 64." />
+    <meta name="theme-color" content="#101019" />
+    <link rel="icon" href="favicon.png" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Press+Start+2P&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="styles.css" />
+    <title>Mine64 — built for Nintendo 64</title>
+  </head>
+  <body>
+    <div class="noise" aria-hidden="true"></div>
+    <header class="site-header">
+      <a class="wordmark" href="#top" aria-label="Mine64 home">MINE<span>64</span></a>
+      <nav aria-label="Main navigation">
+        <a href="#play">Play</a>
+        <a href="#world">World</a>
+        <a href="#edition">Edition</a>
+      </nav>
+      <a class="header-buy" href="#edition">Get the cart <span>↗</span></a>
+    </header>
+
+    <main id="top">
+      <section class="hero" aria-labelledby="hero-title">
+        <div class="hero-copy">
+          <p class="eyebrow"><i></i> NINTENDO 64 / ORIGINAL GAME</p>
+          <h1 id="hero-title">A BIGGER<br />WORLD FITS<br />ON A <em>64.</em></h1>
+          <p class="hero-intro">An endless block-built world, made from scratch for the Nintendo 64. No Expansion Pak. No loading screens. Just pick, place, survive.</p>
+          <div class="hero-actions">
+            <a class="button button-lime" href="#play">Play in browser <span>↓</span></a>
+            <a class="text-link" href="#edition">Own the cartridge <span>→</span></a>
+          </div>
+        </div>
+        <div class="hero-art" aria-label="Mine64 world screenshot">
+          <img src="images/world.png" alt="Mine64 player exploring a block-built landscape" />
+          <div class="hero-stamp"><span>MADE FOR</span><strong>N64</strong><span>EST. 2026</span></div>
+          <div class="scanline"></div>
+        </div>
+        <div class="hero-footer">
+          <span>01—06</span><span>INFINITE / LOCAL / CO-OP</span><span>© MINE64</span>
+        </div>
+      </section>
+
+      <section class="play-section" id="play" aria-labelledby="play-title">
+        <div class="section-heading">
+          <p class="eyebrow"><i></i> DEMO CARTRIDGE</p>
+          <h2 id="play-title">PUT IT IN.</h2>
+          <p>The whole game, running right here. Best with a controller.</p>
+        </div>
+        <div class="emulator-shell">
+          <div class="emulator-topbar"><span>PLAYER 01</span><span id="emulator-status">CARTRIDGE READY</span><span>NTSC</span></div>
+          <div class="emulator-bezel" id="emulator-bezel">
+            <div class="emulator-placeholder" id="emulator-placeholder">
+              <div class="placeholder-logo">MINE<span>64</span></div>
+              <p>INSERT CARTRIDGE</p>
+              <button class="play-button" id="launch-game" type="button">START GAME <span>▶</span></button>
+              <small>Keyboard or gamepad supported</small>
+            </div>
+            <div id="game" aria-label="Mine64 N64 emulator"></div>
+          </div>
+          <div class="emulator-controls">
+            <span><b>STICK</b> move / steer</span><span><b>A</b> place / use</span><span><b>B</b> mine / punch</span><span><b>START</b> pack</span>
+          </div>
+        </div>
+        <p class="emulator-note">The browser player streams this project’s N64 ROM. Save data stays in your browser; performance and compatibility vary by device.</p>
+      </section>
+
+      <section class="manifesto" id="world" aria-labelledby="world-title">
+        <div class="manifesto-label">THE LONG WAY AROUND</div>
+        <div>
+          <h2 id="world-title">THE WORLD<br />DOESN’T STOP<br />WHEN THE <span>CARTRIDGE</span><br />STARTS.</h2>
+          <p>Mine64 builds terrain as you walk: forests, oceans, caves, ruins and villages. Every world begins from a seed and keeps going in every direction.</p>
+        </div>
+      </section>
+
+      <section class="feature-grid" aria-label="Mine64 game features">
+        <article class="feature-card feature-image tall"><img src="images/forest.png" alt="Mine64 forest at sunset" /><span>01 / WILD BIOMES</span></article>
+        <article class="feature-card copy-card"><p class="number">02</p><h3>Make your<br />own way.</h3><p>Cut timber. Break stone. Build a shelter before the moon comes up.</p></article>
+        <article class="feature-card copy-card lime"><p class="number">03</p><h3>Bring<br />your people.</h3><p>Drop in with up to four players on one real console.</p></article>
+        <article class="feature-card feature-image"><img src="images/animals.png" alt="Mine64 animals grazing" /><span>04 / LIVING WORLD</span></article>
+        <article class="feature-card feature-image"><img src="images/pack.png" alt="Mine64 inventory screen" /><span>05 / MAKE &amp; CARRY</span></article>
+        <article class="feature-card quote-card"><p>“A whole new world<br />for an old machine.”</p><span>— THE CARTRIDGE</span></article>
+      </section>
+
+      <section class="edition" id="edition" aria-labelledby="edition-title">
+        <div class="cart-render" aria-hidden="true">
+          <div class="cart-label"><span>MINE</span><b>64</b><small>INFINITE WORLD<br />BLOCK BUILDING</small></div>
+          <div class="cart-ridge"></div>
+        </div>
+        <div class="edition-copy">
+          <p class="eyebrow"><i></i> LIMITED RUN / 2026</p>
+          <h2 id="edition-title">THE REAL<br />THING.</h2>
+          <p>Get the Mine64 ROM for your compatible flash cartridge. Includes the full game, a print-ready label file and future build updates.</p>
+          <div class="edition-price"><span>$24</span><small>USD / DIGITAL ROM</small></div>
+          <a class="button button-dark" href="mailto:hello@c0di.com?subject=Mine64%20ROM%20order">Reserve your copy <span>↗</span></a>
+          <small class="legal">Nintendo 64 is a trademark of Nintendo. Mine64 is an independent project and is not affiliated with Nintendo.</small>
+        </div>
+      </section>
+    </main>
+
+    <footer>
+      <a class="wordmark" href="#top">MINE<span>64</span></a>
+      <p>BUILT FOR THE MACHINE<br />THAT BUILT A GENERATION.</p>
+      <a href="#play">PLAY NOW ↑</a>
+    </footer>
+    <script src="app.js"></script>
+  </body>
+</html>

@@ -1,0 +1,16 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "mine64-store",
+  "compatibility_date": "2026-08-12",
+  "routes": [
+    {
+      "pattern": "mine64.c0di.com",
+      "custom_domain": true
+    }
+  ],
+  "assets": {
+    "directory": "./site",
+    "html_handling": "auto-trailing-slash",
+    "not_found_handling": "single-page-application"
+  }
+}
