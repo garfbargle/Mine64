@@ -19,7 +19,12 @@
 
       <header>
         <a class="wordmark" href="#top" aria-label="Mine64 home">MINE<span>64</span></a>
-        <div class="header-meta"><span>4 MB N64 GAME</span><a href="https://github.com/garfbargle/Mine64" target="_blank" rel="noreferrer">GITHUB ↗</a></div>
+        <div class="header-meta">
+          <div class="expansion-badge" aria-label="No Expansion Pak required">
+            <span class="expansion-icon"><img src="images/expansion-pak.png" alt="" /></span>
+            <b>NO EXPANSION PAK<br />REQUIRED</b>
+          </div>
+        </div>
       </header>
 
       <section class="intro" aria-labelledby="title">
@@ -27,7 +32,10 @@
           <img class="cartridge-art" src="images/mine64-cartridge.png" alt="Mine64 Nintendo 64 cartridge" />
           <img class="box-art" src="images/mine64-box.png" alt="Mine64 Nintendo 64 box art" />
         </h1>
-        <button class="play-button" id="launch-game" type="button"><span>▶</span> PLAY NOW</button>
+        <div class="hero-actions">
+          <button class="play-button" id="launch-game" type="button"><span>▶</span> PLAY NOW</button>
+          <a class="github-button" href="https://github.com/garfbargle/Mine64" target="_blank" rel="noreferrer">VIEW ON GITHUB ↗</a>
+        </div>
         <p class="play-note">INFINITE WORLD / 4 PLAYERS / SAVES / MODS</p>
       </section>
 
@@ -40,7 +48,7 @@
         </div>
       </section>
 
-      <footer><span>© MINE64</span><span>LOCAL MULTIPLAYER</span><span>4 MB RAM</span></footer>
+      <footer><span>© MINE64</span><span>LOCAL MULTIPLAYER</span><span>INFINITE WORLD</span></footer>
     </main>
 
     <section class="player-overlay" id="player-overlay" aria-hidden="true" aria-label="Mine64 browser player">
