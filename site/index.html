@@ -19,32 +19,32 @@
 
       <header>
         <a class="wordmark" href="#top" aria-label="Mine64 home">MINE<span>64</span></a>
-        <div class="header-meta"><span>ORIGINAL N64 GAME</span><a href="mailto:hello@c0di.com?subject=Mine64%20ROM%20order">GET THE ROM ↗</a></div>
+        <div class="header-meta"><span>4 MB N64 GAME</span><a href="https://github.com/garfbargle/Mine64" target="_blank" rel="noreferrer">GITHUB ↗</a></div>
       </header>
 
       <section class="intro" aria-labelledby="title">
-        <p class="eyebrow">● &nbsp; WORLD SEED / 64</p>
-        <h1 id="title">MINE<br /><em>64</em></h1>
-        <p class="tagline">An infinite block-built world<br />made for Nintendo 64.</p>
+        <h1 class="product-stage" id="title">
+          <img class="cartridge-art" src="images/mine64-cartridge.png" alt="Mine64 Nintendo 64 cartridge" />
+          <img class="box-art" src="images/mine64-box.png" alt="Mine64 Nintendo 64 box art" />
+        </h1>
         <button class="play-button" id="launch-game" type="button"><span>▶</span> PLAY NOW</button>
-        <p class="play-note">PLAY IN BROWSER / CONTROLLER READY</p>
+        <p class="play-note">INFINITE WORLD / 4 PLAYERS / SAVES / MODS</p>
       </section>
 
       <section class="screens" aria-label="Mine64 screenshots">
-        <p>FROM THE WORLD</p>
         <div class="screen-strip">
-          <button class="shot active" type="button" data-image="images/world.png" aria-label="Show overworld screenshot"><img src="images/world.png" alt="Mine64 world exploration" /></button>
-          <button class="shot" type="button" data-image="images/forest.png" aria-label="Show forest screenshot"><img src="images/forest.png" alt="Mine64 forest" /></button>
+          <button class="shot" type="button" data-image="images/world.png" aria-label="Show overworld screenshot"><img src="images/world.png" alt="Mine64 world exploration" /></button>
+          <button class="shot active" type="button" data-image="images/forest.png" aria-label="Show forest screenshot"><img src="images/forest.png" alt="Mine64 forest" /></button>
           <button class="shot" type="button" data-image="images/animals.png" aria-label="Show animals screenshot"><img src="images/animals.png" alt="Mine64 animals" /></button>
           <button class="shot" type="button" data-image="images/pack.png" aria-label="Show inventory screenshot"><img src="images/pack.png" alt="Mine64 inventory" /></button>
         </div>
       </section>
 
-      <footer><span>© MINE64</span><span>ENDLESS / LOCAL / CO-OP</span><span>$24 ROM</span></footer>
+      <footer><span>© MINE64</span><span>LOCAL MULTIPLAYER</span><span>4 MB RAM</span></footer>
     </main>
 
     <section class="player-overlay" id="player-overlay" aria-hidden="true" aria-label="Mine64 browser player">
-      <div class="player-bar"><span>MINE64 / PLAYER 01</span><span id="emulator-status">LOADING CARTRIDGE</span><button id="close-game" type="button">ESC / CLOSE ×</button></div>
+      <div class="player-bar"><span>MINE64 / PLAYER 01</span><span id="emulator-status">LOADING WORLD</span><button id="close-game" type="button">ESC / CLOSE ×</button></div>
       <div id="game"></div>
       <p>STICK — MOVE &nbsp; A — PLACE / USE &nbsp; B — MINE / PUNCH &nbsp; START — PACK</p>
     </section>
