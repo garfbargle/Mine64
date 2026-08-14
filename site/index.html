@@ -37,6 +37,7 @@
         </h1>
         <div class="hero-actions">
           <button class="play-button" id="launch-game" type="button"><span>▶</span> PLAY NOW</button>
+          <button class="showcase-button" id="launch-showcase" type="button"><span>▶</span> WATCH SHOWCASE</button>
           <a class="github-button" href="https://github.com/garfbargle/Mine64" target="_blank" rel="noreferrer">VIEW ON GITHUB ↗</a>
         </div>
         <p class="play-note">INFINITE WORLD / 4 PLAYERS / SAVES / MODS</p>
@@ -58,6 +59,15 @@
       <div class="player-bar"><span>MINE64 / PLAYER 01</span><span id="emulator-status">LOADING WORLD</span><button id="close-game" type="button">ESC / CLOSE ×</button></div>
       <div id="game"></div>
       <p>STICK — MOVE &nbsp; A — PLACE / USE &nbsp; B — MINE / PUNCH &nbsp; START — PACK</p>
+    </section>
+
+    <section class="showcase-overlay" id="showcase-overlay" aria-hidden="true" aria-label="Mine64 showcase video" role="dialog" aria-modal="true">
+      <div class="showcase-bar"><span>MINE64 / SHOWCASE</span><button id="close-showcase" type="button">ESC / CLOSE ×</button></div>
+      <video id="showcase-video" controls playsinline preload="metadata" poster="images/forest.png">
+        <source src="media/mine64-showcase-v3.mp4" type="video/mp4" />
+        Your browser does not support embedded video.
+      </video>
+      <p>16-SECOND GAMEPLAY SHOWCASE</p>
     </section>
     <script src="app.js"></script>
   </body>
