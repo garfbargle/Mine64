@@ -3,10 +3,6 @@ const overlay = document.querySelector('#player-overlay');
 const closeButton = document.querySelector('#close-game');
 const emulatorStatus = document.querySelector('#emulator-status');
 const backdrop = document.querySelector('.world-backdrop');
-const launchShowcaseButton = document.querySelector('#launch-showcase');
-const showcaseOverlay = document.querySelector('#showcase-overlay');
-const closeShowcaseButton = document.querySelector('#close-showcase');
-const showcaseVideo = document.querySelector('#showcase-video');
 
 function launchGame() {
   overlay.classList.add('open');
@@ -36,21 +32,6 @@ function closeGame() {
   document.body.style.overflow = '';
 }
 
-function launchShowcase() {
-  showcaseOverlay.classList.add('open');
-  showcaseOverlay.setAttribute('aria-hidden', 'false');
-  document.body.style.overflow = 'hidden';
-  showcaseVideo.play().catch(() => {});
-}
-
-function closeShowcase() {
-  showcaseOverlay.classList.remove('open');
-  showcaseOverlay.setAttribute('aria-hidden', 'true');
-  showcaseVideo.pause();
-  showcaseVideo.currentTime = 0;
-  document.body.style.overflow = '';
-}
-
 document.querySelectorAll('.shot').forEach((shot) => {
   shot.addEventListener('click', () => {
     document.querySelector('.shot.active').classList.remove('active');
@@ -61,6 +42,4 @@ document.querySelectorAll('.shot').forEach((shot) => {
 
 launchButton.addEventListener('click', launchGame);
 closeButton.addEventListener('click', closeGame);
-launchShowcaseButton.addEventListener('click', launchShowcase);
-closeShowcaseButton.addEventListener('click', closeShowcase);
-document.addEventListener('keydown', (event) => { if (event.key === 'Escape') { closeGame(); closeShowcase(); } });
+document.addEventListener('keydown', (event) => { if (event.key === 'Escape') closeGame(); });

@@ -31,16 +31,24 @@
       </header>
 
       <section class="intro" aria-labelledby="title">
-        <h1 class="product-stage" id="title">
-          <img class="cartridge-art" src="images/mine64-cartridge.png" alt="Mine64 Nintendo 64 cartridge" />
-          <img class="box-art" src="images/mine64-box.png" alt="Mine64 Nintendo 64 box art" />
-        </h1>
-        <div class="hero-actions">
-          <button class="play-button" id="launch-game" type="button"><span>▶</span> PLAY NOW</button>
-          <button class="showcase-button" id="launch-showcase" type="button"><span>▶</span> WATCH SHOWCASE</button>
-          <a class="github-button" href="https://github.com/garfbargle/Mine64" target="_blank" rel="noreferrer">VIEW ON GITHUB ↗</a>
+        <div class="intro-copy">
+          <h1 class="product-stage" id="title">
+            <img class="cartridge-art" src="images/mine64-cartridge.png" alt="Mine64 Nintendo 64 cartridge" />
+            <img class="box-art" src="images/mine64-box.png" alt="Mine64 Nintendo 64 box art" />
+          </h1>
+          <div class="hero-actions">
+            <button class="play-button" id="launch-game" type="button"><span>▶</span> PLAY NOW</button>
+            <a class="github-button" href="https://github.com/garfbargle/Mine64" target="_blank" rel="noreferrer">VIEW ON GITHUB ↗</a>
+          </div>
+          <p class="play-note">INFINITE WORLD / 4 PLAYERS / SAVES / MODS</p>
         </div>
-        <p class="play-note">INFINITE WORLD / 4 PLAYERS / SAVES / MODS</p>
+        <figure class="showcase-panel">
+          <video id="showcase-video" autoplay muted loop controls playsinline preload="metadata" poster="images/forest.png" aria-label="Mine64 gameplay showcase">
+            <source src="media/mine64-showcase-v3.mp4?v=20260814" type="video/mp4" />
+            Your browser does not support embedded video.
+          </video>
+          <figcaption>GAMEPLAY SHOWCASE / SOUND OFF BY DEFAULT</figcaption>
+        </figure>
       </section>
 
       <section class="screens" aria-label="Mine64 screenshots">
@@ -61,14 +69,6 @@
       <p>STICK — MOVE &nbsp; A — PLACE / USE &nbsp; B — MINE / PUNCH &nbsp; START — PACK</p>
     </section>
 
-    <section class="showcase-overlay" id="showcase-overlay" aria-hidden="true" aria-label="Mine64 showcase video" role="dialog" aria-modal="true">
-      <div class="showcase-bar"><span>MINE64 / SHOWCASE</span><button id="close-showcase" type="button">ESC / CLOSE ×</button></div>
-      <video id="showcase-video" controls playsinline preload="metadata" poster="images/forest.png">
-        <source src="media/mine64-showcase-v3.mp4?v=20260814" type="video/mp4" />
-        Your browser does not support embedded video.
-      </video>
-      <p>16-SECOND GAMEPLAY SHOWCASE</p>
-    </section>
     <script src="app.js"></script>
   </body>
 </html>
